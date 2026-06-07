@@ -20,6 +20,11 @@ MAC_X86      := x86_64-apple-darwin
 
 DIST         := dist
 
+# `install` replaces the destination by unlinking it first, so staging over a
+# binary that is currently running (e.g. a persistent wmuxd daemon) never hits
+# ETXTBSY the way `cp` (in-place truncate) does. -m755 also sets the exec bit.
+INSTALL      := install -m755
+
 .DEFAULT_GOAL := help
 
 # ---------------------------------------------------------------------------
@@ -104,9 +109,8 @@ dist-macos: ## Cross-build universal macOS binaries -> dist/macos/
 	rustup target add $(MAC_ARM) $(MAC_X86) >/dev/null 2>&1 || true
 	$(CARGO) zigbuild --release --target $(MAC_UNIVERSAL) -p wmux -p wmuxd
 	@mkdir -p $(DIST)/macos
-	cp target/$(MAC_UNIVERSAL)/release/wmux  $(DIST)/macos/wmux
-	cp target/$(MAC_UNIVERSAL)/release/wmuxd $(DIST)/macos/wmuxd
-	@chmod +x $(DIST)/macos/wmux $(DIST)/macos/wmuxd
+	$(INSTALL) target/$(MAC_UNIVERSAL)/release/wmux  $(DIST)/macos/wmux
+	$(INSTALL) target/$(MAC_UNIVERSAL)/release/wmuxd $(DIST)/macos/wmuxd
 	@echo "Built universal macOS binaries in $(DIST)/macos/ (unsigned)."
 
 .PHONY: dist-windows
@@ -114,8 +118,8 @@ dist-windows: ## Cross-build runnable Windows .exe (gnu) -> dist/windows/
 	rustup target add $(WIN_GNU) >/dev/null 2>&1 || true
 	$(CARGO) zigbuild --release --target $(WIN_GNU) -p wmux -p wmuxd
 	@mkdir -p $(DIST)/windows
-	cp target/$(WIN_GNU)/release/wmux.exe  $(DIST)/windows/wmux.exe
-	cp target/$(WIN_GNU)/release/wmuxd.exe $(DIST)/windows/wmuxd.exe
+	$(INSTALL) target/$(WIN_GNU)/release/wmux.exe  $(DIST)/windows/wmux.exe
+	$(INSTALL) target/$(WIN_GNU)/release/wmuxd.exe $(DIST)/windows/wmuxd.exe
 	@echo "Built Windows binaries in $(DIST)/windows/ (gnu/MinGW ABI)."
 	@echo "NOTE: the production target is msvc; this gnu build is for quick"
 	@echo "      cross-testing from Linux. Use Windows CI for msvc release artifacts."
@@ -124,8 +128,10 @@ dist-windows: ## Cross-build runnable Windows .exe (gnu) -> dist/windows/
 dist-linux: ## Build optimized Linux binaries -> dist/linux/
 	$(CARGO) build --release -p wmux -p wmuxd
 	@mkdir -p $(DIST)/linux
-	cp target/release/wmux  $(DIST)/linux/wmux
-	cp target/release/wmuxd $(DIST)/linux/wmuxd
+	# install (not cp) unlinks the old inode first, so a running wmuxd daemon
+	# from a previous build doesn't cause ETXTBSY ("Text file busy").
+	$(INSTALL) target/release/wmux  $(DIST)/linux/wmux
+	$(INSTALL) target/release/wmuxd $(DIST)/linux/wmuxd
 	@echo "Built Linux binaries in $(DIST)/linux/."
 
 .PHONY: dist
