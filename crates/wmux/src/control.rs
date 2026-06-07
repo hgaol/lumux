@@ -14,6 +14,9 @@ pub fn send_command(cmd: Command) -> anyhow::Result<String> {
         Err(_) => return Ok("(no server running)\n".to_string()),
     };
 
+    // Protocol handshake before issuing commands.
+    crate::attach::handshake(&mut reader, &mut writer)?;
+
     // Attach so the daemon assigns a client slot, then issue the command.
     let attach = ClientMsg::Attach {
         session: None,

@@ -43,13 +43,22 @@ impl TestClient {
         loop {
             if let Ok(t) = PipeTransport::connect(path) {
                 let (reader, writer) = t.split().expect("split");
-                return Self { reader, writer };
+                let mut c = Self { reader, writer };
+                c.handshake();
+                return c;
             }
             if Instant::now() >= deadline {
                 panic!("could not connect to test daemon pipe");
             }
             std::thread::sleep(Duration::from_millis(25));
         }
+    }
+
+    /// Send our Hello and consume the daemon's reply.
+    fn handshake(&mut self) {
+        let hello = wmux_core::proto::Hello::current("win-test-client");
+        self.writer.write_frame(&encode(&hello).unwrap()).unwrap();
+        let _ = self.reader.read_frame();
     }
 
     fn send(&mut self, msg: &ClientMsg) {

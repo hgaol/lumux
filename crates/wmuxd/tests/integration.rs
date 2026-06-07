@@ -46,9 +46,34 @@ impl TestClient {
         stream
             .set_read_timeout(Some(Duration::from_millis(500)))
             .unwrap();
-        Self {
+        let mut c = Self {
             stream,
             buf: Vec::new(),
+        };
+        c.handshake();
+        c
+    }
+
+    /// Send our Hello and consume the daemon's reply Hello frame.
+    fn handshake(&mut self) {
+        let hello = wmux_core::proto::Hello::current("test-client");
+        self.stream.write_all(&encode(&hello).unwrap()).unwrap();
+        self.stream.flush().unwrap();
+        // Read one frame (the daemon's Hello) and discard it.
+        let mut tmp = [0u8; 1024];
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if try_decode_hello(&self.buf).is_some() {
+                let (_h, consumed) = try_decode_hello(&self.buf).unwrap();
+                self.buf.drain(..consumed);
+                return;
+            }
+            match self.stream.read(&mut tmp) {
+                Ok(0) => break,
+                Ok(n) => self.buf.extend_from_slice(&tmp[..n]),
+                Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => continue,
+                Err(_) => break,
+            }
         }
     }
 
@@ -100,6 +125,19 @@ fn try_decode(buf: &[u8]) -> Option<(ServerMsg, usize)> {
     }
     let msg = decode::<ServerMsg>(&buf[4..4 + len]).ok()?;
     Some((msg, 4 + len))
+}
+
+/// Decode a Hello handshake frame (the daemon's reply to ours).
+fn try_decode_hello(buf: &[u8]) -> Option<(wmux_core::proto::Hello, usize)> {
+    if buf.len() < 4 {
+        return None;
+    }
+    let len = u32::from_be_bytes([buf[0], buf[1], buf[2], buf[3]]) as usize;
+    if buf.len() < 4 + len {
+        return None;
+    }
+    let h = decode::<wmux_core::proto::Hello>(&buf[4..4 + len]).ok()?;
+    Some((h, 4 + len))
 }
 
 fn size() -> WireSize {

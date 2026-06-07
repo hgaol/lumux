@@ -562,10 +562,26 @@ where
 fn spawn_client<C: Transport + 'static>(conn: C, tx: Sender<Msg>) -> std::io::Result<()> {
     let (mut reader, mut writer) = conn.split()?;
 
-    // First frame must be Attach/NewSession.
-    let first_bytes = reader
+    // Protocol handshake: the client sends its Hello first; we validate the
+    // version and reply with ours. A mismatch is rejected loudly so skewed
+    // builds fail fast instead of corrupting the byte stream.
+    let hello_bytes = reader
         .read_frame()?
         .ok_or_else(|| std::io::Error::other("client closed before handshake"))?;
+    let client_hello: wmux_core::proto::Hello = wmux_core::proto::decode(&hello_bytes)
+        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    if let Err(mismatch) = client_hello.check() {
+        // Best-effort notice, then drop the connection.
+        let _ = writer.write_frame(&encode(&ServerMsg::Error(mismatch.to_string())).unwrap_or_default());
+        return Err(std::io::Error::other(mismatch.to_string()));
+    }
+    let server_hello = wmux_core::proto::Hello::current(format!("wmuxd/{}", crate::DAEMON_VERSION));
+    writer.write_frame(&encode(&server_hello).map_err(|e| std::io::Error::other(e.to_string()))?)?;
+
+    // First post-handshake frame must be Attach/NewSession.
+    let first_bytes = reader
+        .read_frame()?
+        .ok_or_else(|| std::io::Error::other("client closed before attach"))?;
     let first: ClientMsg = wmux_core::proto::decode(&first_bytes)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
 

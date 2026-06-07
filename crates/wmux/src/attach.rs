@@ -7,13 +7,35 @@
 
 use std::io::{self, Read, Write};
 
-use wmux_core::proto::{encode, ClientMsg, ServerMsg, WireSize};
+use wmux_core::proto::{encode, ClientMsg, Hello, ServerMsg, WireSize};
 use wmux_core::traits::{FrameReader, FrameWriter};
 
 #[cfg(unix)]
 use crate::term_unix::RawTerminal;
 #[cfg(windows)]
 use crate::term_win::RawTerminal;
+
+/// Perform the protocol handshake: send our Hello, read the daemon's, and check
+/// versions. Shared by attach and the control client.
+pub fn handshake<R: FrameReader, W: FrameWriter>(reader: &mut R, writer: &mut W) -> anyhow::Result<()> {
+    let hello = Hello::current(format!("wmux/{}", env!("CARGO_PKG_VERSION")));
+    writer.write_frame(&encode(&hello)?)?;
+    let reply = reader
+        .read_frame()?
+        .ok_or_else(|| anyhow::anyhow!("daemon closed during handshake"))?;
+    // The daemon may answer a version mismatch with an Error frame instead of a
+    // Hello; surface either clearly.
+    if let Ok(server_hello) = wmux_core::proto::decode::<Hello>(&reply) {
+        server_hello
+            .check()
+            .map_err(|m| anyhow::anyhow!(m.to_string()))?;
+        Ok(())
+    } else if let Ok(ServerMsg::Error(e)) = wmux_core::proto::decode::<ServerMsg>(&reply) {
+        anyhow::bail!("daemon rejected connection: {e}")
+    } else {
+        anyhow::bail!("unexpected handshake response from daemon")
+    }
+}
 
 /// Attach to (or create) a session and run until detached. Platform glue picks
 /// the transport and connects (auto-spawning the daemon).
@@ -39,6 +61,8 @@ where
     W: FrameWriter,
 {
     let size = RawTerminal::size();
+    // Protocol handshake before any session message.
+    handshake(&mut reader, &mut writer)?;
     let first = if new_session {
         ClientMsg::NewSession {
             name: session,
