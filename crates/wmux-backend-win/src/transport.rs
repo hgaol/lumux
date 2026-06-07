@@ -1,24 +1,34 @@
 //! Named-pipe transport + listener for the Windows backend.
 //!
-//! Mirrors the unix Unix-socket transport: the daemon listens on
-//! `\\.\pipe\wmux-<user-sid>` and clients connect by opening that path. A
-//! duplex byte-mode pipe handle is safe to read on one thread while writing on
-//! another, so the reader and writer halves share the same handle via an `Arc`.
+//! The daemon listens on `\\.\pipe\wmux-<user>` and clients connect by opening
+//! that path. Both ends use **overlapped (asynchronous) I/O**: this is required
+//! because wmux drives each connection with a separate reader thread and writer
+//! thread, and a *synchronous* pipe handle serializes all I/O on a per-handle
+//! lock — a blocking `ReadFile` would hold that lock and starve a concurrent
+//! `WriteFile` on the same handle, deadlocking the duplex stream. With
+//! overlapped handles each read/write carries its own OVERLAPPED + event, so
+//! reads and writes proceed independently. The threads still block (via
+//! `GetOverlappedResult`), so the threads+channels architecture is unchanged.
 //!
 //! NOTE: type-checked from Linux via the msvc target; real pipe behavior is
-//! exercised on Windows CI.
+//! exercised on Windows.
 
 use std::io;
 use std::sync::Arc;
 
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, ERROR_IO_PENDING, ERROR_PIPE_CONNECTED, HANDLE, INVALID_HANDLE_VALUE,
+    WAIT_OBJECT_0,
+};
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
+    CreateFileW, ReadFile, WriteFile, FILE_FLAG_OVERLAPPED, OPEN_EXISTING, PIPE_ACCESS_DUPLEX,
 };
 use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE,
     PIPE_WAIT,
 };
+use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
+use windows_sys::Win32::System::IO::{GetOverlappedResult, OVERLAPPED};
 
 use wmux_core::proto::FrameCodec;
 use wmux_core::traits::{FrameReader, FrameWriter, Listener, Transport};
@@ -26,8 +36,7 @@ use wmux_core::traits::{FrameReader, FrameWriter, Listener, Transport};
 /// Owns a pipe HANDLE and closes it on drop. Shared across read/write halves.
 struct PipeHandle(HANDLE);
 
-// A duplex byte-mode pipe handle may be used for blocking reads and writes from
-// separate threads concurrently; Windows serializes per-direction.
+// Overlapped handles support concurrent reads and writes from separate threads.
 unsafe impl Send for PipeHandle {}
 unsafe impl Sync for PipeHandle {}
 
@@ -39,23 +48,47 @@ impl Drop for PipeHandle {
     }
 }
 
+/// An auto-managed Win32 event handle for one direction's overlapped I/O.
+struct EventHandle(HANDLE);
+
+// Each EventHandle is owned by exactly one thread (the reader or writer), and
+// only ever used from that thread, so moving it across the thread boundary at
+// spawn time is sound.
+unsafe impl Send for EventHandle {}
+
+impl EventHandle {
+    fn new() -> io::Result<Self> {
+        // Manual-reset = FALSE (auto-reset), initial state = FALSE, unnamed.
+        let h = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
+        if h.is_null() {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(EventHandle(h))
+    }
+}
+
+impl Drop for EventHandle {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
+
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
 
-/// Build the default per-user pipe path. The SID component keeps users isolated
+/// Build the default per-user pipe path. The user component keeps users isolated
 /// and avoids name collisions.
 pub fn default_pipe_path() -> String {
-    let user = whoami_sid().unwrap_or_else(|| "default".to_string());
+    let user = whoami().unwrap_or_else(|| "default".to_string());
     format!(r"\\.\pipe\wmux-{user}")
 }
 
-/// Best-effort current-user identifier for the pipe name. Uses USERNAME; a true
-/// SID lookup can be added, but USERNAME is unique per interactive session and
-/// adequate for name-scoping.
-fn whoami_sid() -> Option<String> {
+/// Best-effort current-user identifier for the pipe name (sanitized USERNAME).
+fn whoami() -> Option<String> {
     std::env::var("USERNAME").ok().map(|u| {
-        // Sanitize for a pipe name.
         u.chars()
             .map(|c| if c.is_alphanumeric() { c } else { '_' })
             .collect()
@@ -64,13 +97,45 @@ fn whoami_sid() -> Option<String> {
 
 const PIPE_BUF: u32 = 64 * 1024;
 
-/// A connected named pipe, not yet split.
+/// Perform one overlapped operation (read or write) and block for completion.
+/// `start` issues the ReadFile/WriteFile; returns its BOOL result and fills the
+/// transferred count. Returns Ok(bytes) or Err. `Ok(0)` means EOF/closed.
+unsafe fn overlapped_io(
+    handle: HANDLE,
+    event: HANDLE,
+    start: impl FnOnce(*mut OVERLAPPED, *mut u32) -> i32,
+) -> io::Result<u32> {
+    let mut ov: OVERLAPPED = std::mem::zeroed();
+    ov.hEvent = event;
+    let mut transferred: u32 = 0;
+
+    let ok = start(&mut ov, &mut transferred);
+    if ok == 0 {
+        let err = io::Error::last_os_error();
+        if err.raw_os_error() != Some(ERROR_IO_PENDING as i32) {
+            // Immediate failure (e.g. broken pipe).
+            return Err(err);
+        }
+        // I/O is pending: wait for the event, then collect the result.
+        WaitForSingleObject(event, u32::MAX);
+        let mut got: u32 = 0;
+        let res = GetOverlappedResult(handle, &ov, &mut got, 1 /* bWait */);
+        if res == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        return Ok(got);
+    }
+    // Completed synchronously.
+    Ok(transferred)
+}
+
+/// A connected named pipe (overlapped), not yet split.
 pub struct PipeTransport {
     handle: Arc<PipeHandle>,
 }
 
 impl PipeTransport {
-    /// Connect to a daemon's pipe by path.
+    /// Connect to a daemon's pipe by path (overlapped mode).
     pub fn connect(path: &str) -> io::Result<Self> {
         let wide = to_wide(path);
         let handle = unsafe {
@@ -81,7 +146,7 @@ impl PipeTransport {
                 0,
                 std::ptr::null(),
                 OPEN_EXISTING,
-                0,
+                FILE_FLAG_OVERLAPPED,
                 std::ptr::null_mut(),
             )
         };
@@ -102,11 +167,13 @@ impl Transport for PipeTransport {
         Ok((
             PipeReader {
                 handle: self.handle.clone(),
+                event: EventHandle::new()?,
                 codec: FrameCodec::new(),
                 buf: [0u8; 8192],
             },
             PipeWriter {
                 handle: self.handle,
+                event: EventHandle::new()?,
             },
         ))
     }
@@ -114,6 +181,7 @@ impl Transport for PipeTransport {
 
 pub struct PipeReader {
     handle: Arc<PipeHandle>,
+    event: EventHandle,
     codec: FrameCodec,
     buf: [u8; 8192],
 }
@@ -128,44 +196,47 @@ impl FrameReader for PipeReader {
             {
                 return Ok(Some(frame));
             }
-            let mut read: u32 = 0;
-            let ok = unsafe {
-                ReadFile(
-                    self.handle.0,
-                    self.buf.as_mut_ptr(),
-                    self.buf.len() as u32,
-                    &mut read,
-                    std::ptr::null_mut(),
-                )
+            let h = self.handle.0;
+            let ev = self.event.0;
+            let ptr = self.buf.as_mut_ptr();
+            let len = self.buf.len() as u32;
+            let n = unsafe {
+                overlapped_io(h, ev, |ov, transferred| {
+                    ReadFile(h, ptr, len, transferred, ov)
+                })
             };
-            if ok == 0 || read == 0 {
-                return Ok(None); // pipe closed / EOF
+            match n {
+                Ok(0) => return Ok(None), // EOF
+                Ok(read) => self.codec.extend(&self.buf[..read as usize]),
+                Err(_) => return Ok(None), // pipe closed / error => EOF for caller
             }
-            self.codec.extend(&self.buf[..read as usize]);
         }
     }
 }
 
 pub struct PipeWriter {
     handle: Arc<PipeHandle>,
+    event: EventHandle,
 }
 
 impl FrameWriter for PipeWriter {
     fn write_frame(&mut self, frame: &[u8]) -> io::Result<()> {
         let mut off = 0;
         while off < frame.len() {
-            let mut written: u32 = 0;
-            let ok = unsafe {
-                WriteFile(
-                    self.handle.0,
-                    frame[off..].as_ptr(),
-                    (frame.len() - off) as u32,
-                    &mut written,
-                    std::ptr::null_mut(),
-                )
-            };
-            if ok == 0 {
-                return Err(io::Error::last_os_error());
+            let h = self.handle.0;
+            let ev = self.event.0;
+            let ptr = frame[off..].as_ptr();
+            let len = (frame.len() - off) as u32;
+            let written = unsafe {
+                overlapped_io(h, ev, |ov, transferred| {
+                    WriteFile(h, ptr, len, transferred, ov)
+                })
+            }?;
+            if written == 0 {
+                return Err(io::Error::new(
+                    io::ErrorKind::WriteZero,
+                    "pipe write returned 0",
+                ));
             }
             off += written as usize;
         }
@@ -173,8 +244,8 @@ impl FrameWriter for PipeWriter {
     }
 }
 
-/// Listens for client connections on a named pipe. Each `accept` creates a
-/// fresh pipe instance and blocks until a client connects.
+/// Listens for client connections on a named pipe. Each `accept` creates a fresh
+/// overlapped pipe instance and blocks until a client connects.
 pub struct PipeListener {
     path: String,
     wide: Vec<u16>,
@@ -192,11 +263,11 @@ impl PipeListener {
     }
 
     fn create_instance(&self) -> io::Result<HANDLE> {
-        // Blocking, byte-mode, duplex pipe (no FILE_FLAG_OVERLAPPED).
+        // Overlapped, byte-mode, duplex pipe.
         let handle = unsafe {
             CreateNamedPipeW(
                 self.wide.as_ptr(),
-                PIPE_ACCESS_DUPLEX,
+                PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED,
                 PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT,
                 255, // max instances
                 PIPE_BUF,
@@ -217,17 +288,46 @@ impl Listener for PipeListener {
 
     fn accept(&mut self) -> io::Result<Self::Conn> {
         let handle = self.create_instance()?;
-        let connected = unsafe { ConnectNamedPipe(handle, std::ptr::null_mut()) };
-        // ConnectNamedPipe returns 0 with ERROR_PIPE_CONNECTED (535) if a client
-        // connected between Create and Connect — that's still success.
-        if connected == 0 {
+        // ConnectNamedPipe on an overlapped handle returns 0 / ERROR_IO_PENDING
+        // and signals the event when a client connects.
+        let event = EventHandle::new()?;
+        let mut ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+        ov.hEvent = event.0;
+
+        let rc = unsafe { ConnectNamedPipe(handle, &mut ov) };
+        if rc == 0 {
             let err = io::Error::last_os_error();
-            if err.raw_os_error() != Some(535) {
-                unsafe {
-                    DisconnectNamedPipe(handle);
-                    CloseHandle(handle);
+            match err.raw_os_error().map(|c| c as u32) {
+                // Client already connected between Create and Connect.
+                Some(ERROR_PIPE_CONNECTED) => {}
+                // Connection is being established asynchronously: wait for it.
+                Some(ERROR_IO_PENDING) => {
+                    let w = unsafe { WaitForSingleObject(event.0, u32::MAX) };
+                    if w != WAIT_OBJECT_0 {
+                        unsafe {
+                            DisconnectNamedPipe(handle);
+                            CloseHandle(handle);
+                        }
+                        return Err(io::Error::other("ConnectNamedPipe wait failed"));
+                    }
+                    let mut got: u32 = 0;
+                    let res = unsafe { GetOverlappedResult(handle, &ov, &mut got, 1) };
+                    if res == 0 {
+                        let e = io::Error::last_os_error();
+                        unsafe {
+                            DisconnectNamedPipe(handle);
+                            CloseHandle(handle);
+                        }
+                        return Err(e);
+                    }
                 }
-                return Err(err);
+                _ => {
+                    unsafe {
+                        DisconnectNamedPipe(handle);
+                        CloseHandle(handle);
+                    }
+                    return Err(err);
+                }
             }
         }
         Ok(PipeTransport {

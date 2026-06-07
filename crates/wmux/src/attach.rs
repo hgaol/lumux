@@ -278,11 +278,19 @@ mod platform {
 fn spawn_daemon_process() -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
     let exe = std::env::current_exe()?;
-    Command::new(exe)
-        .arg("--server")
+    let mut cmd = Command::new(exe);
+    cmd.arg("--server")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    // On Windows, fully detach: no console window, separate process group, so
+    // the server neither flashes a window nor dies with the client.
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW (0x0800_0000) | DETACHED_PROCESS (0x0000_0008)
+        cmd.creation_flags(0x0800_0000 | 0x0000_0008);
+    }
+    cmd.spawn()?;
     Ok(())
 }
