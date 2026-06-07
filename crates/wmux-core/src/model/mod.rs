@@ -130,6 +130,13 @@ impl Window {
             false
         }
     }
+
+    /// Adjust the split divider nearest to (col,row) by dragging it to that
+    /// position (mouse resize). Walks the layout tree, and for the split whose
+    /// divider line the point is on, recomputes its ratio from the cursor.
+    pub fn resize_split_at(&mut self, col: u16, row: u16, viewport: crate::layout::Rect) {
+        crate::layout::set_ratio_at(&mut self.layout, col, row, viewport);
+    }
 }
 
 /// A session: the unit a client attaches to. Owns an ordered list of windows

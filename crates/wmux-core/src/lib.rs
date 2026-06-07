@@ -12,6 +12,7 @@ pub mod grid;
 pub mod keymap;
 pub mod layout;
 pub mod model;
+pub mod mouse;
 pub mod proto;
 pub mod render;
 pub mod status;

@@ -157,6 +157,12 @@ where
             client_id,
             size: size.into(),
         });
+        // Turn on mouse reporting in the client's terminal if configured.
+        if self.daemon.mouse_enabled() {
+            let _ = out.send(ServerMsg::Frame(
+                wmux_core::mouse::ENABLE.as_bytes().to_vec(),
+            ));
+        }
         self.clients
             .insert(client_id, ClientHandle { out, session });
         let _ = reply.send(client_id);
@@ -221,10 +227,18 @@ where
             ClientMsg::Input(bytes) => {
                 // Any input dismisses a pending display-message (tmux behavior).
                 self.daemon.clear_message(client_id);
+                // Mouse reporting sequences are intercepted here (when enabled)
+                // and never reach the keymap or the shell; everything else is
+                // forwarded to the keymap as before.
+                let keyboard = if self.daemon.mouse_enabled() {
+                    self.extract_and_handle_mouse(client_id, session, &bytes)
+                } else {
+                    bytes.clone()
+                };
                 let reactions = self
                     .daemon
                     .keymap_mut(client_id)
-                    .map(|k| k.feed(&bytes))
+                    .map(|k| k.feed(&keyboard))
                     .unwrap_or_default();
                 for r in reactions {
                     match r {
@@ -405,6 +419,91 @@ where
             // Detach is handled at the client layer; SendPrefix is pass-through.
             Action::Detach | Action::SendPrefix => {}
         }
+    }
+
+    /// Decode and act on SGR mouse sequences in `bytes`, returning the bytes
+    /// that are NOT mouse events (to be handled as keyboard input). Click selects
+    /// a pane, wheel scrolls into copy-mode, drag resizes the divider.
+    fn extract_and_handle_mouse(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        bytes: &[u8],
+    ) -> Vec<u8> {
+        use wmux_core::mouse::{self, MouseKind};
+        let mut rest = Vec::new();
+        let mut i = 0;
+        while i < bytes.len() {
+            if let Some((ev, used)) = mouse::parse(&bytes[i..]) {
+                match ev.kind {
+                    MouseKind::Down(_) => self.mouse_select_pane(session, ev.col, ev.row),
+                    MouseKind::ScrollUp => self.mouse_scroll(client_id, session, true),
+                    MouseKind::ScrollDown => self.mouse_scroll(client_id, session, false),
+                    MouseKind::Drag(_) => self.mouse_drag(session, ev.col, ev.row),
+                    MouseKind::Up(_) => self.mouse_drag_end(),
+                }
+                i += used;
+            } else {
+                rest.push(bytes[i]);
+                i += 1;
+            }
+        }
+        rest
+    }
+
+    /// Click: focus the pane under the cursor.
+    fn mouse_select_pane(&mut self, session: SessionId, col: u16, row: u16) {
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        let viewport = wmux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            let wid = s.active_window();
+            if let Some(w) = s.window_mut(wid) {
+                let rects = wmux_core::layout::compute(&w.layout, viewport);
+                if let Some(pid) = wmux_core::layout::pane_at(&rects, col, row) {
+                    w.focus_pane(pid);
+                }
+            }
+        }
+    }
+
+    /// Wheel: enter copy-mode (if not already) and scroll the history.
+    fn mouse_scroll(&mut self, client_id: u64, session: SessionId, up: bool) {
+        use wmux_core::keymap::CopyKey;
+        if !self.daemon.in_copy_mode(client_id) {
+            if !up {
+                return; // scrolling down in live view does nothing
+            }
+            self.daemon.enter_copy_mode(client_id, session);
+        }
+        let key = if up { CopyKey::Up } else { CopyKey::Down };
+        // Scroll a few lines per wheel notch.
+        for _ in 0..3 {
+            self.daemon.copy_navigate(client_id, session, key);
+        }
+    }
+
+    /// Drag: adjust the split ratio under the cursor (resize panes).
+    fn mouse_drag(&mut self, session: SessionId, col: u16, row: u16) {
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        let viewport = wmux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            let wid = s.active_window();
+            if let Some(w) = s.window_mut(wid) {
+                w.resize_split_at(col, row, viewport);
+            }
+        }
+    }
+
+    fn mouse_drag_end(&mut self) {
+        // Stateless for v1: each drag event re-derives the ratio from position.
     }
 
     /// Move focus geographically within the active window.

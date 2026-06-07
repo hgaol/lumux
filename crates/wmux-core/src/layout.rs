@@ -110,6 +110,55 @@ pub fn pane_at(layout: &BTreeMap<PaneId, Rect>, x: u16, y: u16) -> Option<PaneId
         .map(|(id, _)| *id)
 }
 
+/// Adjust the ratio of the split being dragged toward (col,row). For v1 this
+/// targets the *outermost* split on the axis the cursor is moving along: a
+/// horizontal drag adjusts the nearest vertical divider, a vertical drag the
+/// nearest horizontal one. The ratio is taken from the cursor's position within
+/// that split's area. Good enough for grabbing a divider and moving it; precise
+/// per-divider drag tracking is a follow-up.
+pub fn set_ratio_at(node: &mut PaneNode, col: u16, row: u16, area: Rect) {
+    if let PaneNode::Split {
+        dir,
+        ratio,
+        first,
+        second,
+    } = node
+    {
+        let (a, b) = split_rect(area, *dir, *ratio);
+        match dir {
+            SplitDir::Horizontal => {
+                // If the cursor is within this split's rows, treat this divider
+                // as the drag target and set the ratio from the cursor column.
+                if row >= area.y && row < area.y + area.rows {
+                    let usable = area.cols.saturating_sub(DIVIDER).max(1) as f32;
+                    let rel = col.saturating_sub(area.x) as f32;
+                    *ratio = (rel / usable).clamp(0.05, 0.95);
+                    return;
+                }
+                // Otherwise descend to the child that contains the point.
+                if col < a.x + a.cols {
+                    set_ratio_at(first, col, row, a);
+                } else {
+                    set_ratio_at(second, col, row, b);
+                }
+            }
+            SplitDir::Vertical => {
+                if col >= area.x && col < area.x + area.cols {
+                    let usable = area.rows.saturating_sub(DIVIDER).max(1) as f32;
+                    let rel = row.saturating_sub(area.y) as f32;
+                    *ratio = (rel / usable).clamp(0.05, 0.95);
+                    return;
+                }
+                if row < a.y + a.rows {
+                    set_ratio_at(first, col, row, a);
+                } else {
+                    set_ratio_at(second, col, row, b);
+                }
+            }
+        }
+    }
+}
+
 /// A geographic direction for pane navigation (tmux `select-pane -L/-R/-U/-D`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -363,5 +412,34 @@ mod tests {
         ] {
             assert_eq!(neighbor(&l, p(1), d), None);
         }
+    }
+
+    #[test]
+    fn drag_resizes_horizontal_split() {
+        // [1 | 2] in 80x24, divider near x=40. Drag it to x=20.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        let vp80 = vp(80, 24);
+        // Drag the divider (initially ~col 40) to column 20.
+        set_ratio_at(&mut t, 40, 12, vp80);
+        let before = compute(&t, vp80)[&p(1)].cols;
+        set_ratio_at(&mut t, 20, 12, vp80);
+        let after = compute(&t, vp80)[&p(1)].cols;
+        assert!(
+            after < before,
+            "left pane should shrink after dragging left"
+        );
+        // ~20 cols wide now.
+        assert!((after as i32 - 20).abs() <= 2);
+    }
+
+    #[test]
+    fn drag_resizes_vertical_split() {
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Vertical);
+        let vp80 = vp(80, 24);
+        set_ratio_at(&mut t, 40, 6, vp80); // drag divider up to row 6
+        let top = compute(&t, vp80)[&p(1)].rows;
+        assert!((top as i32 - 6).abs() <= 2);
     }
 }

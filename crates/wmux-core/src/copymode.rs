@@ -94,6 +94,12 @@ impl CopyMode {
             CopyKey::PageDown => {
                 self.cursor.row = (self.cursor.row + self.height).min(max_row);
             }
+            CopyKey::HalfPageUp => {
+                self.cursor.row = self.cursor.row.saturating_sub(self.height / 2);
+            }
+            CopyKey::HalfPageDown => {
+                self.cursor.row = (self.cursor.row + self.height / 2).min(max_row);
+            }
             CopyKey::Home => {
                 self.cursor.col = 0;
             }

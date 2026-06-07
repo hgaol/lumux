@@ -134,6 +134,14 @@ where
         }
     }
     let _ = reader_handle.join();
+    // Disable mouse reporting before the terminal is restored (harmless if it
+    // was never enabled).
+    {
+        use std::io::Write;
+        let mut out = io::stdout();
+        let _ = out.write_all(wmux_core::mouse::DISABLE.as_bytes());
+        let _ = out.flush();
+    }
     Ok(())
 }
 

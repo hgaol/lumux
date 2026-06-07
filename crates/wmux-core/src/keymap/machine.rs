@@ -38,6 +38,9 @@ pub enum CopyKey {
     Right,
     PageUp,
     PageDown,
+    /// Half-page scroll (tmux copy-mode-vi u/d).
+    HalfPageUp,
+    HalfPageDown,
     Home,
     End,
     /// Begin/extend a selection at the cursor (Space / 'v').
@@ -171,6 +174,9 @@ fn copy_key(key: &Key) -> Option<CopyKey> {
         KeyCode::Char('j') => CopyKey::Down,
         KeyCode::Char('h') => CopyKey::Left,
         KeyCode::Char('l') => CopyKey::Right,
+        // vi half-page scroll (tmux copy-mode-vi u/d).
+        KeyCode::Char('u') => CopyKey::HalfPageUp,
+        KeyCode::Char('d') => CopyKey::HalfPageDown,
         _ => return None,
     };
     Some(ck)

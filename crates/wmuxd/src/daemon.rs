@@ -84,6 +84,11 @@ impl<S: PtySystem> Daemon<S> {
         self.config.scrollback
     }
 
+    /// Whether mouse reporting is enabled in the active config.
+    pub fn mouse_enabled(&self) -> bool {
+        self.config.mouse
+    }
+
     /// Resolve a shell argv: explicit profile name, else config default, else
     /// the environment default.
     fn resolve_shell(&self, name: Option<&str>) -> Vec<String> {
