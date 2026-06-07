@@ -422,3 +422,30 @@ fn split_inherits_current_directory() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn example_parity_config_parses_and_binds() {
+    // The shipped example config must always parse and produce the expected
+    // tmux-parity bindings (guards against regressions in the config surface).
+    let toml = include_str!("../../../examples/config.toml");
+    let cfg = wmux_core::config::Config::from_toml(toml).expect("example config parses");
+    assert_eq!(cfg.prefix, "C-b");
+    assert!(cfg.mouse);
+    assert_eq!(cfg.scrollback, 10000);
+    assert_eq!(cfg.base_index, 1);
+    assert_eq!(cfg.status_justify, "centre");
+    assert_eq!(cfg.status_bg, "colour24");
+    // Bindings compile into a usable table (prefix + root nav + reload).
+    let b = cfg.to_bindings().expect("bindings build");
+    use wmux_core::keymap::{Action, Key, KeyCode};
+    assert_eq!(b.lookup(&Key::char('|')), Some(&Action::SplitHorizontal));
+    assert_eq!(b.lookup(&Key::char('r')), Some(&Action::ReloadConfig));
+    assert_eq!(
+        b.lookup_root(&Key {
+            code: KeyCode::Left,
+            ctrl: false,
+            alt: true
+        }),
+        Some(&Action::SelectPaneLeft)
+    );
+}

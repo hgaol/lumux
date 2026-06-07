@@ -1,0 +1,63 @@
+# wmux configuration — tmux-parity example.
+#
+# Mirrors a typical ~/.tmux.conf: Ctrl-b prefix, |/- splits, Alt+Arrow pane
+# navigation, mouse on, a 10k scrollback, base-index 1, prefix-r reload, vi
+# copy keys, and a styled "REMOTE / Session / clock" status bar.
+#
+# Place at: %APPDATA%\wmux\config.toml (Windows) or
+#           ~/.config/wmux/config.toml (Linux/macOS).
+# Reload live with:  wmux source-file <path>   (or prefix + r)
+#
+# NOTE: in TOML, all top-level keys must appear BEFORE any [table] header.
+# Keep the scalar settings below above the [bindings] / [root_bindings] /
+# [[shells]] sections.
+
+# --- Prefix ---------------------------------------------------------------
+prefix = "C-b"
+
+# --- Behavior -------------------------------------------------------------
+mouse = true            # click to select, wheel to scroll history, drag to resize
+scrollback = 10000      # history lines per pane
+base_index = 1          # number windows/panes from 1
+
+# --- Status bar (styled, tmux-like) ---------------------------------------
+# Centered "Session: NAME", a red REMOTE badge on the left, clock on the right.
+status_justify = "centre"
+status_bg = "colour24"
+status_fg = "white"
+status_left = "#[fg=white,bg=colour124,bold] REMOTE #[bg=colour24,fg=green] Session: #S "
+status_right = "#[fg=cyan]%H:%M #[fg=yellow]%d-%b-%y"
+# When centre-justified, the middle shows the current window name (#W).
+status_format = "[#S] #W"
+
+# --- Shell profiles -------------------------------------------------------
+# default_shell picks one of the profiles below; omit to use the system shell.
+# On Windows you'll typically want one of these. Uncomment to use:
+#
+# default_shell = "ps5"
+#
+# [[shells]]
+# name = "ps5"
+# argv = ["powershell.exe", "-NoLogo"]
+#
+# [[shells]]
+# name = "cmd"
+# argv = ["cmd.exe"]
+#
+# [[shells]]
+# name = "pwsh"
+# argv = ["pwsh.exe"]
+
+# --- Prefixed key bindings (after Ctrl-b) ---------------------------------
+[bindings]
+"|" = "split-horizontal"   # side-by-side
+"-" = "split-vertical"     # top/bottom
+"r" = "reload-config"      # re-source this file and flash a message
+
+# --- Root bindings (no prefix needed) -------------------------------------
+# Hold Alt (Option on macOS) + an arrow to jump panes instantly.
+[root_bindings]
+"M-Left" = "select-pane-left"
+"M-Right" = "select-pane-right"
+"M-Up" = "select-pane-up"
+"M-Down" = "select-pane-down"

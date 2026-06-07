@@ -52,24 +52,44 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `c` | new window |
 | `n` / `p` | next / previous window |
 | `0`–`9` | select window by index |
+| arrows | select pane in that direction |
 | `x` | kill the active pane |
 | `d` | detach (session keeps running) |
 | `[` | enter copy-mode |
+| `r` | reload the config file (flashes a confirmation) |
 | `Ctrl-b` | send a literal `Ctrl-b` to the shell |
 
+**Without the prefix** (configurable root bindings): e.g. `Alt+Arrow` jumps
+between panes instantly. With `mouse = true`, click selects a pane, the wheel
+scrolls into copy-mode history, and dragging a divider resizes panes.
+
 **Copy-mode:** arrows / PageUp / PageDown / Home / End or vi keys (`hjkl`) to
-move; `Space` or `v` starts a selection; `Enter` or `y` yanks (and copies to
-your local terminal's clipboard via OSC-52); `q` or `Escape` exits.
+move; `u` / `d` half-page scroll; `Space` or `v` starts a selection; `Enter` or
+`y` yanks (and copies to your local terminal's clipboard via OSC-52); `q` or
+`Escape` exits.
 
 ## Configuration
 
 TOML at `%APPDATA%\wmux\config.toml` (Windows) or
-`$XDG_CONFIG_HOME/wmux/config.toml` (Linux); override with `$WMUX_CONFIG`.
+`$XDG_CONFIG_HOME/wmux/config.toml` (Linux/macOS); override with `$WMUX_CONFIG`.
+A complete tmux-parity example is in [`examples/config.toml`](examples/config.toml).
+
+In TOML, all top-level keys must come **before** any `[table]` header — keep the
+scalar settings above the `[bindings]` / `[root_bindings]` / `[[shells]]`
+sections.
 
 ```toml
 prefix = "C-a"            # change the prefix to Ctrl-a
 scrollback = 5000         # lines of history per pane
+mouse = true              # click/scroll/drag
+base_index = 1            # number windows/panes from 1
 default_shell = "ps5"
+
+# Styled status bar (tmux format tokens: #S #W #H, %H:%M, #[fg=,bg=,bold])
+status_justify = "centre"
+status_bg = "colour24"
+status_left = "#[fg=white,bg=colour124,bold] REMOTE #[bg=colour24,fg=green] Session: #S "
+status_right = "#[fg=cyan]%H:%M #[fg=yellow]%d-%b-%y"
 
 [[shells]]
 name = "ps5"
@@ -85,9 +105,16 @@ argv = ["pwsh.exe"]
 
 [bindings]
 "C-s" = "split-vertical"   # add a custom binding after the prefix
+"r" = "reload-config"
+
+[root_bindings]            # fire without the prefix (tmux bind -n)
+"M-Left" = "select-pane-left"
+"M-Right" = "select-pane-right"
+"M-Up" = "select-pane-up"
+"M-Down" = "select-pane-down"
 ```
 
-Reload without restarting: `wmux source-file <path>`.
+Reload without restarting: `wmux source-file <path>` (or prefix + `r`).
 
 ## Building
 

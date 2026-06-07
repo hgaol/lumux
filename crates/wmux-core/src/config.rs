@@ -300,4 +300,12 @@ prefix = "C-a"
         let c = Config::default();
         assert_eq!(c.shell_argv(Some("nonexistent")), None);
     }
+
+    #[test]
+    fn parses_base_index_and_mouse() {
+        let c = Config::from_toml("base_index = 1\nmouse = true\nscrollback = 10000\n").unwrap();
+        assert_eq!(c.base_index, 1);
+        assert!(c.mouse);
+        assert_eq!(c.scrollback, 10000);
+    }
 }
