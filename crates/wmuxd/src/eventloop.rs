@@ -141,6 +141,10 @@ where
         let (session, size) = match self.resolve_attach(&first) {
             Some(v) => v,
             None => {
+                // Spawn failed (bad shell argv) or malformed first message.
+                let _ = out.send(ServerMsg::Error(
+                    "failed to start session (check the shell command)".into(),
+                ));
                 let _ = reply.send(0);
                 return;
             }
@@ -160,7 +164,9 @@ where
     }
 
     /// Determine the session+size for an attach/new-session first message,
-    /// spawning the session if needed.
+    /// spawning the session if needed. Returns None if spawning failed (e.g. a
+    /// bad shell argv) so the caller can reject the client cleanly instead of
+    /// crashing the daemon.
     fn resolve_attach(&mut self, first: &ClientMsg) -> Option<(SessionId, PtySize)> {
         match first {
             ClientMsg::Attach { session, size } => {
@@ -173,32 +179,38 @@ where
                     Some((sid, sz))
                 } else {
                     let name = session.clone().unwrap_or_else(|| "0".into());
-                    Some((self.spawn_session(name, None, sz), sz))
+                    Some((self.spawn_session(name, None, sz)?, sz))
                 }
             }
             ClientMsg::NewSession { name, shell, size } => {
                 let sz: PtySize = (*size).into();
                 let shell = shell.clone().map(|s| vec![s]);
                 let name = name.clone().unwrap_or_else(|| "0".into());
-                Some((self.spawn_session(name, shell, sz), sz))
+                Some((self.spawn_session(name, shell, sz)?, sz))
             }
             _ => None,
         }
     }
 
+    /// Spawn a new session's first pane. Returns None (logging the error) if the
+    /// PTY/shell could not be started, rather than panicking the daemon.
     fn spawn_session(
         &mut self,
         name: String,
         shell: Option<Vec<String>>,
         size: PtySize,
-    ) -> SessionId {
-        let (sid, pid, reader) = self
-            .daemon
-            .new_session(name, shell, size)
-            .expect("spawn session pty");
-        self.pane_session.insert(pid, sid);
-        spawn_pane_reader(pid, reader, self.tx.clone());
-        sid
+    ) -> Option<SessionId> {
+        match self.daemon.new_session(name, shell, size) {
+            Ok((sid, pid, reader)) => {
+                self.pane_session.insert(pid, sid);
+                spawn_pane_reader(pid, reader, self.tx.clone());
+                Some(sid)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to spawn session shell");
+                None
+            }
+        }
     }
 
     fn on_input(&mut self, client_id: u64, msg: ClientMsg) {

@@ -28,9 +28,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - uses: Swatinem/rust-cache@v2
       - name: build
         run: cargo build --workspace
-      # Phase 10+ enables the ConPTY / named-pipe integration tests here.
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test core
         run: cargo test -p wmux-core
+      # ConPTY / named-pipe integration tests run on the real OS here, since
+      # they cannot run on the Linux dev box or in cross-compilation.
+      - name: test windows integration
+        run: cargo test -p wmuxd --test win_integration
+
+  cross-check-windows:
+    name: linux -> windows cross-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@v2
+      # Guards the Windows backend from bit-rot on PRs built only on Linux.
+      - name: cargo check (msvc target)
+        run: cargo check --workspace --target x86_64-pc-windows-msvc

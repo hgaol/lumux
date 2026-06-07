@@ -315,3 +315,35 @@ fn source_file_rebinds_prefix_live() {
     );
     let _ = std::fs::remove_file(&cfg_path);
 }
+
+#[test]
+fn bad_shell_argv_does_not_crash_daemon() {
+    let path = start_daemon();
+
+    // First client requests a session with a nonexistent shell. Depending on
+    // the platform, openpty may succeed and the child then fail to exec (its
+    // pane dies), or the spawn may error outright. Either way the daemon must
+    // NOT crash.
+    let mut bad = TestClient::connect(&path);
+    bad.send(&ClientMsg::NewSession {
+        name: Some("bad".into()),
+        shell: Some("/no/such/shell/wmux-nonexistent".into()),
+        size: size(),
+    });
+    // Drain whatever comes back (Attached+exit event, or Error); we don't
+    // assert the specific shape — only that the daemon stays up.
+    bad.collect_until(Duration::from_secs(2), |_| false);
+    drop(bad);
+
+    // The daemon must still be alive: a good session works.
+    let mut good = TestClient::connect(&path);
+    good.send(&ClientMsg::NewSession {
+        name: Some("good".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    let (ok, _) = good.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    assert!(ok, "daemon must survive a bad-shell client and serve the next one");
+}
