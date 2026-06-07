@@ -39,10 +39,7 @@ impl CopyMode {
         let top = combined.saturating_sub(h);
         Self {
             top,
-            cursor: Pos {
-                row: top,
-                col: 0,
-            },
+            cursor: Pos { row: top, col: 0 },
             anchor: None,
             height: h,
         }

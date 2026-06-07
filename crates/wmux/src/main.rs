@@ -15,7 +15,11 @@ mod term_unix;
 mod term_win;
 
 #[derive(Parser)]
-#[command(name = "wmux", version, about = "A tmux-like terminal multiplexer for the Windows host")]
+#[command(
+    name = "wmux",
+    version,
+    about = "A tmux-like terminal multiplexer for the Windows host"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
@@ -60,9 +64,7 @@ enum Command {
         keys: String,
     },
     /// Reload configuration from a TOML file.
-    SourceFile {
-        path: String,
-    },
+    SourceFile { path: String },
 }
 
 fn main() -> anyhow::Result<()> {

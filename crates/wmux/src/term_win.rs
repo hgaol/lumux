@@ -40,9 +40,10 @@ impl RawTerminal {
             GetConsoleMode(out_handle, &mut orig_out);
 
             // Output: VT processing on, keep processed output.
-            let new_out =
-                orig_out | ENABLE_VIRTUAL_TERMINAL_PROCESSING | ENABLE_PROCESSED_OUTPUT
-                    | DISABLE_NEWLINE_AUTO_RETURN;
+            let new_out = orig_out
+                | ENABLE_VIRTUAL_TERMINAL_PROCESSING
+                | ENABLE_PROCESSED_OUTPUT
+                | DISABLE_NEWLINE_AUTO_RETURN;
             SetConsoleMode(out_handle, new_out);
 
             // Input: VT input on; disable line input/echo/processed so keys come

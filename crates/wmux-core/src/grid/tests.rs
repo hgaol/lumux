@@ -85,10 +85,7 @@ fn sgr_attributes_are_recorded() {
     let cell_a = &row.cells()[0];
     let cell_b = &row.cells()[1];
     assert_eq!(cell_a.str(), "A");
-    assert_eq!(
-        cell_a.attrs().intensity(),
-        termwiz::cell::Intensity::Bold
-    );
+    assert_eq!(cell_a.attrs().intensity(), termwiz::cell::Intensity::Bold);
     // 'B' is back to defaults.
     assert_eq!(cell_b.attrs().intensity(), termwiz::cell::Intensity::Normal);
 }

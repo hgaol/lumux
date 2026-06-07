@@ -51,7 +51,10 @@ fn horizontal_split_draws_vertical_border() {
     // Both pane contents appear, separated by the │ border glyph.
     assert!(row0.contains("LEFT"));
     assert!(row0.contains("RIGHT"));
-    assert!(row0.contains('│'), "expected a vertical border, got {row0:?}");
+    assert!(
+        row0.contains('│'),
+        "expected a vertical border, got {row0:?}"
+    );
 }
 
 #[test]
@@ -121,7 +124,10 @@ fn client_renderer_full_then_incremental() {
         active_pane: p(1),
     };
     let second = cr.render(compose((20, 3), &view2, None));
-    assert!(!second.starts_with("\x1b[2J"), "second render must be a diff");
+    assert!(
+        !second.starts_with("\x1b[2J"),
+        "second render must be a diff"
+    );
     assert!(second.contains('t')); // "one" -> "two"
 }
 

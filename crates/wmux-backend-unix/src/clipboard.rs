@@ -75,7 +75,9 @@ mod tests {
         let mut cb = Osc52Clipboard::new();
         cb.set_text("copied").unwrap();
         let pending = cb.take_pending().unwrap();
-        assert!(String::from_utf8(pending).unwrap().starts_with("\x1b]52;c;"));
+        assert!(String::from_utf8(pending)
+            .unwrap()
+            .starts_with("\x1b]52;c;"));
         assert!(cb.take_pending().is_none(), "taken once");
     }
 }

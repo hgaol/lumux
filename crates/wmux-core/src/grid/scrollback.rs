@@ -69,7 +69,10 @@ mod tests {
         let mut sb = Scrollback::new(3);
         for i in 0..5 {
             let mut r = Row::blank(4);
-            r.set_cell(0, termwiz::cell::Cell::new((b'0' + i) as char, Default::default()));
+            r.set_cell(
+                0,
+                termwiz::cell::Cell::new((b'0' + i) as char, Default::default()),
+            );
             sb.push(r);
         }
         assert_eq!(sb.len(), 3);

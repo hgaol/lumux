@@ -39,7 +39,9 @@ pub fn config_path() -> std::path::PathBuf {
     #[cfg(windows)]
     {
         if let Some(appdata) = std::env::var_os("APPDATA") {
-            return std::path::PathBuf::from(appdata).join("wmux").join("config.toml");
+            return std::path::PathBuf::from(appdata)
+                .join("wmux")
+                .join("config.toml");
         }
     }
     let base = std::env::var_os("XDG_CONFIG_HOME")

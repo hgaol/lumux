@@ -11,7 +11,7 @@ use wmux_core::config::Config;
 use wmux_core::copymode::CopyMode;
 use wmux_core::grid::Grid;
 use wmux_core::keymap::{CopyKey, Keymap};
-use wmux_core::model::{CascadeResult, PaneId, SessionId, Server, SplitDir};
+use wmux_core::model::{CascadeResult, PaneId, Server, SessionId, SplitDir};
 use wmux_core::render::{compose, ClientRenderer, StatusBar, WindowView};
 use wmux_core::traits::{Clipboard, Pty, PtySize, PtySystem, PtyWriter, ShellCommand};
 
@@ -83,19 +83,14 @@ impl<S: PtySystem> Daemon<S> {
     /// Resolve a shell argv: explicit profile name, else config default, else
     /// the environment default.
     fn resolve_shell(&self, name: Option<&str>) -> Vec<String> {
-        self.config
-            .shell_argv(name)
-            .unwrap_or_else(default_shell)
+        self.config.shell_argv(name).unwrap_or_else(default_shell)
     }
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
         self.panes.keys().copied().collect()
     }
 
-    pub fn live_pane_mut(
-        &mut self,
-        id: PaneId,
-    ) -> Option<&mut LivePane<<S::Pty as Pty>::Writer>> {
+    pub fn live_pane_mut(&mut self, id: PaneId) -> Option<&mut LivePane<<S::Pty as Pty>::Writer>> {
         self.panes.get_mut(&id)
     }
 
@@ -113,7 +108,11 @@ impl<S: PtySystem> Daemon<S> {
         };
         let pty = self.pty_system.spawn(&cmd, size)?;
         let (writer, reader) = pty.split()?;
-        let grid = Grid::new(size.cols as usize, size.rows as usize, self.scrollback_lines());
+        let grid = Grid::new(
+            size.cols as usize,
+            size.rows as usize,
+            self.scrollback_lines(),
+        );
         self.panes.insert(
             id,
             LivePane {
@@ -291,7 +290,11 @@ impl<S: PtySystem> Daemon<S> {
             grids: &grids,
             active_pane,
         };
-        let screen = compose((size.cols as usize, size.rows as usize), &view, Some(&status));
+        let screen = compose(
+            (size.cols as usize, size.rows as usize),
+            &view,
+            Some(&status),
+        );
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
     }

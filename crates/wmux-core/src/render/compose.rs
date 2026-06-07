@@ -51,7 +51,11 @@ impl StatusBar {
 pub fn compose(size: (usize, usize), view: &WindowView, status: Option<&StatusBar>) -> Screen {
     let (w, h) = size;
     let mut screen = Screen::new(w, h);
-    let content_rows = if status.is_some() { h.saturating_sub(1) } else { h };
+    let content_rows = if status.is_some() {
+        h.saturating_sub(1)
+    } else {
+        h
+    };
 
     let viewport = Rect::new(0, 0, w as u16, content_rows as u16);
     let rects = layout::compute(view.layout, viewport);
@@ -84,8 +88,10 @@ pub fn compose(size: (usize, usize), view: &WindowView, status: Option<&StatusBa
     }
 
     // Map the active pane's cursor into screen space.
-    if let (Some(rect), Some(grid)) = (rects.get(&view.active_pane), view.grids.get(&view.active_pane))
-    {
+    if let (Some(rect), Some(grid)) = (
+        rects.get(&view.active_pane),
+        view.grids.get(&view.active_pane),
+    ) {
         let (cx, cy) = grid.cursor();
         let sx = rect.x as usize + cx;
         let sy = rect.y as usize + cy;

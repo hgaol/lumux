@@ -197,13 +197,9 @@ impl Grid {
     fn cursor_csi(&mut self, c: Cursor) {
         match c {
             Cursor::Up(n) => self.cursor_y = self.cursor_y.saturating_sub(n as usize),
-            Cursor::Down(n) => {
-                self.cursor_y = (self.cursor_y + n as usize).min(self.height - 1)
-            }
+            Cursor::Down(n) => self.cursor_y = (self.cursor_y + n as usize).min(self.height - 1),
             Cursor::Left(n) => self.cursor_x = self.cursor_x.saturating_sub(n as usize),
-            Cursor::Right(n) => {
-                self.cursor_x = (self.cursor_x + n as usize).min(self.width - 1)
-            }
+            Cursor::Right(n) => self.cursor_x = (self.cursor_x + n as usize).min(self.width - 1),
             Cursor::Position { line, col } => {
                 // OneBased -> zero-based, clamped.
                 self.cursor_y = (line.as_zero_based() as usize).min(self.height - 1);

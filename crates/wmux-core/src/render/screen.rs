@@ -90,7 +90,14 @@ impl Screen {
 
     /// Blit a pane's visible cells into the rectangle at (ox,oy) of size
     /// (cols,rows). Rows/cols beyond the source are left blank.
-    pub fn blit_cells(&mut self, ox: usize, oy: usize, cols: usize, rows: usize, src_rows: &[&[Cell]]) {
+    pub fn blit_cells(
+        &mut self,
+        ox: usize,
+        oy: usize,
+        cols: usize,
+        rows: usize,
+        src_rows: &[&[Cell]],
+    ) {
         for ry in 0..rows {
             let row = src_rows.get(ry);
             for rx in 0..cols {

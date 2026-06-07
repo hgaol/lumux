@@ -85,8 +85,7 @@ impl PaneNode {
             }
             PaneNode::Leaf(_) => false,
             PaneNode::Split { first, second, .. } => {
-                first.split_leaf(target, new_pane, dir)
-                    || second.split_leaf(target, new_pane, dir)
+                first.split_leaf(target, new_pane, dir) || second.split_leaf(target, new_pane, dir)
             }
         }
     }

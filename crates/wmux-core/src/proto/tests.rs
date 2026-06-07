@@ -23,13 +23,18 @@ fn client_messages_roundtrip() {
     roundtrip_client(ClientMsg::NewSession {
         name: None,
         shell: Some("ps5".into()),
-        size: WireSize { cols: 100, rows: 30 },
+        size: WireSize {
+            cols: 100,
+            rows: 30,
+        },
     });
     roundtrip_client(ClientMsg::Input(vec![0x1b, b'[', b'A']));
     roundtrip_client(ClientMsg::Resize(WireSize { cols: 1, rows: 1 }));
     roundtrip_client(ClientMsg::Detach);
     roundtrip_client(ClientMsg::Command(Command::ListSessions));
-    roundtrip_client(ClientMsg::Command(Command::SplitWindow { horizontal: true }));
+    roundtrip_client(ClientMsg::Command(Command::SplitWindow {
+        horizontal: true,
+    }));
     roundtrip_client(ClientMsg::Command(Command::KillSession {
         target: "$1".into(),
     }));
@@ -66,7 +71,10 @@ fn codec_reassembles_frame_split_across_reads() {
         codec.extend(&[*b]);
         let got: Option<ServerMsg> = codec.next_message().unwrap();
         if i + 1 < frame.len() {
-            assert!(got.is_none(), "incomplete frame must yield None at byte {i}");
+            assert!(
+                got.is_none(),
+                "incomplete frame must yield None at byte {i}"
+            );
         } else {
             assert_eq!(got, Some(msg.clone()));
         }
@@ -95,10 +103,7 @@ fn codec_rejects_oversized_length_prefix() {
     // Length prefix claims 1 GiB.
     codec.extend(&(1_000_000_000u32).to_be_bytes());
     codec.extend(&[0u8; 8]);
-    assert!(matches!(
-        codec.next_frame(),
-        Err(FrameError::TooLarge(_))
-    ));
+    assert!(matches!(codec.next_frame(), Err(FrameError::TooLarge(_))));
 }
 
 #[test]
@@ -121,7 +126,10 @@ fn handshake_rejects_version_mismatch() {
 
 #[test]
 fn wire_size_converts_to_pty_size() {
-    let ws = WireSize { cols: 120, rows: 40 };
+    let ws = WireSize {
+        cols: 120,
+        rows: 40,
+    };
     let ps: crate::traits::PtySize = ws.into();
     assert_eq!(ps.cols, 120);
     assert_eq!(ps.rows, 40);

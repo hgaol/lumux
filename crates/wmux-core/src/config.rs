@@ -88,12 +88,13 @@ impl Config {
     /// starting from the tmux defaults.
     pub fn to_bindings(&self) -> Result<Bindings, ConfigError> {
         let mut b = Bindings::tmux_defaults();
-        let prefix = parse_key(&self.prefix).ok_or_else(|| ConfigError::BadKey(self.prefix.clone()))?;
+        let prefix =
+            parse_key(&self.prefix).ok_or_else(|| ConfigError::BadKey(self.prefix.clone()))?;
         b.set_prefix(prefix);
         for (key_str, action_str) in &self.bindings {
             let key = parse_key(key_str).ok_or_else(|| ConfigError::BadKey(key_str.clone()))?;
-            let action =
-                parse_action(action_str).ok_or_else(|| ConfigError::BadAction(action_str.clone()))?;
+            let action = parse_action(action_str)
+                .ok_or_else(|| ConfigError::BadAction(action_str.clone()))?;
             b.bind(key, action);
         }
         Ok(b)

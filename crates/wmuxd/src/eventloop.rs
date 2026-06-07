@@ -21,9 +21,7 @@ use wmux_core::copymode::osc52;
 use wmux_core::keymap::{Action, CopyKey, Reaction};
 use wmux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use wmux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
-use wmux_core::traits::{
-    FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, Transport,
-};
+use wmux_core::traits::{FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, Transport};
 
 use crate::daemon::Daemon;
 
@@ -158,7 +156,8 @@ where
             client_id,
             size: size.into(),
         });
-        self.clients.insert(client_id, ClientHandle { out, session });
+        self.clients
+            .insert(client_id, ClientHandle { out, session });
         let _ = reply.send(client_id);
         self.render_client(client_id);
     }
@@ -568,22 +567,24 @@ fn spawn_client<C: Transport + 'static>(conn: C, tx: Sender<Msg>) -> std::io::Re
     let hello_bytes = reader
         .read_frame()?
         .ok_or_else(|| std::io::Error::other("client closed before handshake"))?;
-    let client_hello: wmux_core::proto::Hello = wmux_core::proto::decode(&hello_bytes)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let client_hello: wmux_core::proto::Hello =
+        wmux_core::proto::decode(&hello_bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
     if let Err(mismatch) = client_hello.check() {
         // Best-effort notice, then drop the connection.
-        let _ = writer.write_frame(&encode(&ServerMsg::Error(mismatch.to_string())).unwrap_or_default());
+        let _ = writer
+            .write_frame(&encode(&ServerMsg::Error(mismatch.to_string())).unwrap_or_default());
         return Err(std::io::Error::other(mismatch.to_string()));
     }
     let server_hello = wmux_core::proto::Hello::current(format!("wmuxd/{}", crate::DAEMON_VERSION));
-    writer.write_frame(&encode(&server_hello).map_err(|e| std::io::Error::other(e.to_string()))?)?;
+    writer
+        .write_frame(&encode(&server_hello).map_err(|e| std::io::Error::other(e.to_string()))?)?;
 
     // First post-handshake frame must be Attach/NewSession.
     let first_bytes = reader
         .read_frame()?
         .ok_or_else(|| std::io::Error::other("client closed before attach"))?;
-    let first: ClientMsg = wmux_core::proto::decode(&first_bytes)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
+    let first: ClientMsg =
+        wmux_core::proto::decode(&first_bytes).map_err(|e| std::io::Error::other(e.to_string()))?;
 
     let (out_tx, out_rx) = channel::<ServerMsg>();
     let (reply_tx, reply_rx) = channel::<u64>();

@@ -51,7 +51,10 @@ pub struct IdParseError;
 
 impl fmt::Display for IdParseError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "invalid wmux id (expected sigil + number, e.g. $1 / @2 / %3)")
+        write!(
+            f,
+            "invalid wmux id (expected sigil + number, e.g. $1 / @2 / %3)"
+        )
     }
 }
 

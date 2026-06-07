@@ -66,10 +66,7 @@ fn kill_last_pane_cascades_to_session_close() {
     let mut srv = Server::new();
     let sid = srv.new_session("s", sh());
     let pane = srv.session(sid).unwrap();
-    let only_pane = pane
-        .window(pane.active_window())
-        .unwrap()
-        .active_pane();
+    let only_pane = pane.window(pane.active_window()).unwrap().active_pane();
     assert_eq!(srv.kill_pane(sid, only_pane), CascadeResult::SessionClosed);
     assert!(srv.session(sid).is_none());
     assert!(srv.is_empty());
@@ -111,7 +108,12 @@ fn window_navigation_wraps() {
 fn pane_focus_navigation_wraps() {
     let mut srv = Server::new();
     let sid = srv.new_session("s", sh());
-    let p0 = srv.session(sid).unwrap().window(srv.session(sid).unwrap().active_window()).unwrap().active_pane();
+    let p0 = srv
+        .session(sid)
+        .unwrap()
+        .window(srv.session(sid).unwrap().active_window())
+        .unwrap()
+        .active_pane();
     let p1 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
     let win = srv.session_mut(sid).unwrap().active_window_mut();
     assert_eq!(win.active_pane(), p1);
@@ -178,7 +180,9 @@ fn attach_detach_clients() {
 #[test]
 fn attach_to_missing_session_fails() {
     let mut srv = Server::new();
-    assert!(srv.attach_client(SessionId(123), PtySize::default()).is_none());
+    assert!(srv
+        .attach_client(SessionId(123), PtySize::default())
+        .is_none());
 }
 
 #[test]
@@ -200,7 +204,11 @@ fn killing_session_drops_its_clients() {
     srv.attach_client(sid, PtySize::default()).unwrap();
     assert_eq!(srv.client_count(), 1);
     srv.kill_session(sid);
-    assert_eq!(srv.client_count(), 0, "clients of a killed session are dropped");
+    assert_eq!(
+        srv.client_count(),
+        0,
+        "clients of a killed session are dropped"
+    );
 }
 
 /// Pseudo-property test: a randomized-ish sequence of splits and kills never

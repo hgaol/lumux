@@ -339,9 +339,10 @@ fn source_file_rebinds_prefix_live() {
     c.send(&ClientMsg::Command(Command::SourceFile {
         path: cfg_path.to_string_lossy().to_string(),
     }));
-    let (sourced, _) = c.collect_until(Duration::from_secs(2), |m| {
-        matches!(m, ServerMsg::Reply(t) if t.contains("sourced"))
-    });
+    let (sourced, _) = c.collect_until(
+        Duration::from_secs(2),
+        |m| matches!(m, ServerMsg::Reply(t) if t.contains("sourced")),
+    );
     assert!(sourced, "source-file should reply with confirmation");
 
     // Now Ctrl-a | should split (new prefix); a border appears.
@@ -383,5 +384,8 @@ fn bad_shell_argv_does_not_crash_daemon() {
     let (ok, _) = good.collect_until(Duration::from_secs(2), |m| {
         matches!(m, ServerMsg::Attached { .. })
     });
-    assert!(ok, "daemon must survive a bad-shell client and serve the next one");
+    assert!(
+        ok,
+        "daemon must survive a bad-shell client and serve the next one"
+    );
 }

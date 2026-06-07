@@ -170,12 +170,18 @@ mod tests {
     #[test]
     fn decodes_arrows_csi() {
         assert_eq!(decode_key(b"\x1b[A").unwrap(), (Key::plain(KeyCode::Up), 3));
-        assert_eq!(decode_key(b"\x1b[D").unwrap(), (Key::plain(KeyCode::Left), 3));
+        assert_eq!(
+            decode_key(b"\x1b[D").unwrap(),
+            (Key::plain(KeyCode::Left), 3)
+        );
     }
 
     #[test]
     fn decodes_arrows_ss3() {
-        assert_eq!(decode_key(b"\x1bOB").unwrap(), (Key::plain(KeyCode::Down), 3));
+        assert_eq!(
+            decode_key(b"\x1bOB").unwrap(),
+            (Key::plain(KeyCode::Down), 3)
+        );
     }
 
     #[test]
@@ -192,7 +198,10 @@ mod tests {
 
     #[test]
     fn bare_escape_and_alt() {
-        assert_eq!(decode_key(b"\x1b").unwrap(), (Key::plain(KeyCode::Escape), 1));
+        assert_eq!(
+            decode_key(b"\x1b").unwrap(),
+            (Key::plain(KeyCode::Escape), 1)
+        );
         let (k, n) = decode_key(b"\x1bx").unwrap();
         assert_eq!(n, 2);
         assert!(k.alt);

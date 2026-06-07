@@ -17,7 +17,10 @@ use crate::term_win::RawTerminal;
 
 /// Perform the protocol handshake: send our Hello, read the daemon's, and check
 /// versions. Shared by attach and the control client.
-pub fn handshake<R: FrameReader, W: FrameWriter>(reader: &mut R, writer: &mut W) -> anyhow::Result<()> {
+pub fn handshake<R: FrameReader, W: FrameWriter>(
+    reader: &mut R,
+    writer: &mut W,
+) -> anyhow::Result<()> {
     let hello = Hello::current(format!("wmux/{}", env!("CARGO_PKG_VERSION")));
     writer.write_frame(&encode(&hello)?)?;
     let reply = reader
