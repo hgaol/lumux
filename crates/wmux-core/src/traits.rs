@@ -69,6 +69,11 @@ pub trait PtyWriter: Send {
     fn resize(&mut self, size: PtySize) -> io::Result<()>;
     /// Best-effort: has the child exited? `Some(code)` if so.
     fn try_wait(&mut self) -> io::Result<Option<i32>>;
+    /// The child process id, if known. Used to resolve the pane's current
+    /// working directory so splits/new-windows can inherit it.
+    fn child_pid(&self) -> Option<u32> {
+        None
+    }
 }
 
 /// Spawns [`Pty`] instances. Backend-provided.

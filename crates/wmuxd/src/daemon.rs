@@ -99,16 +99,19 @@ impl<S: PtySystem> Daemon<S> {
     }
 
     /// Spawn a PTY for a pane id that exists in the model, sizing it to `size`.
-    /// Returns the reader so the event loop can pump the pane's output.
+    /// Returns the reader so the event loop can pump the pane's output. `cwd`
+    /// sets the child's working directory (used to inherit the active pane's
+    /// directory on splits/new-windows).
     fn spawn_pane(
         &mut self,
         id: PaneId,
         shell: &[String],
         size: PtySize,
+        cwd: Option<String>,
     ) -> std::io::Result<<S::Pty as Pty>::Reader> {
         let cmd = ShellCommand {
             argv: shell.to_vec(),
-            cwd: None,
+            cwd,
         };
         let pty = self.pty_system.spawn(&cmd, size)?;
         let (writer, reader) = pty.split()?;
@@ -128,6 +131,20 @@ impl<S: PtySystem> Daemon<S> {
         Ok(reader)
     }
 
+    /// The current working directory of a pane's shell, if resolvable. Used so
+    /// splits and new windows open where the active pane is (tmux
+    /// `#{pane_current_path}`).
+    pub fn pane_cwd(&self, id: PaneId) -> Option<String> {
+        let pid = self.panes.get(&id)?.writer.child_pid()?;
+        resolve_cwd(pid)
+    }
+
+    /// Cwd of the active pane in a session (for inheriting on split/new-window).
+    fn active_pane_cwd(&self, session: SessionId) -> Option<String> {
+        let pid = self.active_pane(session)?;
+        self.pane_cwd(pid)
+    }
+
     /// Create a new session with its first pane spawned. Returns (session, pane)
     /// and the reader for the pane so the event loop can start pumping it.
     pub fn new_session(
@@ -142,7 +159,7 @@ impl<S: PtySystem> Daemon<S> {
             let s = self.server.session(sid).unwrap();
             s.window(s.active_window()).unwrap().active_pane()
         };
-        let reader = self.spawn_pane(pid, &shell, size)?;
+        let reader = self.spawn_pane(pid, &shell, size, None)?;
         Ok((sid, pid, reader))
     }
 
@@ -416,11 +433,13 @@ impl<S: PtySystem> Daemon<S> {
         dir: SplitDir,
         size: PtySize,
     ) -> std::io::Result<Option<(PaneId, <S::Pty as Pty>::Reader)>> {
+        // Capture the current pane's cwd before the split changes the active pane.
+        let cwd = self.active_pane_cwd(session);
         let shell = self.resolve_shell(None);
         let Some(pid) = self.server.split_active(session, shell.clone(), dir) else {
             return Ok(None);
         };
-        let reader = self.spawn_pane(pid, &shell, size)?;
+        let reader = self.spawn_pane(pid, &shell, size, cwd)?;
         Ok(Some((pid, reader)))
     }
 
@@ -431,6 +450,7 @@ impl<S: PtySystem> Daemon<S> {
         session: SessionId,
         size: PtySize,
     ) -> std::io::Result<Option<(PaneId, <S::Pty as Pty>::Reader)>> {
+        let cwd = self.active_pane_cwd(session);
         let shell = self.resolve_shell(None);
         let Some(wid) = self.server.new_window(session, "", shell.clone()) else {
             return Ok(None);
@@ -439,7 +459,7 @@ impl<S: PtySystem> Daemon<S> {
             let s = self.server.session(session).unwrap();
             s.window(wid).unwrap().active_pane()
         };
-        let reader = self.spawn_pane(pid, &shell, size)?;
+        let reader = self.spawn_pane(pid, &shell, size, cwd)?;
         Ok(Some((pid, reader)))
     }
 
@@ -486,6 +506,28 @@ impl Clipboard for NullClipboard {
     fn set_text(&mut self, _text: &str) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// Resolve a process's current working directory.
+#[cfg(target_os = "linux")]
+fn resolve_cwd(pid: u32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/cwd"))
+        .ok()
+        .map(|p| p.to_string_lossy().into_owned())
+}
+
+/// macOS/BSD: no /proc. cwd inheritance is best-effort and skipped for now (a
+/// libproc-based lookup can be added later); new panes open in the daemon's dir.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn resolve_cwd(_pid: u32) -> Option<String> {
+    None
+}
+
+/// Windows: process cwd query (e.g. via NtQueryInformationProcess) is a
+/// follow-up; new panes open in the daemon's directory for now.
+#[cfg(windows)]
+fn resolve_cwd(_pid: u32) -> Option<String> {
+    None
 }
 
 /// 0-based position of `wid` within its session's window list.

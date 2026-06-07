@@ -81,6 +81,10 @@ impl PtyWriter for UnixPtyWriter {
             None => Ok(None),
         }
     }
+
+    fn child_pid(&self) -> Option<u32> {
+        self.inner.lock().unwrap().child.process_id()
+    }
 }
 
 /// Spawns [`UnixPty`]s.

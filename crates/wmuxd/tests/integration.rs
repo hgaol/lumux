@@ -389,3 +389,36 @@ fn bad_shell_argv_does_not_crash_daemon() {
         "daemon must survive a bad-shell client and serve the next one"
     );
 }
+
+#[test]
+fn split_inherits_current_directory() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cwd".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // cd into a unique temp dir in the first pane, and wait for the prompt.
+    let dir = std::env::temp_dir().join(format!("wmux-cwd-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    c.send(&ClientMsg::Input(
+        format!("cd {}\n", dir.display()).into_bytes(),
+    ));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Split: the new pane's shell should start in the same directory.
+    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Print the new pane's cwd; it must contain our unique dir name.
+    c.send(&ClientMsg::Input(b"pwd\n".to_vec()));
+    let (_done, vt) = c.collect_until(Duration::from_secs(3), |_| false);
+    let marker = dir.file_name().unwrap().to_string_lossy();
+    assert!(
+        vt.contains(&*marker),
+        "split pane should inherit cwd ({marker}); got:\n{vt}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
