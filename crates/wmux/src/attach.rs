@@ -1,28 +1,47 @@
 //! The attach client: connect to the daemon (auto-spawning it if needed), put
 //! the terminal in raw mode, and shuttle bytes both ways until detach.
-
-#![cfg(unix)]
+//!
+//! The byte-shuttling core ([`run_attach`]) is platform-independent — it works
+//! over any split [`FrameReader`]/[`FrameWriter`]. The per-OS entry points wire
+//! up the right transport (Unix socket / named pipe) and raw-terminal guard.
 
 use std::io::{self, Read, Write};
-use std::path::Path;
-use std::time::{Duration, Instant};
 
-use wmux_backend_unix::{default_socket_path, UnixTransport};
 use wmux_core::proto::{encode, ClientMsg, ServerMsg, WireSize};
-use wmux_core::traits::{FrameReader, FrameWriter, Transport};
+use wmux_core::traits::{FrameReader, FrameWriter};
 
+#[cfg(unix)]
 use crate::term_unix::RawTerminal;
+#[cfg(windows)]
+use crate::term_win::RawTerminal;
 
-/// Attach to (or create) a session and run until detached.
-pub fn attach(session: Option<String>, new_session: bool, shell: Option<String>) -> anyhow::Result<()> {
-    let path = socket_path();
-    let transport = connect_or_spawn(&path)?;
-    let (mut reader, mut writer) = transport.split()?;
+/// Attach to (or create) a session and run until detached. Platform glue picks
+/// the transport and connects (auto-spawning the daemon).
+pub fn attach(
+    session: Option<String>,
+    new_session: bool,
+    shell: Option<String>,
+) -> anyhow::Result<()> {
+    let (reader, writer) = platform::connect()?;
+    run_attach(reader, writer, session, new_session, shell)
+}
 
+/// Platform-independent attach loop over a split transport.
+fn run_attach<R, W>(
+    mut reader: R,
+    mut writer: W,
+    session: Option<String>,
+    new_session: bool,
+    shell: Option<String>,
+) -> anyhow::Result<()>
+where
+    R: FrameReader + 'static,
+    W: FrameWriter,
+{
     let size = RawTerminal::size();
     let first = if new_session {
         ClientMsg::NewSession {
-            name: session.clone(),
+            name: session,
             shell,
             size: WireSize {
                 cols: size.cols,
@@ -31,7 +50,7 @@ pub fn attach(session: Option<String>, new_session: bool, shell: Option<String>)
         }
     } else {
         ClientMsg::Attach {
-            session: session.clone(),
+            session,
             size: WireSize {
                 cols: size.cols,
                 rows: size.rows,
@@ -40,13 +59,12 @@ pub fn attach(session: Option<String>, new_session: bool, shell: Option<String>)
     };
     writer.write_frame(&encode(&first)?)?;
 
-    // Enter raw mode only once we're talking to the daemon.
     let _term = RawTerminal::enter()?;
 
     // Reader thread: daemon frames -> stdout.
     let reader_handle = std::thread::spawn(move || {
         let mut stdout = io::stdout();
-        #[allow(clippy::while_let_loop)] // body breaks on detach/event, not just EOF
+        #[allow(clippy::while_let_loop)] // breaks on detach/event, not just EOF
         loop {
             match reader.read_frame() {
                 Ok(Some(bytes)) => match wmux_core::proto::decode::<ServerMsg>(&bytes) {
@@ -56,10 +74,7 @@ pub fn attach(session: Option<String>, new_session: bool, shell: Option<String>)
                         }
                         let _ = stdout.flush();
                     }
-                    Ok(ServerMsg::Detached) | Ok(ServerMsg::Event(_)) => {
-                        // Detached or session closed -> end the client.
-                        break;
-                    }
+                    Ok(ServerMsg::Detached) | Ok(ServerMsg::Event(_)) => break,
                     Ok(ServerMsg::Reply(text)) => {
                         let _ = stdout.write_all(text.as_bytes());
                         let _ = stdout.flush();
@@ -84,8 +99,10 @@ pub fn attach(session: Option<String>, new_session: bool, shell: Option<String>)
             Ok(n) => n,
             Err(_) => break,
         };
-        let msg = ClientMsg::Input(buf[..n].to_vec());
-        if writer.write_frame(&encode(&msg)?).is_err() {
+        if writer
+            .write_frame(&encode(&ClientMsg::Input(buf[..n].to_vec()))?)
+            .is_err()
+        {
             break;
         }
     }
@@ -93,43 +110,82 @@ pub fn attach(session: Option<String>, new_session: bool, shell: Option<String>)
     Ok(())
 }
 
-fn socket_path() -> std::path::PathBuf {
-    std::env::var_os("WMUX_SOCK")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(default_socket_path)
-}
+#[cfg(unix)]
+mod platform {
+    use std::path::Path;
+    use std::time::{Duration, Instant};
+    use wmux_backend_unix::{default_socket_path, UnixReader, UnixTransport, UnixWriter};
+    use wmux_core::traits::Transport;
 
-/// Connect to the daemon, spawning it (detached) and retrying briefly if the
-/// socket isn't there yet.
-fn connect_or_spawn(path: &Path) -> anyhow::Result<UnixTransport> {
-    if let Ok(t) = UnixTransport::connect(path) {
-        return Ok(t);
+    pub fn connect() -> anyhow::Result<(UnixReader, UnixWriter)> {
+        let path = std::env::var_os("WMUX_SOCK")
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(default_socket_path);
+        let transport = connect_or_spawn(&path)?;
+        Ok(transport.split()?)
     }
-    spawn_daemon()?;
-    // Retry for up to ~2s while the daemon binds.
-    let deadline = Instant::now() + Duration::from_secs(2);
-    while Instant::now() < deadline {
+
+    fn connect_or_spawn(path: &Path) -> anyhow::Result<UnixTransport> {
         if let Ok(t) = UnixTransport::connect(path) {
             return Ok(t);
         }
-        std::thread::sleep(Duration::from_millis(25));
+        spawn_daemon()?;
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while Instant::now() < deadline {
+            if let Ok(t) = UnixTransport::connect(path) {
+                return Ok(t);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        anyhow::bail!("failed to connect to wmux daemon at {}", path.display())
     }
-    anyhow::bail!("failed to connect to wmux daemon at {}", path.display())
+
+    fn spawn_daemon() -> anyhow::Result<()> {
+        super::spawn_daemon_process("wmuxd")
+    }
 }
 
-/// Spawn `wmuxd` detached from this process/console.
-fn spawn_daemon() -> anyhow::Result<()> {
+#[cfg(windows)]
+mod platform {
+    use std::time::{Duration, Instant};
+    use wmux_backend_win::{default_pipe_path, PipeReader, PipeTransport, PipeWriter};
+    use wmux_core::traits::Transport;
+
+    pub fn connect() -> anyhow::Result<(PipeReader, PipeWriter)> {
+        let path = std::env::var("WMUX_PIPE").unwrap_or_else(|_| default_pipe_path());
+        let transport = connect_or_spawn(&path)?;
+        Ok(transport.split()?)
+    }
+
+    fn connect_or_spawn(path: &str) -> anyhow::Result<PipeTransport> {
+        if let Ok(t) = PipeTransport::connect(path) {
+            return Ok(t);
+        }
+        super::spawn_daemon_process("wmuxd.exe")?;
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while Instant::now() < deadline {
+            if let Ok(t) = PipeTransport::connect(path) {
+                return Ok(t);
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        anyhow::bail!("failed to connect to wmux daemon pipe {path}")
+    }
+}
+
+/// Spawn the daemon binary detached from this process. Looks for a sibling
+/// binary next to the client first, then falls back to PATH.
+fn spawn_daemon_process(exe_name: &str) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
-    // Prefer a sibling `wmuxd` next to this binary; fall back to PATH.
     let exe = std::env::current_exe().ok();
-    let wmuxd = exe
+    let daemon = exe
         .as_ref()
         .and_then(|p| p.parent())
-        .map(|d| d.join("wmuxd"))
+        .map(|d| d.join(exe_name))
         .filter(|p| p.exists())
-        .unwrap_or_else(|| "wmuxd".into());
+        .unwrap_or_else(|| exe_name.into());
 
-    Command::new(wmuxd)
+    Command::new(daemon)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

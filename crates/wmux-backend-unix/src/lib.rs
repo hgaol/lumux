@@ -10,7 +10,7 @@ mod transport;
 
 pub use clipboard::{MemoryClipboard, Osc52Clipboard};
 pub use pty::{UnixPty, UnixPtySystem, UnixPtyWriter};
-pub use transport::{UnixSocketListener, UnixTransport};
+pub use transport::{UnixReader, UnixSocketListener, UnixTransport, UnixWriter};
 
 /// Default daemon socket path for the current user under the runtime dir.
 pub fn default_socket_path() -> std::path::PathBuf {

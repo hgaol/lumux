@@ -34,6 +34,13 @@ fn run() -> anyhow::Result<()> {
 
 #[cfg(windows)]
 fn run() -> anyhow::Result<()> {
-    // Phase 10 wires the ConPTY + named-pipe backend here.
-    anyhow::bail!("wmuxd: Windows backend not yet implemented (Phase 10)")
+    use wmux_backend_win::{default_pipe_path, PipeListener, WinPtySystem};
+
+    let path = std::env::var("WMUX_PIPE").unwrap_or_else(|_| default_pipe_path());
+    tracing::info!(%path, "binding daemon named pipe");
+    let listener = PipeListener::bind(path)?;
+    let config = wmuxd::load_config();
+    wmuxd::run_with_config(WinPtySystem, listener, config)?;
+    tracing::info!("wmuxd exiting (no sessions, no clients)");
+    Ok(())
 }

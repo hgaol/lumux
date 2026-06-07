@@ -7,12 +7,12 @@
 
 use clap::{Parser, Subcommand};
 
-#[cfg(unix)]
 mod attach;
-#[cfg(unix)]
 mod control;
 #[cfg(unix)]
 mod term_unix;
+#[cfg(windows)]
+mod term_win;
 
 #[derive(Parser)]
 #[command(name = "wmux", version, about = "A tmux-like terminal multiplexer for the Windows host")]
@@ -77,7 +77,6 @@ fn main() -> anyhow::Result<()> {
     run(cli.command)
 }
 
-#[cfg(unix)]
 fn run(command: Option<Command>) -> anyhow::Result<()> {
     use wmux_core::proto::Command as Cmd;
     match command {
@@ -117,10 +116,4 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
             Ok(())
         }
     }
-}
-
-#[cfg(windows)]
-fn run(_command: Option<Command>) -> anyhow::Result<()> {
-    // Phase 10 wires the Windows client (ConPTY input modes + named pipe).
-    anyhow::bail!("wmux: Windows client not yet implemented (Phase 10)")
 }
