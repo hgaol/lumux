@@ -57,6 +57,31 @@ impl Key {
     }
 }
 
+impl std::fmt::Display for Key {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.ctrl {
+            write!(f, "C-")?;
+        }
+        if self.alt {
+            write!(f, "M-")?;
+        }
+        match self.code {
+            KeyCode::Char(c) => write!(f, "{c}"),
+            KeyCode::Up => write!(f, "Up"),
+            KeyCode::Down => write!(f, "Down"),
+            KeyCode::Left => write!(f, "Left"),
+            KeyCode::Right => write!(f, "Right"),
+            KeyCode::Enter => write!(f, "Enter"),
+            KeyCode::Escape => write!(f, "Escape"),
+            KeyCode::PageUp => write!(f, "PageUp"),
+            KeyCode::PageDown => write!(f, "PageDown"),
+            KeyCode::Home => write!(f, "Home"),
+            KeyCode::End => write!(f, "End"),
+            KeyCode::Space => write!(f, "Space"),
+        }
+    }
+}
+
 /// Decode the leading key from a raw input byte slice, returning the key and
 /// the number of bytes consumed. Handles ASCII control bytes (Ctrl-letter),
 /// plain printable ASCII, and the common CSI/SS3 arrow + nav escape sequences

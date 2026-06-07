@@ -416,6 +416,7 @@ where
                 self.daemon.enter_copy_mode(client_id, session);
             }
             Action::ReloadConfig => self.reload_config(client_id, session),
+            Action::ShowHelp => self.daemon.toggle_help(client_id),
             // Detach is handled at the client layer; SendPrefix is pass-through.
             Action::Detach | Action::SendPrefix => {}
         }

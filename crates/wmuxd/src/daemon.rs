@@ -44,6 +44,8 @@ pub struct Daemon<S: PtySystem> {
     /// Transient status-line message per client (tmux display-message), shown
     /// until the next render-after-input clears it.
     message: BTreeMap<u64, String>,
+    /// Clients currently showing the key-binding help overlay (tmux prefix ?).
+    help: std::collections::BTreeSet<u64>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -62,6 +64,7 @@ impl<S: PtySystem> Daemon<S> {
             renderers: BTreeMap::new(),
             copy: BTreeMap::new(),
             message: BTreeMap::new(),
+            help: std::collections::BTreeSet::new(),
             clipboard,
             config: Config::default(),
         }
@@ -198,7 +201,23 @@ impl<S: PtySystem> Daemon<S> {
         self.renderers.remove(&client_id);
         self.copy.remove(&client_id);
         self.message.remove(&client_id);
+        self.help.remove(&client_id);
         self.server.detach_client(client_id);
+    }
+
+    /// Toggle the help overlay for a client (tmux prefix ?). Showing it the
+    /// first time opens it; any key (which re-emits ShowHelp) closes it.
+    pub fn toggle_help(&mut self, client_id: u64) {
+        if !self.help.remove(&client_id) {
+            self.help.insert(client_id);
+        }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    pub fn in_help(&self, client_id: u64) -> bool {
+        self.help.contains(&client_id)
     }
 
     /// Show a transient status-line message to a client (tmux display-message).
@@ -308,6 +327,10 @@ impl<S: PtySystem> Daemon<S> {
     /// Render the active window of `session` for `client_id`, returning VT bytes
     /// to send (empty if nothing changed).
     pub fn render_for_client(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        // The help overlay takes over the whole screen when active.
+        if self.help.contains(&client_id) {
+            return self.render_help(client_id, session);
+        }
         // Copy-mode clients see the scrolled history view instead of live panes.
         if self.copy.contains_key(&client_id) {
             return self.render_copy_mode(client_id, session);
@@ -425,6 +448,45 @@ impl<S: PtySystem> Daemon<S> {
         if cur.row >= top && cur.row < top + content_rows {
             screen.set_cursor(Some((cur.col.min(cols.saturating_sub(1)), cur.row - top)));
         }
+
+        let renderer = self.renderers.get_mut(&client_id)?;
+        Some(renderer.render(screen))
+    }
+
+    /// Render the key-binding help overlay (tmux prefix ?). Lists the active
+    /// bindings, generated from this client's keymap so it reflects config.
+    fn render_help(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        use wmux_core::render::Screen;
+        let size = self.server.effective_size(session)?;
+        let cols = size.cols as usize;
+        let rows = size.rows as usize;
+        let mut screen = Screen::new(cols, rows);
+
+        let entries = self
+            .keymaps
+            .get(&client_id)
+            .map(|k| k.bindings().help_entries())
+            .unwrap_or_default();
+
+        screen.write_plain(0, 0, "wmux key bindings");
+        // Two-column key/description list starting on row 2.
+        let key_width = entries
+            .iter()
+            .map(|(k, _)| k.len())
+            .max()
+            .unwrap_or(8)
+            .min(20);
+        let max_y = rows.saturating_sub(1);
+        for (i, (key, desc)) in entries.iter().enumerate() {
+            let y = 2 + i;
+            if y >= max_y {
+                break;
+            }
+            let line = format!("  {key:<key_width$}   {desc}");
+            screen.write_plain(0, y, &line);
+        }
+        screen.status_line(rows.saturating_sub(1), "-- HELP --  press any key to close");
+        screen.set_cursor(None);
 
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))

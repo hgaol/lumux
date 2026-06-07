@@ -163,3 +163,35 @@ fn prefixed_arrow_selects_pane_directionally() {
     let r = k.feed(b"\x02\x1b[C");
     assert_eq!(r, vec![Reaction::Do(Action::SelectPaneRight)]);
 }
+
+#[test]
+fn prefix_question_shows_help_and_any_key_dismisses() {
+    let mut k = km();
+    // Ctrl-b ? opens help.
+    let r = k.feed(&[0x02, b'?']);
+    assert_eq!(r, vec![Reaction::Do(Action::ShowHelp)]);
+    assert_eq!(k.mode(), Mode::Help);
+    // Any key dismisses (re-emits ShowHelp to toggle off) and swallows the key.
+    let r = k.feed(b"x");
+    assert_eq!(r, vec![Reaction::Do(Action::ShowHelp)]);
+    assert_eq!(k.mode(), Mode::Normal);
+    // Normal typing resumes.
+    let r = k.feed(b"y");
+    assert_eq!(r, vec![Reaction::PassThrough(b"y".to_vec())]);
+}
+
+#[test]
+fn help_entries_lists_bindings() {
+    let b = crate::keymap::Bindings::tmux_defaults();
+    let entries = b.help_entries();
+    // The help lists the split and detach bindings with the prefix prefixed.
+    assert!(entries
+        .iter()
+        .any(|(k, d)| k == "C-b |" && d.contains("split")));
+    assert!(entries.iter().any(|(k, _)| k == "C-b ?"));
+    assert!(entries
+        .iter()
+        .any(|(k, d)| k == "C-b d" && d.contains("detach")));
+    // The literal send-prefix entry is omitted.
+    assert!(!entries.iter().any(|(_, d)| d.contains("send the prefix")));
+}

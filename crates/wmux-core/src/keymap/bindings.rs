@@ -26,8 +26,34 @@ pub enum Action {
     KillPane,
     /// Re-source the config file and flash a confirmation (tmux prefix r).
     ReloadConfig,
+    /// Show the key-binding help overlay (tmux prefix ?).
+    ShowHelp,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
+}
+
+impl Action {
+    /// A short human-readable description for the help overlay.
+    pub fn describe(&self) -> &'static str {
+        match self {
+            Action::SplitHorizontal => "split pane left/right",
+            Action::SplitVertical => "split pane top/bottom",
+            Action::NewWindow => "new window",
+            Action::NextWindow => "next window",
+            Action::PrevWindow => "previous window",
+            Action::SelectWindow(_) => "select window by number",
+            Action::SelectPaneLeft => "select pane to the left",
+            Action::SelectPaneRight => "select pane to the right",
+            Action::SelectPaneUp => "select pane above",
+            Action::SelectPaneDown => "select pane below",
+            Action::Detach => "detach (session keeps running)",
+            Action::EnterCopyMode => "enter copy-mode",
+            Action::KillPane => "kill the active pane",
+            Action::ReloadConfig => "reload configuration",
+            Action::ShowHelp => "show this help",
+            Action::SendPrefix => "send the prefix key to the shell",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +87,7 @@ impl Bindings {
         table.insert(Key::char('['), Action::EnterCopyMode);
         table.insert(Key::char('x'), Action::KillPane);
         table.insert(Key::char('r'), Action::ReloadConfig);
+        table.insert(Key::char('?'), Action::ShowHelp);
         // Prefixed directional pane selection (tmux default arrow bindings).
         table.insert(Key::plain(KeyCode::Left), Action::SelectPaneLeft);
         table.insert(Key::plain(KeyCode::Right), Action::SelectPaneRight);
@@ -105,6 +132,26 @@ impl Bindings {
 
     pub fn lookup(&self, key: &Key) -> Option<&Action> {
         self.table.get(key)
+    }
+
+    /// Enumerate bindings for the help overlay as (binding-label, description),
+    /// sorted by label. Prefix bindings are shown as "<prefix> <key>"; root
+    /// bindings as the bare key (they fire without the prefix). The literal
+    /// send-prefix entry is omitted as noise.
+    pub fn help_entries(&self) -> Vec<(String, &'static str)> {
+        let prefix = self.prefix.to_string();
+        let mut entries: Vec<(String, &'static str)> = Vec::new();
+        for (key, action) in &self.table {
+            if matches!(action, Action::SendPrefix) {
+                continue;
+            }
+            entries.push((format!("{prefix} {key}"), action.describe()));
+        }
+        for (key, action) in &self.root {
+            entries.push((format!("{key}"), action.describe()));
+        }
+        entries.sort_by(|a, b| a.0.cmp(&b.0));
+        entries
     }
 
     pub fn is_prefix(&self, key: &Key) -> bool {

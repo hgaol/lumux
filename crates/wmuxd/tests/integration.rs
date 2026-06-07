@@ -449,3 +449,31 @@ fn example_parity_config_parses_and_binds() {
         Some(&Action::SelectPaneLeft)
     );
 }
+
+#[test]
+fn prefix_question_shows_help_overlay() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("help".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Ctrl-b ? opens the help overlay.
+    c.send(&ClientMsg::Input(vec![0x02, b'?']));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("key bindings") && vt.contains("HELP"),
+        "prefix ? should render the help overlay; got:\n{vt}"
+    );
+    // Any key closes it and returns to the live shell view.
+    c.send(&ClientMsg::Input(b"q".to_vec()));
+    let (_d2, vt2) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        !vt2.contains("-- HELP --"),
+        "a keypress should dismiss the help overlay"
+    );
+}

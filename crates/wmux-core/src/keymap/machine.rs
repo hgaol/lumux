@@ -17,6 +17,8 @@ pub enum Mode {
     Normal,
     AwaitingCommand,
     Copy,
+    /// Showing the key-binding help overlay; any key dismisses it.
+    Help,
 }
 
 /// What the daemon should do in response to a chunk of decoded input.
@@ -75,6 +77,10 @@ impl Keymap {
         &mut self.bindings
     }
 
+    pub fn bindings(&self) -> &Bindings {
+        &self.bindings
+    }
+
     /// Feed a chunk of raw client input. Returns the reactions in order. A chunk
     /// may contain several keys (paste, or fast typing), so we loop.
     pub fn feed(&mut self, input: &[u8]) -> Vec<Reaction> {
@@ -125,6 +131,10 @@ impl Keymap {
                             // per-client copy-mode state.
                             reactions.push(Reaction::Do(Action::EnterCopyMode));
                         }
+                        Some(Action::ShowHelp) => {
+                            self.mode = Mode::Help;
+                            reactions.push(Reaction::Do(Action::ShowHelp));
+                        }
                         Some(action) => reactions.push(Reaction::Do(action)),
                         None => { /* unknown command: no-op, back to Normal */ }
                     }
@@ -138,6 +148,12 @@ impl Keymap {
                         reactions.push(Reaction::Copy(ck));
                     }
                     // Non-navigation keys in copy-mode are ignored.
+                }
+                Mode::Help => {
+                    // Any key dismisses the help overlay; the key is swallowed.
+                    flush_passthrough!();
+                    self.mode = Mode::Normal;
+                    reactions.push(Reaction::Do(Action::ShowHelp));
                 }
             }
         }
