@@ -138,7 +138,7 @@ fn resize_grow_and_shrink() {
     // Shrink height: top rows move to scrollback.
     g.resize(10, 2);
     assert_eq!(g.dimensions(), (10, 2));
-    assert!(g.scrollback().len() >= 1);
+    assert!(!g.scrollback().is_empty());
     // Grow width: rows re-pad without panic.
     g.resize(20, 2);
     assert_eq!(g.dimensions(), (20, 2));
