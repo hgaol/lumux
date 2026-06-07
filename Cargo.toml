@@ -1,0 +1,49 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wmux-core",
+    "crates/wmux-backend-unix",
+    "crates/wmux-backend-win",
+    "crates/wmuxd",
+    "crates/wmux",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "local"
+
+[workspace.dependencies]
+wmux-core = { path = "crates/wmux-core" }
+wmuxd = { path = "crates/wmuxd" }
+wmux-backend-unix = { path = "crates/wmux-backend-unix" }
+wmux-backend-win = { path = "crates/wmux-backend-win" }
+
+# async runtime
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
+async-trait = "0.1"
+
+# pty + terminal emulation
+portable-pty = "0.8"
+termwiz = "0.22"
+
+# serialization / protocol
+serde = { version = "1", features = ["derive"] }
+bincode = "1"
+bytes = "1"
+
+# cli / config
+clap = { version = "4", features = ["derive"] }
+toml = "0.8"
+
+# diagnostics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+thiserror = "1"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1
