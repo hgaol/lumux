@@ -71,11 +71,28 @@ where
     <S::Pty as Pty>::Reader: Send + 'static,
     L: Listener + 'static,
 {
+    run_with_config(pty_system, listener, wmux_core::config::Config::default())
+}
+
+/// Like [`run`] but seeds the daemon with an initial config (prefix, bindings,
+/// shell profiles, scrollback).
+pub fn run_with_config<S, L>(
+    pty_system: S,
+    listener: L,
+    config: wmux_core::config::Config,
+) -> std::io::Result<()>
+where
+    S: PtySystem + 'static,
+    <S::Pty as Pty>::Reader: Send + 'static,
+    L: Listener + 'static,
+{
     let (tx, rx) = channel::<Msg>();
     spawn_accept(listener, tx.clone());
 
+    let mut daemon = Daemon::new(pty_system);
+    daemon.set_config(config);
     let mut lp = Loop {
-        daemon: Daemon::new(pty_system),
+        daemon,
         clients: HashMap::new(),
         pane_session: HashMap::new(),
         tx: tx.clone(),
@@ -260,12 +277,76 @@ where
                     let _ = h.out.send(ServerMsg::Reply(text));
                 }
             }
-            Command::KillServer => {
-                for id in self.daemon.server.session_ids() {
-                    self.daemon.server.kill_session(id);
+            Command::SelectWindow { index } => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    let ids = s.window_ids();
+                    if let Some(&wid) = ids.get(index as usize) {
+                        s.focus_window(wid);
+                    }
+                }
+                self.render_session(session);
+            }
+            Command::SendKeys { keys } => {
+                // Inject keys as if typed into the active pane (bypassing the
+                // prefix keymap — scripting goes straight to the shell).
+                if let Some(pid) = self.active_pane(session) {
+                    let _ = self.daemon.write_pane(pid, &keys);
                 }
             }
-            _ => {}
+            Command::SourceFile { path } => {
+                let reply = match std::fs::read_to_string(&path) {
+                    Ok(text) => match wmux_core::config::Config::from_toml(&text) {
+                        Ok(cfg) => {
+                            self.daemon.set_config(cfg);
+                            self.render_session(session);
+                            format!("sourced {path}\n")
+                        }
+                        Err(e) => format!("config error: {e}\n"),
+                    },
+                    Err(e) => format!("cannot read {path}: {e}\n"),
+                };
+                if let Some(h) = self.clients.get(&client_id) {
+                    let _ = h.out.send(ServerMsg::Reply(reply));
+                }
+            }
+            Command::KillSession { target } => {
+                // Match by name; fall back to the current session.
+                let sid = self
+                    .daemon
+                    .server
+                    .find_session_by_name(&target)
+                    .unwrap_or(session);
+                self.kill_whole_session(sid);
+            }
+            Command::KillServer => {
+                let ids = self.daemon.server.session_ids();
+                for id in ids {
+                    self.kill_whole_session(id);
+                }
+            }
+        }
+    }
+
+    /// Kill a session and notify/disconnect its clients.
+    fn kill_whole_session(&mut self, session: SessionId) {
+        // Drop the pane->session map entries for this session's panes.
+        let panes: Vec<PaneId> = self
+            .pane_session
+            .iter()
+            .filter(|(_, s)| **s == session)
+            .map(|(p, _)| *p)
+            .collect();
+        for p in panes {
+            self.pane_session.remove(&p);
+        }
+        let gone = self.session_clients(session);
+        self.daemon.server.kill_session(session);
+        for id in gone {
+            if let Some(h) = self.clients.remove(&id) {
+                let _ = h.out.send(ServerMsg::Event(Event::SessionClosed));
+                let _ = h.out.send(ServerMsg::Detached);
+            }
+            self.daemon.unregister_client(id);
         }
     }
 

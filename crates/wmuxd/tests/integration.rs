@@ -256,3 +256,62 @@ fn copy_mode_shows_mode_line() {
         "copy-mode should render a mode line; got:\n{vt}"
     );
 }
+
+#[test]
+fn send_keys_command_injects_into_pane() {
+    use wmux_core::proto::Command;
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("sk".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Send a command via SendKeys (scripting path, not raw Input).
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo SENDKEYS_OK\n".to_vec(),
+    }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(3), |_| false);
+    assert!(
+        vt.contains("SENDKEYS_OK"),
+        "send-keys should reach the shell; got:\n{vt}"
+    );
+}
+
+#[test]
+fn source_file_rebinds_prefix_live() {
+    use wmux_core::proto::Command;
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cfg".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+
+    // Write a config that changes the prefix to Ctrl-a, then source it.
+    let cfg_path = std::env::temp_dir().join(format!("wmux-cfg-{}.toml", std::process::id()));
+    std::fs::write(&cfg_path, "prefix = \"C-a\"\n").unwrap();
+    c.send(&ClientMsg::Command(Command::SourceFile {
+        path: cfg_path.to_string_lossy().to_string(),
+    }));
+    let (sourced, _) = c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Reply(t) if t.contains("sourced"))
+    });
+    assert!(sourced, "source-file should reply with confirmation");
+
+    // Now Ctrl-a | should split (new prefix); a border appears.
+    c.send(&ClientMsg::Input(vec![0x01, b'|']));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains('│'),
+        "rebound prefix Ctrl-a should trigger split; got:\n{vt}"
+    );
+    let _ = std::fs::remove_file(&cfg_path);
+}

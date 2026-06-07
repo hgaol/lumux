@@ -7,6 +7,7 @@
 
 use std::collections::BTreeMap;
 
+use wmux_core::config::Config;
 use wmux_core::copymode::CopyMode;
 use wmux_core::grid::Grid;
 use wmux_core::keymap::{CopyKey, Keymap};
@@ -30,8 +31,6 @@ pub fn default_shell() -> Vec<String> {
     }
 }
 
-const SCROLLBACK: usize = 2000;
-
 /// Owns the object model plus the live panes. One per daemon.
 pub struct Daemon<S: PtySystem> {
     pub server: Server,
@@ -43,6 +42,7 @@ pub struct Daemon<S: PtySystem> {
     /// Active copy-mode state per client (absent = not in copy-mode).
     copy: BTreeMap<u64, CopyMode>,
     clipboard: Box<dyn Clipboard>,
+    config: Config,
 }
 
 impl<S: PtySystem> Daemon<S> {
@@ -59,7 +59,33 @@ impl<S: PtySystem> Daemon<S> {
             renderers: BTreeMap::new(),
             copy: BTreeMap::new(),
             clipboard,
+            config: Config::default(),
         }
+    }
+
+    /// Replace the active config. Existing clients' keymaps are rebuilt from it
+    /// so a `source-file` reload takes effect live; scrollback/shell changes
+    /// apply to subsequently spawned panes.
+    pub fn set_config(&mut self, config: Config) {
+        if let Ok(bindings) = config.to_bindings() {
+            for km in self.keymaps.values_mut() {
+                *km = Keymap::new(bindings.clone());
+            }
+        }
+        self.config = config;
+    }
+
+    /// Scrollback lines from config.
+    fn scrollback_lines(&self) -> usize {
+        self.config.scrollback
+    }
+
+    /// Resolve a shell argv: explicit profile name, else config default, else
+    /// the environment default.
+    fn resolve_shell(&self, name: Option<&str>) -> Vec<String> {
+        self.config
+            .shell_argv(name)
+            .unwrap_or_else(default_shell)
     }
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
@@ -87,7 +113,7 @@ impl<S: PtySystem> Daemon<S> {
         };
         let pty = self.pty_system.spawn(&cmd, size)?;
         let (writer, reader) = pty.split()?;
-        let grid = Grid::new(size.cols as usize, size.rows as usize, SCROLLBACK);
+        let grid = Grid::new(size.cols as usize, size.rows as usize, self.scrollback_lines());
         self.panes.insert(
             id,
             LivePane {
@@ -107,7 +133,7 @@ impl<S: PtySystem> Daemon<S> {
         shell: Option<Vec<String>>,
         size: PtySize,
     ) -> std::io::Result<(SessionId, PaneId, <S::Pty as Pty>::Reader)> {
-        let shell = shell.unwrap_or_else(default_shell);
+        let shell = shell.unwrap_or_else(|| self.resolve_shell(None));
         let sid = self.server.new_session(name, shell.clone());
         let pid = {
             let s = self.server.session(sid).unwrap();
@@ -134,7 +160,11 @@ impl<S: PtySystem> Daemon<S> {
 
     /// Register a freshly attached client: give it a keymap and renderer.
     pub fn register_client(&mut self, client_id: u64) {
-        self.keymaps.insert(client_id, Keymap::with_defaults());
+        let keymap = match self.config.to_bindings() {
+            Ok(b) => Keymap::new(b),
+            Err(_) => Keymap::with_defaults(),
+        };
+        self.keymaps.insert(client_id, keymap);
         self.renderers.insert(client_id, ClientRenderer::new());
     }
 
@@ -309,7 +339,7 @@ impl<S: PtySystem> Daemon<S> {
         dir: SplitDir,
         size: PtySize,
     ) -> std::io::Result<Option<(PaneId, <S::Pty as Pty>::Reader)>> {
-        let shell = default_shell();
+        let shell = self.resolve_shell(None);
         let Some(pid) = self.server.split_active(session, shell.clone(), dir) else {
             return Ok(None);
         };
@@ -324,7 +354,7 @@ impl<S: PtySystem> Daemon<S> {
         session: SessionId,
         size: PtySize,
     ) -> std::io::Result<Option<(PaneId, <S::Pty as Pty>::Reader)>> {
-        let shell = default_shell();
+        let shell = self.resolve_shell(None);
         let Some(wid) = self.server.new_window(session, "", shell.clone()) else {
             return Ok(None);
         };

@@ -46,6 +46,23 @@ enum Command {
     },
     /// Kill the daemon and all sessions.
     KillServer,
+    /// Split the active window of a session (sends a command to the daemon).
+    SplitWindow {
+        /// Split left/right (vertical divider) instead of top/bottom.
+        #[arg(short = 'h', long)]
+        horizontal: bool,
+    },
+    /// Create a new window in the current session.
+    NewWindow,
+    /// Send literal keystrokes to the active pane.
+    SendKeys {
+        /// The keys to send (sent verbatim, with a trailing newline added).
+        keys: String,
+    },
+    /// Reload configuration from a TOML file.
+    SourceFile {
+        path: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -78,6 +95,25 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
         }
         Some(Command::KillServer) => {
             control::send_command(Cmd::KillServer)?;
+            Ok(())
+        }
+        Some(Command::SplitWindow { horizontal }) => {
+            control::send_command(Cmd::SplitWindow { horizontal })?;
+            Ok(())
+        }
+        Some(Command::NewWindow) => {
+            control::send_command(Cmd::NewWindow { name: None })?;
+            Ok(())
+        }
+        Some(Command::SendKeys { keys }) => {
+            let mut bytes = keys.into_bytes();
+            bytes.push(b'\n');
+            control::send_command(Cmd::SendKeys { keys: bytes })?;
+            Ok(())
+        }
+        Some(Command::SourceFile { path }) => {
+            let reply = control::send_command(Cmd::SourceFile { path })?;
+            print!("{reply}");
             Ok(())
         }
     }

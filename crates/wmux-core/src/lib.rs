@@ -13,6 +13,7 @@ pub mod proto;
 pub mod render;
 pub mod keymap;
 pub mod copymode;
+pub mod config;
 
 pub use traits::{
     Clipboard, FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, PtyWriter,

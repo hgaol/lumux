@@ -26,7 +26,8 @@ fn run() -> anyhow::Result<()> {
         .unwrap_or_else(default_socket_path);
     tracing::info!(?path, "binding daemon socket");
     let listener = UnixSocketListener::bind(&path)?;
-    wmuxd::run(UnixPtySystem, listener)?;
+    let config = wmuxd::load_config();
+    wmuxd::run_with_config(UnixPtySystem, listener, config)?;
     tracing::info!("wmuxd exiting (no sessions, no clients)");
     Ok(())
 }
