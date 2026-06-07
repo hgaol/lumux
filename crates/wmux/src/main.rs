@@ -1,14 +1,17 @@
-//! wmux client + CLI entry point.
+//! wmux entry point — a single multi-call binary, like tmux.
 //!
-//! Single multi-call binary: `wmux` is the client and command surface, and can
-//! auto-spawn the daemon. The interactive verbs (new/attach) put the terminal
-//! in raw mode and shuttle bytes; the control verbs (ls/kill) send a one-shot
-//! command and print the reply.
+//! `wmux` is the client and command surface, and it *is* also the server: when
+//! no daemon is running, the client re-execs this same binary with a hidden
+//! `--server` flag to spawn the background daemon (detached from any console).
+//! The interactive verbs (new/attach) put the terminal in raw mode and shuttle
+//! bytes; the control verbs (ls/kill) send a one-shot command and print the
+//! reply.
 
 use clap::{Parser, Subcommand};
 
 mod attach;
 mod control;
+mod server;
 #[cfg(unix)]
 mod term_unix;
 #[cfg(windows)]
@@ -21,6 +24,11 @@ mod term_win;
     about = "A tmux-like terminal multiplexer for the Windows host"
 )]
 struct Cli {
+    /// Internal: run as the background daemon. Not meant to be invoked directly;
+    /// the client re-execs itself with this flag to start the server.
+    #[arg(long = "server", hide = true)]
+    server: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -68,6 +76,20 @@ enum Command {
 }
 
 fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Server mode: become the background daemon. Uses a chattier log level since
+    // there's no interactive terminal to disturb.
+    if cli.server {
+        tracing_subscriber::fmt()
+            .with_env_filter(
+                tracing_subscriber::EnvFilter::try_from_default_env()
+                    .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
+            )
+            .init();
+        return server::serve();
+    }
+
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -75,7 +97,6 @@ fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    let cli = Cli::parse();
     run(cli.command)
 }
 

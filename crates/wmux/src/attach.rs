@@ -176,7 +176,7 @@ mod platform {
     }
 
     fn spawn_daemon() -> anyhow::Result<()> {
-        super::spawn_daemon_process("wmuxd")
+        super::spawn_daemon_process()
     }
 }
 
@@ -196,7 +196,7 @@ mod platform {
         if let Ok(t) = PipeTransport::connect(path) {
             return Ok(t);
         }
-        super::spawn_daemon_process("wmuxd.exe")?;
+        super::spawn_daemon_process()?;
         let deadline = Instant::now() + Duration::from_secs(3);
         while Instant::now() < deadline {
             if let Ok(t) = PipeTransport::connect(path) {
@@ -208,19 +208,13 @@ mod platform {
     }
 }
 
-/// Spawn the daemon binary detached from this process. Looks for a sibling
-/// binary next to the client first, then falls back to PATH.
-fn spawn_daemon_process(exe_name: &str) -> anyhow::Result<()> {
+/// Spawn the daemon by re-execing *this* binary with the hidden `--server`
+/// flag, detached from the current process/console (tmux's single-binary model).
+fn spawn_daemon_process() -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
-    let exe = std::env::current_exe().ok();
-    let daemon = exe
-        .as_ref()
-        .and_then(|p| p.parent())
-        .map(|d| d.join(exe_name))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| exe_name.into());
-
-    Command::new(daemon)
+    let exe = std::env::current_exe()?;
+    Command::new(exe)
+        .arg("--server")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())

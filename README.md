@@ -17,15 +17,19 @@ daemon spawns shells under ConPTY, which translates legacy console output to VT.
 
 ## Architecture
 
-- **`wmuxd`** — a background daemon that owns the pseudo-terminals and the
-  session/window/pane tree. It outlives clients, which is what gives
-  persistence. Terminal emulation is server-side: the daemon parses each pane's
-  output into a cell grid and re-renders damage-tracked VT to each client.
-- **`wmux`** — a thin client. It puts your terminal in raw mode and shuttles
-  bytes to/from the daemon over a local named pipe (Windows) or Unix socket
-  (Linux dev). Any VT terminal can render it; no GPU, no GUI.
+wmux is a **single binary** that plays two roles, like tmux:
 
-The client auto-starts the daemon on first use.
+- **Server** — a background daemon that owns the pseudo-terminals and the
+  session/window/pane tree. It outlives clients, which is what gives
+  persistence. Terminal emulation is server-side: it parses each pane's output
+  into a cell grid and re-renders damage-tracked VT to each client. Started by
+  re-execing the wmux binary with a hidden `--server` flag.
+- **Client** — a thin front-end. It puts your terminal in raw mode and shuttles
+  bytes to/from the server over a local named pipe (Windows) or Unix socket
+  (Linux/macOS). Any VT terminal can render it; no GPU, no GUI.
+
+The client auto-starts the server on first use (`wmux new` / `wmux attach`), so
+you only ever run `wmux`.
 
 ## Usage
 
@@ -125,7 +129,7 @@ cargo build --release                                  # native
 cargo build --release --target x86_64-pc-windows-msvc  # Windows (from any host)
 ```
 
-Produces `wmux` (client) and `wmuxd` (daemon).
+Produces a single `wmux` binary (it runs as both client and server).
 
 ## Platform support
 

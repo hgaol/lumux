@@ -21,7 +21,7 @@ MAC_X86      := x86_64-apple-darwin
 DIST         := dist
 
 # `install` replaces the destination by unlinking it first, so staging over a
-# binary that is currently running (e.g. a persistent wmuxd daemon) never hits
+# binary that is currently running (e.g. a persistent wmux server) never hits
 # ETXTBSY the way `cp` (in-place truncate) does. -m755 also sets the exec bit.
 INSTALL      := install -m755
 
@@ -105,34 +105,31 @@ bootstrap-cross: ## Install cargo-zigbuild (you must also have `zig` on PATH)
 		|| echo "WARNING: 'zig' not on PATH. Install Zig 0.13+ and ensure it is on PATH (e.g. ~/.local/bin)."
 
 .PHONY: dist-macos
-dist-macos: ## Cross-build universal macOS binaries -> dist/macos/
+dist-macos: ## Cross-build universal macOS binary -> dist/macos/
 	rustup target add $(MAC_ARM) $(MAC_X86) >/dev/null 2>&1 || true
-	$(CARGO) zigbuild --release --target $(MAC_UNIVERSAL) -p wmux -p wmuxd
+	$(CARGO) zigbuild --release --target $(MAC_UNIVERSAL) -p wmux
 	@mkdir -p $(DIST)/macos
 	$(INSTALL) target/$(MAC_UNIVERSAL)/release/wmux  $(DIST)/macos/wmux
-	$(INSTALL) target/$(MAC_UNIVERSAL)/release/wmuxd $(DIST)/macos/wmuxd
-	@echo "Built universal macOS binaries in $(DIST)/macos/ (unsigned)."
+	@echo "Built universal macOS binary in $(DIST)/macos/ (unsigned)."
 
 .PHONY: dist-windows
 dist-windows: ## Cross-build runnable Windows .exe (gnu) -> dist/windows/
 	rustup target add $(WIN_GNU) >/dev/null 2>&1 || true
-	$(CARGO) zigbuild --release --target $(WIN_GNU) -p wmux -p wmuxd
+	$(CARGO) zigbuild --release --target $(WIN_GNU) -p wmux
 	@mkdir -p $(DIST)/windows
 	$(INSTALL) target/$(WIN_GNU)/release/wmux.exe  $(DIST)/windows/wmux.exe
-	$(INSTALL) target/$(WIN_GNU)/release/wmuxd.exe $(DIST)/windows/wmuxd.exe
-	@echo "Built Windows binaries in $(DIST)/windows/ (gnu/MinGW ABI)."
+	@echo "Built Windows binary in $(DIST)/windows/ (gnu/MinGW ABI)."
 	@echo "NOTE: the production target is msvc; this gnu build is for quick"
 	@echo "      cross-testing from Linux. Use Windows CI for msvc release artifacts."
 
 .PHONY: dist-linux
-dist-linux: ## Build optimized Linux binaries -> dist/linux/
-	$(CARGO) build --release -p wmux -p wmuxd
+dist-linux: ## Build optimized Linux binary -> dist/linux/
+	$(CARGO) build --release -p wmux
 	@mkdir -p $(DIST)/linux
-	# install (not cp) unlinks the old inode first, so a running wmuxd daemon
+	# install (not cp) unlinks the old inode first, so a running wmux server
 	# from a previous build doesn't cause ETXTBSY ("Text file busy").
 	$(INSTALL) target/release/wmux  $(DIST)/linux/wmux
-	$(INSTALL) target/release/wmuxd $(DIST)/linux/wmuxd
-	@echo "Built Linux binaries in $(DIST)/linux/."
+	@echo "Built Linux binary in $(DIST)/linux/."
 
 .PHONY: dist
 dist: dist-linux dist-macos dist-windows ## Cross-build for all three platforms
