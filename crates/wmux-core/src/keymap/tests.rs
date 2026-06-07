@@ -135,3 +135,31 @@ fn detach_binding() {
     let mut k = km();
     assert_eq!(k.feed(&[0x02, b'd']), vec![Reaction::Do(Action::Detach)]);
 }
+
+#[test]
+fn root_binding_fires_without_prefix() {
+    let mut k = km();
+    // Bind Alt-Left as a root (no-prefix) binding to select-pane-left.
+    k.bindings_mut().bind_root(
+        Key {
+            code: crate::keymap::KeyCode::Left,
+            ctrl: false,
+            alt: true,
+        },
+        Action::SelectPaneLeft,
+    );
+    // Alt-Left arrives as ESC[1;3D and should fire immediately, no prefix.
+    let r = k.feed(b"\x1b[1;3D");
+    assert_eq!(r, vec![Reaction::Do(Action::SelectPaneLeft)]);
+    // A plain (unbound) key still passes through.
+    let r = k.feed(b"z");
+    assert_eq!(r, vec![Reaction::PassThrough(b"z".to_vec())]);
+}
+
+#[test]
+fn prefixed_arrow_selects_pane_directionally() {
+    let mut k = km();
+    // Ctrl-b then Right -> select-pane-right (tmux default).
+    let r = k.feed(b"\x02\x1b[C");
+    assert_eq!(r, vec![Reaction::Do(Action::SelectPaneRight)]);
+}

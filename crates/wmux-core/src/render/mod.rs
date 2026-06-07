@@ -9,7 +9,7 @@ mod diff;
 mod screen;
 mod sgr;
 
-pub use compose::{compose, ClientRenderer, StatusBar, WindowView};
+pub use compose::{compose, ClientRenderer, Justify, StatusBar, StyledStatus, WindowView};
 pub use diff::{diff, full_repaint};
 pub use screen::Screen;
 pub use sgr::sgr_for;

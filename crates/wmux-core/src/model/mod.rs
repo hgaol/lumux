@@ -109,6 +109,19 @@ impl Window {
         }
     }
 
+    /// Move focus geographically (tmux select-pane -L/-R/-U/-D) given a viewport
+    /// to compute pane rectangles. No-op if there is no pane in that direction.
+    pub fn focus_direction(
+        &mut self,
+        dir: crate::layout::Direction,
+        viewport: crate::layout::Rect,
+    ) {
+        let rects = crate::layout::compute(&self.layout, viewport);
+        if let Some(next) = crate::layout::neighbor(&rects, self.active_pane, dir) {
+            self.active_pane = next;
+        }
+    }
+
     pub fn focus_pane(&mut self, id: PaneId) -> bool {
         if self.panes.contains_key(&id) {
             self.active_pane = id;

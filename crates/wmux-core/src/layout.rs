@@ -110,6 +110,83 @@ pub fn pane_at(layout: &BTreeMap<PaneId, Rect>, x: u16, y: u16) -> Option<PaneId
         .map(|(id, _)| *id)
 }
 
+/// A geographic direction for pane navigation (tmux `select-pane -L/-R/-U/-D`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
+/// Find the best pane to move focus to from `from` in `dir`, given the laid-out
+/// rectangles. Mirrors tmux: among panes on the correct side, prefer the
+/// nearest edge, breaking ties by the closest center on the perpendicular axis.
+/// Returns None if there is no pane in that direction.
+pub fn neighbor(layout: &BTreeMap<PaneId, Rect>, from: PaneId, dir: Direction) -> Option<PaneId> {
+    let cur = layout.get(&from)?;
+    let (cx, cy) = (
+        cur.x as i32 + cur.cols as i32 / 2,
+        cur.y as i32 + cur.rows as i32 / 2,
+    );
+
+    let mut best: Option<(PaneId, i32, i32)> = None; // (id, primary_dist, perp_dist)
+    for (&id, r) in layout {
+        if id == from {
+            continue;
+        }
+        let (rx, ry) = (
+            r.x as i32 + r.cols as i32 / 2,
+            r.y as i32 + r.rows as i32 / 2,
+        );
+        // Candidate must be on the requested side AND overlap the current pane
+        // on the perpendicular axis — otherwise a full-height/width neighbor on
+        // an adjacent column/row would spuriously qualify (tmux behavior).
+        let h_overlap = (r.x as i32) < (cur.x as i32 + cur.cols as i32)
+            && (cur.x as i32) < (r.x as i32 + r.cols as i32);
+        let v_overlap = (r.y as i32) < (cur.y as i32 + cur.rows as i32)
+            && (cur.y as i32) < (r.y as i32 + r.rows as i32);
+        let on_side = match dir {
+            Direction::Left => (r.x as i32) < cur.x as i32 && v_overlap,
+            Direction::Right => (r.x as i32) > cur.x as i32 && v_overlap,
+            Direction::Up => (r.y as i32) < cur.y as i32 && h_overlap,
+            Direction::Down => (r.y as i32) > cur.y as i32 && h_overlap,
+        };
+        if !on_side {
+            continue;
+        }
+        // Primary distance along the travel axis; perpendicular distance breaks
+        // ties so we pick the most aligned neighbor.
+        let (primary, perp) = match dir {
+            Direction::Left => (
+                (cur.x as i32) - (r.x as i32 + r.cols as i32),
+                (cy - ry).abs(),
+            ),
+            Direction::Right => (
+                (r.x as i32) - (cur.x as i32 + cur.cols as i32),
+                (cy - ry).abs(),
+            ),
+            Direction::Up => (
+                (cur.y as i32) - (r.y as i32 + r.rows as i32),
+                (cx - rx).abs(),
+            ),
+            Direction::Down => (
+                (r.y as i32) - (cur.y as i32 + cur.rows as i32),
+                (cx - rx).abs(),
+            ),
+        };
+        let primary = primary.max(0);
+        let better = match best {
+            None => true,
+            Some((_, bp, bperp)) => (primary, perp) < (bp, bperp),
+        };
+        if better {
+            best = Some((id, primary, perp));
+        }
+    }
+    best.map(|(id, _, _)| id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -230,5 +307,61 @@ mod tests {
         assert_eq!(pane_at(&l, 79, 23), Some(p(2)));
         // The divider column (x=40) belongs to no pane.
         assert_eq!(pane_at(&l, 40, 0), None);
+    }
+
+    #[test]
+    fn neighbor_horizontal_split() {
+        // [1 | 2] side by side.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        let l = compute(&t, vp(80, 24));
+        assert_eq!(neighbor(&l, p(1), Direction::Right), Some(p(2)));
+        assert_eq!(neighbor(&l, p(2), Direction::Left), Some(p(1)));
+        // No pane above/below in a purely horizontal split.
+        assert_eq!(neighbor(&l, p(1), Direction::Up), None);
+        assert_eq!(neighbor(&l, p(1), Direction::Left), None);
+    }
+
+    #[test]
+    fn neighbor_vertical_split() {
+        // [1 / 2] stacked.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Vertical);
+        let l = compute(&t, vp(80, 24));
+        assert_eq!(neighbor(&l, p(1), Direction::Down), Some(p(2)));
+        assert_eq!(neighbor(&l, p(2), Direction::Up), Some(p(1)));
+        assert_eq!(neighbor(&l, p(1), Direction::Right), None);
+    }
+
+    #[test]
+    fn neighbor_picks_aligned_pane_in_grid() {
+        // Build [ 1 | [2 / 3] ]: pane 1 on the left, 2 top-right, 3 bottom-right.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal); // [1|2]
+        t.split_leaf(p(2), p(3), SplitDir::Vertical); // [1 | [2/3]]
+        let l = compute(&t, vp(80, 24));
+        // From pane 1, moving right should land on the top-right (2) since their
+        // centers align better, or at least a valid right neighbor.
+        let r = neighbor(&l, p(1), Direction::Right);
+        assert!(r == Some(p(2)) || r == Some(p(3)));
+        // From 2, down -> 3; from 3, up -> 2.
+        assert_eq!(neighbor(&l, p(2), Direction::Down), Some(p(3)));
+        assert_eq!(neighbor(&l, p(3), Direction::Up), Some(p(2)));
+        // From 2, left -> 1.
+        assert_eq!(neighbor(&l, p(2), Direction::Left), Some(p(1)));
+    }
+
+    #[test]
+    fn neighbor_single_pane_has_none() {
+        let t = PaneNode::leaf(p(1));
+        let l = compute(&t, vp(80, 24));
+        for d in [
+            Direction::Left,
+            Direction::Right,
+            Direction::Up,
+            Direction::Down,
+        ] {
+            assert_eq!(neighbor(&l, p(1), d), None);
+        }
     }
 }

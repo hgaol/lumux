@@ -14,6 +14,7 @@ pub mod layout;
 pub mod model;
 pub mod proto;
 pub mod render;
+pub mod status;
 
 pub use traits::{
     Clipboard, FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, PtyWriter,

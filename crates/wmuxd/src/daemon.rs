@@ -12,7 +12,7 @@ use wmux_core::copymode::CopyMode;
 use wmux_core::grid::Grid;
 use wmux_core::keymap::{CopyKey, Keymap};
 use wmux_core::model::{CascadeResult, PaneId, Server, SessionId, SplitDir};
-use wmux_core::render::{compose, ClientRenderer, StatusBar, WindowView};
+use wmux_core::render::{compose, ClientRenderer, WindowView};
 use wmux_core::traits::{Clipboard, Pty, PtySize, PtySystem, PtyWriter, ShellCommand};
 
 /// Per-pane live state: the emulator grid and the PTY input/control handle.
@@ -41,6 +41,9 @@ pub struct Daemon<S: PtySystem> {
     renderers: BTreeMap<u64, ClientRenderer>,
     /// Active copy-mode state per client (absent = not in copy-mode).
     copy: BTreeMap<u64, CopyMode>,
+    /// Transient status-line message per client (tmux display-message), shown
+    /// until the next render-after-input clears it.
+    message: BTreeMap<u64, String>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -58,6 +61,7 @@ impl<S: PtySystem> Daemon<S> {
             keymaps: BTreeMap::new(),
             renderers: BTreeMap::new(),
             copy: BTreeMap::new(),
+            message: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -171,7 +175,26 @@ impl<S: PtySystem> Daemon<S> {
         self.keymaps.remove(&client_id);
         self.renderers.remove(&client_id);
         self.copy.remove(&client_id);
+        self.message.remove(&client_id);
         self.server.detach_client(client_id);
+    }
+
+    /// Show a transient status-line message to a client (tmux display-message).
+    /// It is rendered on the next frame and cleared after the following input.
+    pub fn flash_message(&mut self, client_id: u64, msg: impl Into<String>) {
+        self.message.insert(client_id, msg.into());
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    /// Clear a client's transient message (called after the next input event).
+    pub fn clear_message(&mut self, client_id: u64) {
+        if self.message.remove(&client_id).is_some() {
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
     }
 
     pub fn keymap_mut(&mut self, client_id: u64) -> Option<&mut Keymap> {
@@ -281,22 +304,73 @@ impl<S: PtySystem> Daemon<S> {
             }
         }
 
-        let status = StatusBar {
-            left: format!("[{}] {}", s.name, window.name),
-            right: String::new(),
-        };
         let view = WindowView {
             layout: &layout,
             grids: &grids,
             active_pane,
         };
-        let screen = compose(
-            (size.cols as usize, size.rows as usize),
-            &view,
-            Some(&status),
-        );
+        // Compose panes without a built-in status row; we paint a styled status
+        // (or a transient message) onto the bottom row ourselves.
+        let mut screen = compose((size.cols as usize, size.rows as usize), &view, None);
+        self.paint_status(&mut screen, client_id, session);
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
+    }
+
+    /// Paint the bottom status row: a transient flash message if one is pending,
+    /// otherwise the configured styled status bar.
+    fn paint_status(
+        &self,
+        screen: &mut wmux_core::render::Screen,
+        client_id: u64,
+        session: SessionId,
+    ) {
+        use wmux_core::render::{Justify, StyledStatus};
+        use wmux_core::status::{self, StatusContext};
+
+        // A pending display-message takes over the whole row.
+        if let Some(msg) = self.message.get(&client_id) {
+            screen.status_line(screen.dimensions().1.saturating_sub(1), msg);
+            return;
+        }
+
+        let Some(s) = self.server.session(session) else {
+            return;
+        };
+        let window = match s.window(s.active_window()) {
+            Some(w) => w,
+            None => return,
+        };
+        let base_idx = self.config.base_index;
+        let ctx = StatusContext {
+            session: s.name.clone(),
+            window: window.name.clone(),
+            window_index: window_index(s, window.id) + base_idx,
+            pane_index: base_idx,
+            host: hostname(),
+            time: now_parts(),
+        };
+
+        let base = StyledStatus::base_attrs(&self.config.status_bg, &self.config.status_fg);
+
+        // Fall back to status_format if status_left is empty (simple setups).
+        let left_fmt = if self.config.status_left.is_empty() {
+            &self.config.status_format
+        } else {
+            &self.config.status_left
+        };
+        let styled = StyledStatus {
+            left: status::format(left_fmt, &ctx),
+            centre: status::format(&self.config.status_format_centre(), &ctx),
+            right: status::format(&self.config.status_right, &ctx),
+            base,
+            justify: match self.config.status_justify.as_str() {
+                "centre" | "center" => Justify::Centre,
+                "right" => Justify::Right,
+                _ => Justify::Left,
+            },
+        };
+        styled.render(screen);
     }
 
     /// Render the active pane's scrolled history for a client in copy-mode.
@@ -412,4 +486,50 @@ impl Clipboard for NullClipboard {
     fn set_text(&mut self, _text: &str) -> std::io::Result<()> {
         Ok(())
     }
+}
+
+/// 0-based position of `wid` within its session's window list.
+fn window_index(session: &wmux_core::model::Session, wid: wmux_core::model::WindowId) -> u32 {
+    session
+        .window_ids()
+        .iter()
+        .position(|&w| w == wid)
+        .unwrap_or(0) as u32
+}
+
+/// Local hostname for the `#H` token.
+fn hostname() -> String {
+    std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "localhost".to_string())
+}
+
+/// Current local time broken into the parts the status formatter needs.
+#[cfg(unix)]
+fn now_parts() -> wmux_core::status::TimeParts {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    unsafe {
+        let t = secs as libc::time_t;
+        let mut tm: libc::tm = std::mem::zeroed();
+        libc::localtime_r(&t, &mut tm);
+        wmux_core::status::TimeParts {
+            hour: tm.tm_hour as u8,
+            minute: tm.tm_min as u8,
+            second: tm.tm_sec as u8,
+            day: tm.tm_mday as u8,
+            month: (tm.tm_mon + 1) as u8,
+            year: (tm.tm_year + 1900) as u16,
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn now_parts() -> wmux_core::status::TimeParts {
+    // Windows: filled by the platform layer in a follow-up; default to zeros so
+    // time tokens render as 00:00 rather than failing.
+    wmux_core::status::TimeParts::default()
 }

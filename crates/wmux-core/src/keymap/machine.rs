@@ -100,6 +100,10 @@ impl Keymap {
                     if self.bindings.is_prefix(&key) {
                         flush_passthrough!();
                         self.mode = Mode::AwaitingCommand;
+                    } else if let Some(action) = self.bindings.lookup_root(&key).cloned() {
+                        // Root binding (tmux bind -n): fires without the prefix.
+                        flush_passthrough!();
+                        reactions.push(Reaction::Do(action));
                     } else {
                         passthrough.extend_from_slice(raw);
                     }

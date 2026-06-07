@@ -23,8 +23,24 @@ pub struct Config {
     pub shells: Vec<ShellProfile>,
     /// Extra key bindings: key string -> action name.
     pub bindings: BTreeMap<String, String>,
+    /// Root (no-prefix) key bindings (tmux `bind -n`): key -> action name.
+    pub root_bindings: BTreeMap<String, String>,
     /// Status bar format string (supports #S session, #W window, #H host).
     pub status_format: String,
+    /// Lowest window/pane index shown to the user (tmux base-index). tmux's
+    /// `base-index 1` makes numbering start at 1 instead of 0.
+    pub base_index: u32,
+    /// Whether the mouse is enabled (click/scroll/drag).
+    pub mouse: bool,
+    /// status-left format (left segment of the status bar).
+    pub status_left: String,
+    /// status-right format (right segment).
+    pub status_right: String,
+    /// Status justification: "left", "centre"/"center", or "right".
+    pub status_justify: String,
+    /// Status bar background/foreground as tmux color names or indices.
+    pub status_bg: String,
+    pub status_fg: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -41,7 +57,15 @@ impl Default for Config {
             default_shell: None,
             shells: Vec::new(),
             bindings: BTreeMap::new(),
+            root_bindings: BTreeMap::new(),
             status_format: "[#S] #W".to_string(),
+            base_index: 0,
+            mouse: false,
+            status_left: String::new(),
+            status_right: String::new(),
+            status_justify: "left".to_string(),
+            status_bg: "default".to_string(),
+            status_fg: "default".to_string(),
         }
     }
 }
@@ -71,6 +95,16 @@ impl Config {
         toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))
     }
 
+    /// The centre segment format. When status is centre-justified (tmux shows
+    /// the window list there), use the window-name token; otherwise empty.
+    pub fn status_format_centre(&self) -> String {
+        if self.status_justify == "centre" || self.status_justify == "center" {
+            "#W".to_string()
+        } else {
+            String::new()
+        }
+    }
+
     /// Resolve the shell argv for a profile name (or the default).
     pub fn shell_argv(&self, name: Option<&str>) -> Option<Vec<String>> {
         let target = name.or(self.default_shell.as_deref());
@@ -97,11 +131,17 @@ impl Config {
                 .ok_or_else(|| ConfigError::BadAction(action_str.clone()))?;
             b.bind(key, action);
         }
+        for (key_str, action_str) in &self.root_bindings {
+            let key = parse_key(key_str).ok_or_else(|| ConfigError::BadKey(key_str.clone()))?;
+            let action = parse_action(action_str)
+                .ok_or_else(|| ConfigError::BadAction(action_str.clone()))?;
+            b.bind_root(key, action);
+        }
         Ok(b)
     }
 }
 
-/// Parse a key spec like "C-b", "M-x", "|", "c", "Up", "Enter".
+/// Parse a key spec like "C-b", "M-x", "M-Left", "|", "c", "Up", "Enter".
 pub fn parse_key(s: &str) -> Option<Key> {
     let s = s.trim();
     if let Some(rest) = s.strip_prefix("C-") {
@@ -109,6 +149,14 @@ pub fn parse_key(s: &str) -> Option<Key> {
         return Some(Key::ctrl(c));
     }
     if let Some(rest) = s.strip_prefix("M-") {
+        // Alt + a named key (M-Left) or a single char (M-x).
+        if let Some(code) = named_key(rest) {
+            return Some(Key {
+                code,
+                ctrl: false,
+                alt: true,
+            });
+        }
         let c = single_char(rest)?;
         return Some(Key {
             code: KeyCode::Char(c),
@@ -116,16 +164,28 @@ pub fn parse_key(s: &str) -> Option<Key> {
             alt: true,
         });
     }
-    match s {
-        "Up" => Some(Key::plain(KeyCode::Up)),
-        "Down" => Some(Key::plain(KeyCode::Down)),
-        "Left" => Some(Key::plain(KeyCode::Left)),
-        "Right" => Some(Key::plain(KeyCode::Right)),
-        "Enter" => Some(Key::plain(KeyCode::Enter)),
-        "Space" => Some(Key::plain(KeyCode::Space)),
-        "Escape" => Some(Key::plain(KeyCode::Escape)),
-        _ => single_char(s).map(Key::char),
+    if let Some(code) = named_key(s) {
+        return Some(Key::plain(code));
     }
+    single_char(s).map(Key::char)
+}
+
+/// Map a named key string to a KeyCode, or None for non-named keys.
+fn named_key(s: &str) -> Option<KeyCode> {
+    Some(match s {
+        "Up" => KeyCode::Up,
+        "Down" => KeyCode::Down,
+        "Left" => KeyCode::Left,
+        "Right" => KeyCode::Right,
+        "Enter" => KeyCode::Enter,
+        "Space" => KeyCode::Space,
+        "Escape" => KeyCode::Escape,
+        "PageUp" => KeyCode::PageUp,
+        "PageDown" => KeyCode::PageDown,
+        "Home" => KeyCode::Home,
+        "End" => KeyCode::End,
+        _ => return None,
+    })
 }
 
 fn single_char(s: &str) -> Option<char> {
@@ -146,9 +206,14 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "new-window" => Action::NewWindow,
         "next-window" => Action::NextWindow,
         "prev-window" => Action::PrevWindow,
+        "select-pane-left" => Action::SelectPaneLeft,
+        "select-pane-right" => Action::SelectPaneRight,
+        "select-pane-up" => Action::SelectPaneUp,
+        "select-pane-down" => Action::SelectPaneDown,
         "detach" => Action::Detach,
         "copy-mode" => Action::EnterCopyMode,
         "kill-pane" => Action::KillPane,
+        "reload-config" => Action::ReloadConfig,
         _ => return None,
     };
     Some(action)

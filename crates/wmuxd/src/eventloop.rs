@@ -19,6 +19,7 @@ use std::sync::mpsc::{channel, Sender};
 
 use wmux_core::copymode::osc52;
 use wmux_core::keymap::{Action, CopyKey, Reaction};
+use wmux_core::layout::Direction;
 use wmux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use wmux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
 use wmux_core::traits::{FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, Transport};
@@ -218,6 +219,8 @@ where
         };
         match msg {
             ClientMsg::Input(bytes) => {
+                // Any input dismisses a pending display-message (tmux behavior).
+                self.daemon.clear_message(client_id);
                 let reactions = self
                     .daemon
                     .keymap_mut(client_id)
@@ -384,6 +387,10 @@ where
                     }
                 }
             }
+            Action::SelectPaneLeft => self.select_pane(session, Direction::Left),
+            Action::SelectPaneRight => self.select_pane(session, Direction::Right),
+            Action::SelectPaneUp => self.select_pane(session, Direction::Up),
+            Action::SelectPaneDown => self.select_pane(session, Direction::Down),
             Action::KillPane => {
                 if let Some(pid) = self.active_pane(session) {
                     let result = self.daemon.close_pane(session, pid);
@@ -394,9 +401,44 @@ where
             Action::EnterCopyMode => {
                 self.daemon.enter_copy_mode(client_id, session);
             }
+            Action::ReloadConfig => self.reload_config(client_id, session),
             // Detach is handled at the client layer; SendPrefix is pass-through.
             Action::Detach | Action::SendPrefix => {}
         }
+    }
+
+    /// Move focus geographically within the active window.
+    fn select_pane(&mut self, session: SessionId, dir: Direction) {
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        // Content area excludes the status bar row.
+        let viewport = wmux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            let wid = s.active_window();
+            if let Some(w) = s.window_mut(wid) {
+                w.focus_direction(dir, viewport);
+            }
+        }
+    }
+
+    /// Re-source the daemon's config file (tmux prefix r) and flash a message.
+    fn reload_config(&mut self, client_id: u64, session: SessionId) {
+        let path = crate::config_path();
+        let msg = match std::fs::read_to_string(&path) {
+            Ok(text) => match wmux_core::config::Config::from_toml(&text) {
+                Ok(cfg) => {
+                    self.daemon.set_config(cfg);
+                    "wmux configuration reloaded".to_string()
+                }
+                Err(e) => format!("config error: {e}"),
+            },
+            Err(_) => format!("no config at {}", path.display()),
+        };
+        self.daemon.flash_message(client_id, msg);
+        self.render_session(session);
     }
 
     /// Drive copy-mode navigation/selection/yank for a client. Space/'v' starts

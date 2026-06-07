@@ -46,6 +46,91 @@ impl StatusBar {
     }
 }
 
+/// Where the centre segment of a styled status bar is justified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Justify {
+    Left,
+    Centre,
+    Right,
+}
+
+/// A fully styled status bar: left / centre / right span lists over a base
+/// background, with the centre segment justified per [`Justify`]. Built by the
+/// daemon from the config's format strings and a [`StatusContext`].
+pub struct StyledStatus {
+    pub left: Vec<crate::status::Span>,
+    pub centre: Vec<crate::status::Span>,
+    pub right: Vec<crate::status::Span>,
+    pub base: CellAttributes,
+    pub justify: Justify,
+}
+
+impl StyledStatus {
+    /// Build a base [`CellAttributes`] from tmux color-name strings (e.g.
+    /// "colour24", "white", "default") without callers depending on termwiz.
+    pub fn base_attrs(bg: &str, fg: &str) -> CellAttributes {
+        let mut a = CellAttributes::default();
+        a.set_background(crate::status::parse_color(bg));
+        a.set_foreground(crate::status::parse_color(fg));
+        a
+    }
+
+    fn span_width(spans: &[crate::status::Span]) -> usize {
+        spans.iter().map(|s| s.text.chars().count()).sum()
+    }
+
+    fn paint(
+        screen: &mut Screen,
+        y: usize,
+        mut x: usize,
+        spans: &[crate::status::Span],
+        base: &CellAttributes,
+    ) {
+        let (w, _) = screen.dimensions();
+        for span in spans {
+            // Span attrs override the base, but inherit the base background when
+            // the span doesn't set one (so the bar color fills behind text).
+            for ch in span.text.chars() {
+                if x >= w {
+                    return;
+                }
+                let mut a = span.attrs.clone();
+                if a.background() == termwiz::color::ColorAttribute::Default {
+                    a.set_background(base.background());
+                }
+                screen.set_cell(x, y, Cell::new(ch, a));
+                x += 1;
+            }
+        }
+    }
+
+    /// Render into the bottom row of `screen`.
+    pub fn render(&self, screen: &mut Screen) {
+        let (w, h) = screen.dimensions();
+        if h == 0 {
+            return;
+        }
+        let y = h - 1;
+        // Fill the row with the base background.
+        for x in 0..w {
+            screen.set_cell(x, y, Cell::new(' ', self.base.clone()));
+        }
+        // Left segment at column 0.
+        Self::paint(screen, y, 0, &self.left, &self.base);
+        // Right segment right-aligned.
+        let rw = Self::span_width(&self.right);
+        Self::paint(screen, y, w.saturating_sub(rw), &self.right, &self.base);
+        // Centre segment per justification.
+        let cw = Self::span_width(&self.centre);
+        let cx = match self.justify {
+            Justify::Left => Self::span_width(&self.left),
+            Justify::Right => w.saturating_sub(rw + cw),
+            Justify::Centre => w.saturating_sub(cw) / 2,
+        };
+        Self::paint(screen, y, cx, &self.centre, &self.base);
+    }
+}
+
 /// Compose `view` into a Screen of `size`, reserving the bottom row for
 /// `status` when present. Pane cursor (of the active pane) maps to the screen.
 pub fn compose(size: (usize, usize), view: &WindowView, status: Option<&StatusBar>) -> Screen {

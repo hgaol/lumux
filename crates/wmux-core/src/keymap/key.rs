@@ -105,6 +105,17 @@ fn decode_escape(bytes: &[u8]) -> Option<(Key, usize)> {
 fn decode_csi(bytes: &[u8]) -> Option<(Key, usize)> {
     // bytes[0]=ESC bytes[1]='['; final byte distinguishes the key.
     let final_byte = bytes.get(2)?;
+    // Modified keys arrive as CSI 1 ; <mod> <letter>, e.g. ESC[1;3D = Alt-Left,
+    // ESC[1;5C = Ctrl-Right. Decode the modifier and the arrow/nav letter.
+    if *final_byte == b'1' && bytes.get(3) == Some(&b';') {
+        if let (Some(&m), Some(&letter)) = (bytes.get(4), bytes.get(5)) {
+            if let Some(code) = csi_letter_to_code(letter) {
+                let (ctrl, alt) = modifier_flags(m);
+                return Some((Key { code, ctrl, alt }, 6));
+            }
+        }
+        return Some((Key::plain(KeyCode::Escape), 1));
+    }
     let key = match final_byte {
         b'A' => KeyCode::Up,
         b'B' => KeyCode::Down,
@@ -145,6 +156,28 @@ fn decode_ss3(bytes: &[u8]) -> Option<(Key, usize)> {
     Some((Key::plain(key), 3))
 }
 
+/// The arrow/nav letter in a CSI sequence -> KeyCode.
+fn csi_letter_to_code(letter: u8) -> Option<KeyCode> {
+    Some(match letter {
+        b'A' => KeyCode::Up,
+        b'B' => KeyCode::Down,
+        b'C' => KeyCode::Right,
+        b'D' => KeyCode::Left,
+        b'H' => KeyCode::Home,
+        b'F' => KeyCode::End,
+        _ => return None,
+    })
+}
+
+/// Decode an xterm modifier digit (1 + bitmask) into (ctrl, alt). The bitmask
+/// is: 1=Shift, 2=Alt, 4=Ctrl. So '2'=Shift, '3'=Alt, '5'=Ctrl, '4'=Shift+Alt…
+fn modifier_flags(m: u8) -> (bool, bool) {
+    let mask = m.wrapping_sub(b'1');
+    let alt = mask & 0x2 != 0;
+    let ctrl = mask & 0x4 != 0;
+    (ctrl, alt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -182,6 +215,25 @@ mod tests {
             decode_key(b"\x1bOB").unwrap(),
             (Key::plain(KeyCode::Down), 3)
         );
+    }
+
+    #[test]
+    fn decodes_alt_arrows() {
+        let (k, n) = decode_key(b"\x1b[1;3D").unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(k.code, KeyCode::Left);
+        assert!(k.alt && !k.ctrl);
+        let (k, _) = decode_key(b"\x1b[1;3A").unwrap();
+        assert_eq!(k.code, KeyCode::Up);
+        assert!(k.alt);
+    }
+
+    #[test]
+    fn decodes_ctrl_arrows() {
+        let (k, n) = decode_key(b"\x1b[1;5C").unwrap();
+        assert_eq!(n, 6);
+        assert_eq!(k.code, KeyCode::Right);
+        assert!(k.ctrl && !k.alt);
     }
 
     #[test]

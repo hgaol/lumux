@@ -16,9 +16,16 @@ pub enum Action {
     NextWindow,
     PrevWindow,
     SelectWindow(u32),
+    /// Directional pane focus (tmux select-pane -L/-R/-U/-D).
+    SelectPaneLeft,
+    SelectPaneRight,
+    SelectPaneUp,
+    SelectPaneDown,
     Detach,
     EnterCopyMode,
     KillPane,
+    /// Re-source the config file and flash a confirmation (tmux prefix r).
+    ReloadConfig,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
 }
@@ -27,7 +34,11 @@ pub enum Action {
 pub struct Bindings {
     /// The prefix key (default Ctrl-b).
     pub prefix: Key,
+    /// Bindings that fire after the prefix.
     table: HashMap<Key, Action>,
+    /// Root bindings that fire WITHOUT the prefix (tmux `bind -n`), checked on
+    /// every key in Normal mode before pass-through.
+    root: HashMap<Key, Action>,
 }
 
 impl Default for Bindings {
@@ -49,6 +60,12 @@ impl Bindings {
         table.insert(Key::char('d'), Action::Detach);
         table.insert(Key::char('['), Action::EnterCopyMode);
         table.insert(Key::char('x'), Action::KillPane);
+        table.insert(Key::char('r'), Action::ReloadConfig);
+        // Prefixed directional pane selection (tmux default arrow bindings).
+        table.insert(Key::plain(KeyCode::Left), Action::SelectPaneLeft);
+        table.insert(Key::plain(KeyCode::Right), Action::SelectPaneRight);
+        table.insert(Key::plain(KeyCode::Up), Action::SelectPaneUp);
+        table.insert(Key::plain(KeyCode::Down), Action::SelectPaneDown);
         for n in 0..=9u32 {
             table.insert(
                 Key::char(char::from_digit(n, 10).unwrap()),
@@ -58,7 +75,21 @@ impl Bindings {
         // Pressing the prefix again sends a literal prefix.
         let prefix = Key::ctrl('b');
         table.insert(prefix, Action::SendPrefix);
-        Self { prefix, table }
+        Self {
+            prefix,
+            table,
+            root: HashMap::new(),
+        }
+    }
+
+    /// Bind a key in the root table (fires without the prefix; tmux `bind -n`).
+    pub fn bind_root(&mut self, key: Key, action: Action) {
+        self.root.insert(key, action);
+    }
+
+    /// Look up a root (no-prefix) binding.
+    pub fn lookup_root(&self, key: &Key) -> Option<&Action> {
+        self.root.get(key)
     }
 
     pub fn set_prefix(&mut self, prefix: Key) {
