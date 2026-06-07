@@ -1,0 +1,393 @@
+//! Object model: Server owns Sessions own Windows own a pane tree; Panes are
+//! leaves. Clients are a separate registry referencing a session + viewport.
+//!
+//! This module is pure state and structural operations — no I/O, no platform
+//! types. The daemon (Phase 7) drives these operations in response to client
+//! commands and attaches real PTYs/grids to [`Pane`]s.
+
+mod id;
+mod tree;
+
+pub use id::{IdParseError, PaneId, SessionId, WindowId};
+pub use tree::{PaneNode, Removed, SplitDir};
+
+use crate::traits::PtySize;
+use std::collections::BTreeMap;
+
+/// A leaf in the window's pane tree. In Phase 1 it carries only identity and
+/// metadata; the daemon later associates a PTY + VT grid with each pane by id.
+#[derive(Debug, Clone)]
+pub struct Pane {
+    pub id: PaneId,
+    /// argv used to spawn this pane's shell (for display / respawn).
+    pub shell: Vec<String>,
+}
+
+impl Pane {
+    pub fn new(id: PaneId, shell: Vec<String>) -> Self {
+        Self { id, shell }
+    }
+}
+
+/// A window: a named "tab" filling the client viewport, holding a pane tree and
+/// tracking which pane has input focus.
+#[derive(Debug, Clone)]
+pub struct Window {
+    pub id: WindowId,
+    pub name: String,
+    pub layout: PaneNode,
+    panes: BTreeMap<PaneId, Pane>,
+    active_pane: PaneId,
+}
+
+impl Window {
+    fn new(id: WindowId, name: String, first_pane: Pane) -> Self {
+        let active_pane = first_pane.id;
+        let layout = PaneNode::leaf(first_pane.id);
+        let mut panes = BTreeMap::new();
+        panes.insert(first_pane.id, first_pane);
+        Self {
+            id,
+            name,
+            layout,
+            panes,
+            active_pane,
+        }
+    }
+
+    pub fn active_pane(&self) -> PaneId {
+        self.active_pane
+    }
+
+    pub fn pane_ids(&self) -> Vec<PaneId> {
+        self.layout.pane_ids()
+    }
+
+    pub fn pane(&self, id: PaneId) -> Option<&Pane> {
+        self.panes.get(&id)
+    }
+
+    pub fn pane_count(&self) -> usize {
+        self.panes.len()
+    }
+
+    /// Split the active pane, inserting `new` next to it. The new pane becomes
+    /// active (tmux behavior).
+    fn split(&mut self, new: Pane, dir: SplitDir) {
+        let target = self.active_pane;
+        if self.layout.split_leaf(target, new.id, dir) {
+            self.active_pane = new.id;
+            self.panes.insert(new.id, new);
+        }
+    }
+
+    /// Remove a pane. Returns true if the window is now empty (caller closes
+    /// the window).
+    fn remove_pane(&mut self, id: PaneId) -> bool {
+        match self.layout.remove_pane(id) {
+            Removed::NotFound => false,
+            Removed::Gone => {
+                self.panes.remove(&id);
+                true
+            }
+            Removed::Collapsed => {
+                self.panes.remove(&id);
+                if self.active_pane == id {
+                    // Focus the first remaining pane.
+                    self.active_pane = self.layout.pane_ids()[0];
+                }
+                false
+            }
+        }
+    }
+
+    /// Move focus to the next pane in traversal order (wraps).
+    pub fn focus_next_pane(&mut self) {
+        let ids = self.layout.pane_ids();
+        if let Some(pos) = ids.iter().position(|&i| i == self.active_pane) {
+            self.active_pane = ids[(pos + 1) % ids.len()];
+        }
+    }
+
+    pub fn focus_pane(&mut self, id: PaneId) -> bool {
+        if self.panes.contains_key(&id) {
+            self.active_pane = id;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// A session: the unit a client attaches to. Owns an ordered list of windows
+/// and tracks the active one. Survives client detach.
+#[derive(Debug, Clone)]
+pub struct Session {
+    pub id: SessionId,
+    pub name: String,
+    windows: Vec<Window>,
+    active_window: WindowId,
+}
+
+impl Session {
+    fn new(id: SessionId, name: String, first_window: Window) -> Self {
+        let active_window = first_window.id;
+        Self {
+            id,
+            name,
+            windows: vec![first_window],
+            active_window,
+        }
+    }
+
+    pub fn active_window(&self) -> WindowId {
+        self.active_window
+    }
+
+    pub fn window_ids(&self) -> Vec<WindowId> {
+        self.windows.iter().map(|w| w.id).collect()
+    }
+
+    pub fn window(&self, id: WindowId) -> Option<&Window> {
+        self.windows.iter().find(|w| w.id == id)
+    }
+
+    pub fn window_mut(&mut self, id: WindowId) -> Option<&mut Window> {
+        self.windows.iter_mut().find(|w| w.id == id)
+    }
+
+    pub fn active_window_mut(&mut self) -> &mut Window {
+        let id = self.active_window;
+        self.window_mut(id).expect("active window always exists")
+    }
+
+    pub fn window_count(&self) -> usize {
+        self.windows.len()
+    }
+
+    fn add_window(&mut self, w: Window) {
+        self.active_window = w.id;
+        self.windows.push(w);
+    }
+
+    /// Remove a window. Returns true if the session is now empty (caller closes
+    /// the session).
+    fn remove_window(&mut self, id: WindowId) -> bool {
+        let Some(pos) = self.windows.iter().position(|w| w.id == id) else {
+            return false;
+        };
+        self.windows.remove(pos);
+        if self.windows.is_empty() {
+            return true;
+        }
+        if self.active_window == id {
+            // Activate the previous window (clamp), tmux-ish.
+            let new_idx = pos.saturating_sub(1).min(self.windows.len() - 1);
+            self.active_window = self.windows[new_idx].id;
+        }
+        false
+    }
+
+    pub fn focus_next_window(&mut self) {
+        if let Some(pos) = self.windows.iter().position(|w| w.id == self.active_window) {
+            self.active_window = self.windows[(pos + 1) % self.windows.len()].id;
+        }
+    }
+
+    pub fn focus_prev_window(&mut self) {
+        if let Some(pos) = self.windows.iter().position(|w| w.id == self.active_window) {
+            let n = self.windows.len();
+            self.active_window = self.windows[(pos + n - 1) % n].id;
+        }
+    }
+
+    pub fn focus_window(&mut self, id: WindowId) -> bool {
+        if self.windows.iter().any(|w| w.id == id) {
+            self.active_window = id;
+            true
+        } else {
+            false
+        }
+    }
+}
+
+/// An attached client. Not part of the object tree — a separate registry entry.
+/// Carries this connection's viewport size and which session it views.
+#[derive(Debug, Clone)]
+pub struct Client {
+    pub id: u64,
+    pub session: SessionId,
+    pub size: PtySize,
+}
+
+/// The whole daemon state: all sessions and all attached clients.
+#[derive(Debug, Default)]
+pub struct Server {
+    sessions: BTreeMap<SessionId, Session>,
+    clients: BTreeMap<u64, Client>,
+    next_client_id: u64,
+}
+
+impl Server {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn session_ids(&self) -> Vec<SessionId> {
+        self.sessions.keys().copied().collect()
+    }
+
+    pub fn session(&self, id: SessionId) -> Option<&Session> {
+        self.sessions.get(&id)
+    }
+
+    pub fn session_mut(&mut self, id: SessionId) -> Option<&mut Session> {
+        self.sessions.get_mut(&id)
+    }
+
+    pub fn find_session_by_name(&self, name: &str) -> Option<SessionId> {
+        self.sessions
+            .values()
+            .find(|s| s.name == name)
+            .map(|s| s.id)
+    }
+
+    pub fn session_count(&self) -> usize {
+        self.sessions.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.sessions.is_empty()
+    }
+
+    /// Create a new session with one window and one pane. Returns the new ids.
+    pub fn new_session(&mut self, name: impl Into<String>, shell: Vec<String>) -> SessionId {
+        let sid = SessionId::alloc();
+        let wid = WindowId::alloc();
+        let pid = PaneId::alloc();
+        let pane = Pane::new(pid, shell);
+        let window = Window::new(wid, "0".to_string(), pane);
+        let session = Session::new(sid, name.into(), window);
+        self.sessions.insert(sid, session);
+        sid
+    }
+
+    pub fn kill_session(&mut self, id: SessionId) -> bool {
+        let removed = self.sessions.remove(&id).is_some();
+        if removed {
+            // Drop clients that were viewing it.
+            self.clients.retain(|_, c| c.session != id);
+        }
+        removed
+    }
+
+    /// Add a window to a session. Returns the new window id.
+    pub fn new_window(
+        &mut self,
+        sid: SessionId,
+        name: impl Into<String>,
+        shell: Vec<String>,
+    ) -> Option<WindowId> {
+        let session = self.sessions.get_mut(&sid)?;
+        let wid = WindowId::alloc();
+        let pid = PaneId::alloc();
+        let pane = Pane::new(pid, shell);
+        let window = Window::new(wid, name.into(), pane);
+        session.add_window(window);
+        Some(wid)
+    }
+
+    /// Split the active pane of a session's active window. Returns new pane id.
+    pub fn split_active(
+        &mut self,
+        sid: SessionId,
+        shell: Vec<String>,
+        dir: SplitDir,
+    ) -> Option<PaneId> {
+        let session = self.sessions.get_mut(&sid)?;
+        let pid = PaneId::alloc();
+        let pane = Pane::new(pid, shell);
+        session.active_window_mut().split(pane, dir);
+        Some(pid)
+    }
+
+    /// Kill a pane anywhere in a session, cascading: emptying a window closes
+    /// it; emptying the session closes it. Returns what ultimately happened.
+    pub fn kill_pane(&mut self, sid: SessionId, pid: PaneId) -> CascadeResult {
+        let Some(session) = self.sessions.get_mut(&sid) else {
+            return CascadeResult::NotFound;
+        };
+        // Find which window holds the pane.
+        let Some(wid) = session
+            .windows
+            .iter()
+            .find(|w| w.layout.contains(pid))
+            .map(|w| w.id)
+        else {
+            return CascadeResult::NotFound;
+        };
+        let window = session.window_mut(wid).unwrap();
+        let window_now_empty = window.remove_pane(pid);
+        if !window_now_empty {
+            return CascadeResult::PaneClosed;
+        }
+        let session_now_empty = session.remove_window(wid);
+        if !session_now_empty {
+            return CascadeResult::WindowClosed;
+        }
+        self.kill_session(sid);
+        CascadeResult::SessionClosed
+    }
+
+    // --- client registry ---
+
+    pub fn attach_client(&mut self, session: SessionId, size: PtySize) -> Option<u64> {
+        if !self.sessions.contains_key(&session) {
+            return None;
+        }
+        self.next_client_id += 1;
+        let id = self.next_client_id;
+        self.clients.insert(id, Client { id, session, size });
+        Some(id)
+    }
+
+    pub fn detach_client(&mut self, id: u64) -> bool {
+        self.clients.remove(&id).is_some()
+    }
+
+    pub fn clients_of(&self, session: SessionId) -> Vec<&Client> {
+        self.clients
+            .values()
+            .filter(|c| c.session == session)
+            .collect()
+    }
+
+    pub fn client_count(&self) -> usize {
+        self.clients.len()
+    }
+
+    /// Effective render size for a session: element-wise min over attached
+    /// clients ("smallest client wins"). None if no clients are attached.
+    pub fn effective_size(&self, session: SessionId) -> Option<PtySize> {
+        let mut it = self.clients_of(session).into_iter().peekable();
+        it.peek()?;
+        let mut cols = u16::MAX;
+        let mut rows = u16::MAX;
+        for c in it {
+            cols = cols.min(c.size.cols);
+            rows = rows.min(c.size.rows);
+        }
+        Some(PtySize { cols, rows })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CascadeResult {
+    PaneClosed,
+    WindowClosed,
+    SessionClosed,
+    NotFound,
+}
+
+#[cfg(test)]
+mod tests;
