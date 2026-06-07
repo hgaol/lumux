@@ -477,3 +477,78 @@ fn prefix_question_shows_help_overlay() {
         "a keypress should dismiss the help overlay"
     );
 }
+
+#[test]
+fn status_bar_shows_window_list() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("wins".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Create two more windows (Ctrl-b c twice), then force a full repaint with
+    // a resize so the whole status row (window list) is re-sent.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The window list renders entries "0: 1: 2:" with the active one marked '*'.
+    assert!(
+        vt.contains("0:") && vt.contains("1:") && vt.contains("2:") && vt.contains('*'),
+        "status bar should list all windows with an active marker; got:\n{vt}"
+    );
+}
+
+#[test]
+fn prefix_s_switches_session() {
+    let path = start_daemon();
+    // Create two sessions via two clients (so the daemon holds both).
+    let mut a = TestClient::connect(&path);
+    a.send(&ClientMsg::NewSession {
+        name: Some("alpha".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    a.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Put a unique marker on alpha's screen.
+    a.send(&ClientMsg::Input(b"echo ALPHA_HERE\n".to_vec()));
+    a.collect_until(Duration::from_secs(1), |_| false);
+    a.send(&ClientMsg::Detach);
+    drop(a);
+
+    let mut b = TestClient::connect(&path);
+    b.send(&ClientMsg::NewSession {
+        name: Some("beta".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    b.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    b.send(&ClientMsg::Input(b"echo BETA_HERE\n".to_vec()));
+    b.collect_until(Duration::from_secs(1), |_| false);
+
+    // Ctrl-b s opens the switcher; it should list both sessions.
+    b.send(&ClientMsg::Input(vec![0x02, b's']));
+    let (_d, vt) = b.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("choose a session") && vt.contains("alpha") && vt.contains("beta"),
+        "switcher should list sessions; got:\n{vt}"
+    );
+    // Select the first session (index 0 = alpha) and confirm.
+    b.send(&ClientMsg::Input(b"0".to_vec()));
+    b.send(&ClientMsg::Input(b"\r".to_vec()));
+    let (_d2, vt2) = b.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt2.contains("ALPHA_HERE"),
+        "after switching, the client should see alpha's screen; got:\n{vt2}"
+    );
+}

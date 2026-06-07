@@ -19,6 +19,8 @@ pub enum Mode {
     Copy,
     /// Showing the key-binding help overlay; any key dismisses it.
     Help,
+    /// Showing the session switcher; navigation keys pick a session.
+    ChooseSession,
 }
 
 /// What the daemon should do in response to a chunk of decoded input.
@@ -30,6 +32,19 @@ pub enum Reaction {
     Do(Action),
     /// A copy-mode navigation key (Phase 8 acts on it).
     Copy(CopyKey),
+    /// A session-switcher key (daemon moves the selection / confirms / cancels).
+    Session(SessionKey),
+}
+
+/// Keys handled while the session switcher is open.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionKey {
+    Up,
+    Down,
+    /// Jump to the Nth session in the list (digit key).
+    Index(u32),
+    Confirm,
+    Cancel,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -135,6 +150,10 @@ impl Keymap {
                             self.mode = Mode::Help;
                             reactions.push(Reaction::Do(Action::ShowHelp));
                         }
+                        Some(Action::ChooseSession) => {
+                            self.mode = Mode::ChooseSession;
+                            reactions.push(Reaction::Do(Action::ChooseSession));
+                        }
                         Some(action) => reactions.push(Reaction::Do(action)),
                         None => { /* unknown command: no-op, back to Normal */ }
                     }
@@ -148,6 +167,16 @@ impl Keymap {
                         reactions.push(Reaction::Copy(ck));
                     }
                     // Non-navigation keys in copy-mode are ignored.
+                }
+                Mode::ChooseSession => {
+                    flush_passthrough!();
+                    if let Some(sk) = session_key(&key) {
+                        if matches!(sk, SessionKey::Confirm | SessionKey::Cancel) {
+                            self.mode = Mode::Normal;
+                        }
+                        reactions.push(Reaction::Session(sk));
+                    }
+                    // Other keys are ignored while the switcher is open.
                 }
                 Mode::Help => {
                     // Any key dismisses the help overlay; the key is swallowed.
@@ -167,6 +196,19 @@ impl Keymap {
     pub fn reset(&mut self) {
         self.mode = Mode::Normal;
     }
+}
+
+/// Map a key to a session-switcher action while the switcher is open.
+fn session_key(key: &Key) -> Option<SessionKey> {
+    let sk = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => SessionKey::Up,
+        KeyCode::Down | KeyCode::Char('j') => SessionKey::Down,
+        KeyCode::Enter => SessionKey::Confirm,
+        KeyCode::Escape | KeyCode::Char('q') => SessionKey::Cancel,
+        KeyCode::Char(c) if c.is_ascii_digit() => SessionKey::Index(c.to_digit(10).unwrap()),
+        _ => return None,
+    };
+    Some(sk)
 }
 
 fn copy_key(key: &Key) -> Option<CopyKey> {

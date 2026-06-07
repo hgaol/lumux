@@ -28,6 +28,8 @@ pub enum Action {
     ReloadConfig,
     /// Show the key-binding help overlay (tmux prefix ?).
     ShowHelp,
+    /// Open the session switcher (tmux prefix s).
+    ChooseSession,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
 }
@@ -51,6 +53,7 @@ impl Action {
             Action::KillPane => "kill the active pane",
             Action::ReloadConfig => "reload configuration",
             Action::ShowHelp => "show this help",
+            Action::ChooseSession => "choose session",
             Action::SendPrefix => "send the prefix key to the shell",
         }
     }
@@ -88,6 +91,7 @@ impl Bindings {
         table.insert(Key::char('x'), Action::KillPane);
         table.insert(Key::char('r'), Action::ReloadConfig);
         table.insert(Key::char('?'), Action::ShowHelp);
+        table.insert(Key::char('s'), Action::ChooseSession);
         // Prefixed directional pane selection (tmux default arrow bindings).
         table.insert(Key::plain(KeyCode::Left), Action::SelectPaneLeft);
         table.insert(Key::plain(KeyCode::Right), Action::SelectPaneRight);

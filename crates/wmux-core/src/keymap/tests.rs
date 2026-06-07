@@ -195,3 +195,30 @@ fn help_entries_lists_bindings() {
     // The literal send-prefix entry is omitted.
     assert!(!entries.iter().any(|(_, d)| d.contains("send the prefix")));
 }
+
+#[test]
+fn prefix_s_opens_session_switcher() {
+    use crate::keymap::SessionKey;
+    let mut k = km();
+    // Ctrl-b s opens the switcher.
+    let r = k.feed(&[0x02, b's']);
+    assert_eq!(r, vec![Reaction::Do(Action::ChooseSession)]);
+    assert_eq!(k.mode(), Mode::ChooseSession);
+    // Down/Up navigate; a digit jumps; Enter confirms; Esc cancels.
+    assert_eq!(k.feed(b"\x1b[B"), vec![Reaction::Session(SessionKey::Down)]);
+    assert_eq!(k.feed(b"2"), vec![Reaction::Session(SessionKey::Index(2))]);
+    let r = k.feed(b"\r");
+    assert_eq!(r, vec![Reaction::Session(SessionKey::Confirm)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
+fn session_switcher_cancel_returns_to_normal() {
+    use crate::keymap::SessionKey;
+    let mut k = km();
+    k.feed(&[0x02, b's']);
+    assert_eq!(k.mode(), Mode::ChooseSession);
+    let r = k.feed(b"\x1b"); // Escape
+    assert_eq!(r, vec![Reaction::Session(SessionKey::Cancel)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}

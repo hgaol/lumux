@@ -214,6 +214,8 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "copy-mode" => Action::EnterCopyMode,
         "kill-pane" => Action::KillPane,
         "reload-config" => Action::ReloadConfig,
+        "show-help" => Action::ShowHelp,
+        "choose-session" => Action::ChooseSession,
         _ => return None,
     };
     Some(action)

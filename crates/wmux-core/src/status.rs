@@ -20,6 +20,38 @@ pub struct Span {
     pub attrs: CellAttributes,
 }
 
+/// One window in the status-bar window list.
+pub struct WindowEntry {
+    pub index: u32,
+    pub name: String,
+    pub active: bool,
+}
+
+/// Build a tmux-style window list as styled spans: `1:name 2:name* 3:name`,
+/// with the active window in reverse video and marked `*`. `base` supplies the
+/// bar's background/foreground so inactive entries blend in.
+pub fn window_list(entries: &[WindowEntry], base: &CellAttributes) -> Vec<Span> {
+    let mut spans = Vec::new();
+    for (i, e) in entries.iter().enumerate() {
+        let marker = if e.active { "*" } else { "" };
+        let mut attrs = base.clone();
+        if e.active {
+            attrs.set_reverse(true);
+        }
+        spans.push(Span {
+            text: format!("{}:{}{marker}", e.index, e.name),
+            attrs,
+        });
+        if i + 1 < entries.len() {
+            spans.push(Span {
+                text: " ".to_string(),
+                attrs: base.clone(),
+            });
+        }
+    }
+    spans
+}
+
 /// Values substituted into format variable tokens.
 #[derive(Debug, Clone, Default)]
 pub struct StatusContext {
@@ -275,5 +307,36 @@ mod tests {
         assert_eq!(parse_color("124"), ColorAttribute::PaletteIndex(124));
         assert_eq!(parse_color("cyan"), ColorAttribute::PaletteIndex(6));
         assert_eq!(parse_color("default"), ColorAttribute::Default);
+    }
+
+    #[test]
+    fn window_list_marks_active_and_separates() {
+        let entries = vec![
+            WindowEntry {
+                index: 1,
+                name: "bash".into(),
+                active: false,
+            },
+            WindowEntry {
+                index: 2,
+                name: "vim".into(),
+                active: true,
+            },
+            WindowEntry {
+                index: 3,
+                name: "logs".into(),
+                active: false,
+            },
+        ];
+        let base = CellAttributes::default();
+        let spans = window_list(&entries, &base);
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(text, "1:bash 2:vim* 3:logs");
+        // The active entry ("2:vim*") is reverse-video.
+        let active = spans.iter().find(|s| s.text == "2:vim*").unwrap();
+        assert!(active.attrs.reverse());
+        // Inactive entries are not.
+        let inactive = spans.iter().find(|s| s.text == "1:bash").unwrap();
+        assert!(!inactive.attrs.reverse());
     }
 }

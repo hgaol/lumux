@@ -375,6 +375,21 @@ impl Server {
         self.clients.remove(&id).is_some()
     }
 
+    /// Re-point an attached client at a different session (tmux switch-client).
+    /// Returns false if either the client or the target session is unknown.
+    pub fn set_client_session(&mut self, id: u64, session: SessionId) -> bool {
+        if !self.sessions.contains_key(&session) {
+            return false;
+        }
+        match self.clients.get_mut(&id) {
+            Some(c) => {
+                c.session = session;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn clients_of(&self, session: SessionId) -> Vec<&Client> {
         self.clients
             .values()

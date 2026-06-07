@@ -18,7 +18,7 @@ use std::io::Read;
 use std::sync::mpsc::{channel, Sender};
 
 use wmux_core::copymode::osc52;
-use wmux_core::keymap::{Action, CopyKey, Reaction};
+use wmux_core::keymap::{Action, CopyKey, Reaction, SessionKey};
 use wmux_core::layout::Direction;
 use wmux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use wmux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
@@ -240,6 +240,7 @@ where
                     .keymap_mut(client_id)
                     .map(|k| k.feed(&keyboard))
                     .unwrap_or_default();
+                let mut session = session;
                 for r in reactions {
                     match r {
                         Reaction::PassThrough(data) => {
@@ -250,9 +251,17 @@ where
                         Reaction::Do(Action::EnterCopyMode) => {
                             self.daemon.enter_copy_mode(client_id, session);
                         }
+                        Reaction::Do(Action::ChooseSession) => {
+                            self.daemon.open_chooser(client_id);
+                        }
                         Reaction::Do(action) => self.apply_action(client_id, session, action),
                         Reaction::Copy(ck) => {
                             self.handle_copy_key(client_id, session, ck);
+                        }
+                        Reaction::Session(sk) => {
+                            if let Some(new_session) = self.handle_session_key(client_id, sk) {
+                                session = new_session;
+                            }
                         }
                     }
                 }
@@ -417,6 +426,7 @@ where
             }
             Action::ReloadConfig => self.reload_config(client_id, session),
             Action::ShowHelp => self.daemon.toggle_help(client_id),
+            Action::ChooseSession => self.daemon.open_chooser(client_id),
             // Detach is handled at the client layer; SendPrefix is pass-through.
             Action::Detach | Action::SendPrefix => {}
         }
@@ -539,6 +549,41 @@ where
         };
         self.daemon.flash_message(client_id, msg);
         self.render_session(session);
+    }
+
+    /// Drive the session switcher. Returns Some(new_session) when the user
+    /// confirms a switch, so the caller can re-point its local session.
+    fn handle_session_key(&mut self, client_id: u64, sk: SessionKey) -> Option<SessionId> {
+        match sk {
+            SessionKey::Up => {
+                self.daemon.chooser_move(client_id, -1, None);
+                None
+            }
+            SessionKey::Down => {
+                self.daemon.chooser_move(client_id, 1, None);
+                None
+            }
+            SessionKey::Index(n) => {
+                self.daemon.chooser_move(client_id, 0, Some(n as usize));
+                None
+            }
+            SessionKey::Cancel => {
+                self.daemon.chooser_cancel(client_id);
+                None
+            }
+            SessionKey::Confirm => {
+                let new_session = self.daemon.chooser_confirm(client_id);
+                if let Some(sid) = new_session {
+                    // Update the event-loop's client->session mapping and force a
+                    // full repaint of the newly-shown session.
+                    if let Some(h) = self.clients.get_mut(&client_id) {
+                        h.session = sid;
+                    }
+                    self.daemon.invalidate_client(client_id);
+                }
+                new_session
+            }
+        }
     }
 
     /// Drive copy-mode navigation/selection/yank for a client. Space/'v' starts

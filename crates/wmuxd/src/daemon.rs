@@ -46,6 +46,8 @@ pub struct Daemon<S: PtySystem> {
     message: BTreeMap<u64, String>,
     /// Clients currently showing the key-binding help overlay (tmux prefix ?).
     help: std::collections::BTreeSet<u64>,
+    /// Clients in the session switcher, with their current highlighted index.
+    choosing: BTreeMap<u64, usize>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -65,6 +67,7 @@ impl<S: PtySystem> Daemon<S> {
             copy: BTreeMap::new(),
             message: BTreeMap::new(),
             help: std::collections::BTreeSet::new(),
+            choosing: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -202,6 +205,7 @@ impl<S: PtySystem> Daemon<S> {
         self.copy.remove(&client_id);
         self.message.remove(&client_id);
         self.help.remove(&client_id);
+        self.choosing.remove(&client_id);
         self.server.detach_client(client_id);
     }
 
@@ -218,6 +222,86 @@ impl<S: PtySystem> Daemon<S> {
 
     pub fn in_help(&self, client_id: u64) -> bool {
         self.help.contains(&client_id)
+    }
+
+    /// Open the session switcher for a client, highlighting its current session.
+    pub fn open_chooser(&mut self, client_id: u64) {
+        let sessions = self.server.session_ids();
+        let current = self.client_session(client_id);
+        let start = current
+            .and_then(|sid| sessions.iter().position(|&s| s == sid))
+            .unwrap_or(0);
+        self.choosing.insert(client_id, start);
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    pub fn in_chooser(&self, client_id: u64) -> bool {
+        self.choosing.contains_key(&client_id)
+    }
+
+    /// Force a client's next render to be a full repaint (e.g. after switching
+    /// session, where the whole screen changes).
+    pub fn invalidate_client(&mut self, client_id: u64) {
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    /// Move the switcher selection. `delta` of -1/+1 = up/down; absolute index
+    /// via `to`. Clamped to the session list.
+    pub fn chooser_move(&mut self, client_id: u64, delta: i32, to: Option<usize>) {
+        let n = self.server.session_ids().len();
+        if n == 0 {
+            return;
+        }
+        if let Some(sel) = self.choosing.get_mut(&client_id) {
+            let next = match to {
+                Some(i) => i.min(n - 1),
+                None => {
+                    let cur = *sel as i32 + delta;
+                    cur.clamp(0, n as i32 - 1) as usize
+                }
+            };
+            *sel = next;
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Confirm the switcher: move the client to the highlighted session. Returns
+    /// the new session id if it changed.
+    pub fn chooser_confirm(&mut self, client_id: u64) -> Option<SessionId> {
+        let sel = self.choosing.remove(&client_id)?;
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        let target = *self.server.session_ids().get(sel)?;
+        if self.server.set_client_session(client_id, target) {
+            Some(target)
+        } else {
+            None
+        }
+    }
+
+    /// Cancel the switcher without changing session.
+    pub fn chooser_cancel(&mut self, client_id: u64) {
+        if self.choosing.remove(&client_id).is_some() {
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    fn client_session(&self, client_id: u64) -> Option<SessionId> {
+        self.server.session_ids().into_iter().find(|&sid| {
+            self.server
+                .clients_of(sid)
+                .iter()
+                .any(|c| c.id == client_id)
+        })
     }
 
     /// Show a transient status-line message to a client (tmux display-message).
@@ -331,6 +415,10 @@ impl<S: PtySystem> Daemon<S> {
         if self.help.contains(&client_id) {
             return self.render_help(client_id, session);
         }
+        // The session switcher likewise takes over the screen.
+        if self.choosing.contains_key(&client_id) {
+            return self.render_chooser(client_id, session);
+        }
         // Copy-mode clients see the scrolled history view instead of live panes.
         if self.copy.contains_key(&client_id) {
             return self.render_copy_mode(client_id, session);
@@ -406,7 +494,21 @@ impl<S: PtySystem> Daemon<S> {
         };
         let styled = StyledStatus {
             left: status::format(left_fmt, &ctx),
-            centre: status::format(&self.config.status_format_centre(), &ctx),
+            centre: {
+                let entries: Vec<status::WindowEntry> = s
+                    .window_ids()
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, wid)| {
+                        s.window(*wid).map(|w| status::WindowEntry {
+                            index: i as u32 + base_idx,
+                            name: w.name.clone(),
+                            active: *wid == s.active_window(),
+                        })
+                    })
+                    .collect();
+                status::window_list(&entries, &base)
+            },
             right: status::format(&self.config.status_right, &ctx),
             base,
             justify: match self.config.status_justify.as_str() {
@@ -486,6 +588,45 @@ impl<S: PtySystem> Daemon<S> {
             screen.write_plain(0, y, &line);
         }
         screen.status_line(rows.saturating_sub(1), "-- HELP --  press any key to close");
+        screen.set_cursor(None);
+
+        let renderer = self.renderers.get_mut(&client_id)?;
+        Some(renderer.render(screen))
+    }
+
+    /// Render the session switcher overlay (tmux prefix s): a list of sessions
+    /// with the selected one highlighted, plus each session's window count.
+    fn render_chooser(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        use wmux_core::render::Screen;
+        let size = self.server.effective_size(session)?;
+        let cols = size.cols as usize;
+        let rows = size.rows as usize;
+        let mut screen = Screen::new(cols, rows);
+        let sel = *self.choosing.get(&client_id)?;
+
+        screen.write_plain(
+            0,
+            0,
+            "choose a session  (Up/Down or digit, Enter selects, Esc cancels)",
+        );
+        let max_y = rows.saturating_sub(1);
+        for (i, sid) in self.server.session_ids().iter().enumerate() {
+            let y = 2 + i;
+            if y >= max_y {
+                break;
+            }
+            let Some(s) = self.server.session(*sid) else {
+                continue;
+            };
+            let line = format!("  {}: {} ({} windows)", i, s.name, s.window_count());
+            if i == sel {
+                // Highlight the selected row across the full width.
+                screen.status_line(y, &line);
+            } else {
+                screen.write_plain(0, y, &line);
+            }
+        }
+        screen.status_line(max_y, "-- SESSIONS --");
         screen.set_cursor(None);
 
         let renderer = self.renderers.get_mut(&client_id)?;
