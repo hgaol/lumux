@@ -76,9 +76,10 @@ fn select_window_by_digit() {
 #[test]
 fn enter_and_exit_copy_mode() {
     let mut k = km();
-    // Ctrl-b [ enters copy mode (no action emitted, just a state change).
+    // Ctrl-b [ enters copy mode and emits the EnterCopyMode action so the
+    // daemon can set up copy state.
     let r = k.feed(&[0x02, b'[']);
-    assert!(r.is_empty());
+    assert_eq!(r, vec![Reaction::Do(Action::EnterCopyMode)]);
     assert_eq!(k.mode(), Mode::Copy);
     // Arrow keys become copy navigation.
     let r = k.feed(b"\x1b[A");

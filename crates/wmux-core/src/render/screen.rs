@@ -68,6 +68,26 @@ impl Screen {
         cx
     }
 
+    /// Write plain (default-attribute) text at (x,y). Convenience for callers
+    /// that don't depend on termwiz types (e.g. the daemon's copy-mode view).
+    pub fn write_plain(&mut self, x: usize, y: usize, s: &str) {
+        self.write_str(x, y, s, &CellAttributes::default());
+    }
+
+    /// Fill row `y` with a reverse-video bar and write `text` left-aligned into
+    /// it. Used for status / mode lines without exposing termwiz to callers.
+    pub fn status_line(&mut self, y: usize, text: &str) {
+        if y >= self.height {
+            return;
+        }
+        let mut attrs = CellAttributes::default();
+        attrs.set_reverse(true);
+        for x in 0..self.width {
+            self.set_cell(x, y, Cell::new(' ', attrs.clone()));
+        }
+        self.write_str(0, y, text, &attrs);
+    }
+
     /// Blit a pane's visible cells into the rectangle at (ox,oy) of size
     /// (cols,rows). Rows/cols beyond the source are left blank.
     pub fn blit_cells(&mut self, ox: usize, oy: usize, cols: usize, rows: usize, src_rows: &[&[Cell]]) {

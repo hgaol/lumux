@@ -17,7 +17,8 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::sync::mpsc::{channel, Sender};
 
-use wmux_core::keymap::{Action, Reaction};
+use wmux_core::copymode::osc52;
+use wmux_core::keymap::{Action, CopyKey, Reaction};
 use wmux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use wmux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
 use wmux_core::traits::{
@@ -201,8 +202,13 @@ where
                                 let _ = self.daemon.write_pane(pid, &data);
                             }
                         }
-                        Reaction::Do(action) => self.apply_action(session, action),
-                        Reaction::Copy(_) => { /* Phase 8 */ }
+                        Reaction::Do(Action::EnterCopyMode) => {
+                            self.daemon.enter_copy_mode(client_id, session);
+                        }
+                        Reaction::Do(action) => self.apply_action(client_id, session, action),
+                        Reaction::Copy(ck) => {
+                            self.handle_copy_key(client_id, session, ck);
+                        }
                     }
                 }
                 self.render_session(session);
@@ -263,7 +269,7 @@ where
         }
     }
 
-    fn apply_action(&mut self, session: SessionId, action: Action) {
+    fn apply_action(&mut self, client_id: u64, session: SessionId, action: Action) {
         match action {
             Action::SplitHorizontal => self.do_split(session, SplitDir::Horizontal),
             Action::SplitVertical => self.do_split(session, SplitDir::Vertical),
@@ -293,8 +299,45 @@ where
                     self.on_pane_exit(session, pid, result);
                 }
             }
-            // Detach is handled at the client layer; copy-mode in Phase 8.
-            Action::Detach | Action::EnterCopyMode | Action::SendPrefix => {}
+            Action::EnterCopyMode => {
+                self.daemon.enter_copy_mode(client_id, session);
+            }
+            // Detach is handled at the client layer; SendPrefix is pass-through.
+            Action::Detach | Action::SendPrefix => {}
+        }
+    }
+
+    /// Drive copy-mode navigation/selection/yank for a client. Space/'v' starts
+    /// a selection, Enter/'y' yanks (and forwards an OSC-52 clipboard sequence),
+    /// q/Escape quits.
+    fn handle_copy_key(&mut self, client_id: u64, session: SessionId, ck: CopyKey) {
+        match ck {
+            CopyKey::Quit => {
+                self.daemon.copy_navigate(client_id, session, ck);
+                if let Some(k) = self.daemon.keymap_mut(client_id) {
+                    k.reset();
+                }
+            }
+            CopyKey::StartSelection => {
+                self.daemon.copy_start_selection(client_id);
+                self.render_client(client_id);
+            }
+            CopyKey::Yank => {
+                let text = self.daemon.copy_yank(client_id, session);
+                // Yank exits copy-mode; reset the keymap and emit OSC-52 so the
+                // client's local terminal also gets the text.
+                if let Some(k) = self.daemon.keymap_mut(client_id) {
+                    k.reset();
+                }
+                if let (Some(text), Some(h)) = (text, self.clients.get(&client_id)) {
+                    let seq = osc52(&text);
+                    let _ = h.out.send(ServerMsg::Frame(seq));
+                }
+                self.render_client(client_id);
+            }
+            _ => {
+                self.daemon.copy_navigate(client_id, session, ck);
+            }
         }
     }
 

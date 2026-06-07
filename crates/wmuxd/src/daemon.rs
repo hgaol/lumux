@@ -7,11 +7,12 @@
 
 use std::collections::BTreeMap;
 
+use wmux_core::copymode::CopyMode;
 use wmux_core::grid::Grid;
-use wmux_core::keymap::Keymap;
+use wmux_core::keymap::{CopyKey, Keymap};
 use wmux_core::model::{CascadeResult, PaneId, SessionId, Server, SplitDir};
 use wmux_core::render::{compose, ClientRenderer, StatusBar, WindowView};
-use wmux_core::traits::{Pty, PtySize, PtySystem, PtyWriter, ShellCommand};
+use wmux_core::traits::{Clipboard, Pty, PtySize, PtySystem, PtyWriter, ShellCommand};
 
 /// Per-pane live state: the emulator grid and the PTY input/control handle.
 pub struct LivePane<W: PtyWriter> {
@@ -39,16 +40,25 @@ pub struct Daemon<S: PtySystem> {
     /// One keymap per attached client id.
     keymaps: BTreeMap<u64, Keymap>,
     renderers: BTreeMap<u64, ClientRenderer>,
+    /// Active copy-mode state per client (absent = not in copy-mode).
+    copy: BTreeMap<u64, CopyMode>,
+    clipboard: Box<dyn Clipboard>,
 }
 
 impl<S: PtySystem> Daemon<S> {
     pub fn new(pty_system: S) -> Self {
+        Self::with_clipboard(pty_system, Box::new(NullClipboard))
+    }
+
+    pub fn with_clipboard(pty_system: S, clipboard: Box<dyn Clipboard>) -> Self {
         Self {
             server: Server::new(),
             pty_system,
             panes: BTreeMap::new(),
             keymaps: BTreeMap::new(),
             renderers: BTreeMap::new(),
+            copy: BTreeMap::new(),
+            clipboard,
         }
     }
 
@@ -131,11 +141,84 @@ impl<S: PtySystem> Daemon<S> {
     pub fn unregister_client(&mut self, client_id: u64) {
         self.keymaps.remove(&client_id);
         self.renderers.remove(&client_id);
+        self.copy.remove(&client_id);
         self.server.detach_client(client_id);
     }
 
     pub fn keymap_mut(&mut self, client_id: u64) -> Option<&mut Keymap> {
         self.keymaps.get_mut(&client_id)
+    }
+
+    /// Whether a client is currently in copy-mode.
+    pub fn in_copy_mode(&self, client_id: u64) -> bool {
+        self.copy.contains_key(&client_id)
+    }
+
+    /// Enter copy-mode for `client_id`, anchored at the active pane's live tail.
+    pub fn enter_copy_mode(&mut self, client_id: u64, session: SessionId) {
+        if let Some(pid) = self.active_pane(session) {
+            if let Some(p) = self.panes.get(&pid) {
+                self.copy.insert(client_id, CopyMode::enter(&p.grid));
+                if let Some(r) = self.renderers.get_mut(&client_id) {
+                    r.invalidate();
+                }
+            }
+        }
+    }
+
+    /// Feed a copy-mode navigation key. Returns true if still in copy-mode.
+    /// `yank` keys (Enter/space handled by caller via start/confirm) are routed
+    /// through [`Self::copy_select`] / [`Self::copy_yank`].
+    pub fn copy_navigate(&mut self, client_id: u64, session: SessionId, key: CopyKey) -> bool {
+        let Some(pid) = self.active_pane(session) else {
+            return false;
+        };
+        let Some(grid) = self.panes.get(&pid).map(|p| &p.grid) else {
+            return false;
+        };
+        let still = match self.copy.get_mut(&client_id) {
+            Some(cm) => cm.navigate(key, grid),
+            None => false,
+        };
+        if !still {
+            self.copy.remove(&client_id);
+        }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        still
+    }
+
+    /// Toggle/begin a selection at the copy cursor.
+    pub fn copy_start_selection(&mut self, client_id: u64) {
+        if let Some(cm) = self.copy.get_mut(&client_id) {
+            cm.start_selection();
+        }
+    }
+
+    /// Yank the current selection to the clipboard and exit copy-mode. Returns
+    /// the OSC-52-or-similar bytes to forward to the client, if any.
+    pub fn copy_yank(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        let pid = self.active_pane(session)?;
+        let text = {
+            let grid = &self.panes.get(&pid)?.grid;
+            let cm = self.copy.get(&client_id)?;
+            cm.selected_text(grid)
+        };
+        self.copy.remove(&client_id);
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        if text.is_empty() {
+            return None;
+        }
+        let _ = self.clipboard.set_text(&text);
+        Some(text)
+    }
+
+    fn active_pane(&self, session: SessionId) -> Option<PaneId> {
+        let s = self.server.session(session)?;
+        Some(s.window(s.active_window())?.active_pane())
     }
 
     /// Mark a pane dead (its child exited) and cascade-close it in the model.
@@ -151,6 +234,10 @@ impl<S: PtySystem> Daemon<S> {
     /// Render the active window of `session` for `client_id`, returning VT bytes
     /// to send (empty if nothing changed).
     pub fn render_for_client(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        // Copy-mode clients see the scrolled history view instead of live panes.
+        if self.copy.contains_key(&client_id) {
+            return self.render_copy_mode(client_id, session);
+        }
         let size = self.server.effective_size(session)?;
         let s = self.server.session(session)?;
         let window = s.window(s.active_window())?;
@@ -175,6 +262,41 @@ impl<S: PtySystem> Daemon<S> {
             active_pane,
         };
         let screen = compose((size.cols as usize, size.rows as usize), &view, Some(&status));
+        let renderer = self.renderers.get_mut(&client_id)?;
+        Some(renderer.render(screen))
+    }
+
+    /// Render the active pane's scrolled history for a client in copy-mode.
+    fn render_copy_mode(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        use wmux_core::render::Screen;
+        let size = self.server.effective_size(session)?;
+        let pid = self.active_pane(session)?;
+        let grid = &self.panes.get(&pid)?.grid;
+        let cm = self.copy.get(&client_id)?;
+
+        let cols = size.cols as usize;
+        let rows = size.rows as usize;
+        let content_rows = rows.saturating_sub(1);
+        let mut screen = Screen::new(cols, rows);
+
+        let top = cm.top();
+        for vy in 0..content_rows {
+            if let Some(row) = grid.combined_row(top + vy) {
+                screen.write_plain(0, vy, &row.to_string_full());
+            }
+        }
+        let label = if cm.has_selection() {
+            "-- COPY (selecting) --  arrows/PgUp/PgDn move, Enter yanks, q quits"
+        } else {
+            "-- COPY --  arrows/PgUp/PgDn move, Space selects, q quits"
+        };
+        screen.status_line(rows.saturating_sub(1), label);
+        // Place the cursor at the copy cursor position (relative to top).
+        let cur = cm.cursor();
+        if cur.row >= top && cur.row < top + content_rows {
+            screen.set_cursor(Some((cur.col.min(cols.saturating_sub(1)), cur.row - top)));
+        }
+
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
     }
@@ -246,5 +368,15 @@ impl<S: PtySystem> Daemon<S> {
         for r in self.renderers.values_mut() {
             r.invalidate();
         }
+    }
+}
+
+/// A clipboard that discards writes. Used when no system/OSC-52 clipboard is
+/// wired (e.g. headless tests). The unix backend supplies `Osc52Clipboard`.
+pub struct NullClipboard;
+
+impl Clipboard for NullClipboard {
+    fn set_text(&mut self, _text: &str) -> std::io::Result<()> {
+        Ok(())
     }
 }

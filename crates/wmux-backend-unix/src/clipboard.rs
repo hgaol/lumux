@@ -21,10 +21,10 @@ impl Osc52Clipboard {
         }
     }
 
-    /// The OSC-52 sequence for `text` (base64 of the UTF-8 bytes).
+    /// The OSC-52 sequence for `text` (base64 of the UTF-8 bytes). Delegates to
+    /// the canonical encoder in `wmux_core`.
     pub fn osc52_sequence(text: &str) -> Vec<u8> {
-        let b64 = base64_encode(text.as_bytes());
-        format!("\x1b]52;c;{b64}\x07").into_bytes()
+        wmux_core::copymode::osc52(text)
     }
 
     /// The most recent emitted sequence (for the daemon to flush to the client).
@@ -59,45 +59,9 @@ impl Clipboard for MemoryClipboard {
     }
 }
 
-/// Minimal standard base64 encoder (avoids a dependency for one small use).
-fn base64_encode(input: &[u8]) -> String {
-    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
-    for chunk in input.chunks(3) {
-        let b = [
-            chunk[0],
-            *chunk.get(1).unwrap_or(&0),
-            *chunk.get(2).unwrap_or(&0),
-        ];
-        let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | (b[2] as u32);
-        out.push(TABLE[((n >> 18) & 63) as usize] as char);
-        out.push(TABLE[((n >> 12) & 63) as usize] as char);
-        out.push(if chunk.len() > 1 {
-            TABLE[((n >> 6) & 63) as usize] as char
-        } else {
-            '='
-        });
-        out.push(if chunk.len() > 2 {
-            TABLE[(n & 63) as usize] as char
-        } else {
-            '='
-        });
-    }
-    out
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn base64_known_vectors() {
-        assert_eq!(base64_encode(b""), "");
-        assert_eq!(base64_encode(b"f"), "Zg==");
-        assert_eq!(base64_encode(b"fo"), "Zm8=");
-        assert_eq!(base64_encode(b"foo"), "Zm9v");
-        assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
-    }
 
     #[test]
     fn osc52_wraps_base64() {

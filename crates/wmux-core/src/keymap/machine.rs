@@ -40,6 +40,10 @@ pub enum CopyKey {
     PageDown,
     Home,
     End,
+    /// Begin/extend a selection at the cursor (Space / 'v').
+    StartSelection,
+    /// Copy the selection and exit copy-mode (Enter / 'y').
+    Yank,
     Quit,
 }
 
@@ -110,6 +114,9 @@ impl Keymap {
                         }
                         Some(Action::EnterCopyMode) => {
                             self.mode = Mode::Copy;
+                            // Emit the action too so the daemon sets up its
+                            // per-client copy-mode state.
+                            reactions.push(Reaction::Do(Action::EnterCopyMode));
                         }
                         Some(action) => reactions.push(Reaction::Do(action)),
                         None => { /* unknown command: no-op, back to Normal */ }
@@ -151,6 +158,10 @@ fn copy_key(key: &Key) -> Option<CopyKey> {
         KeyCode::End => CopyKey::End,
         KeyCode::Escape => CopyKey::Quit,
         KeyCode::Char('q') => CopyKey::Quit,
+        KeyCode::Space => CopyKey::StartSelection,
+        KeyCode::Char('v') => CopyKey::StartSelection,
+        KeyCode::Enter => CopyKey::Yank,
+        KeyCode::Char('y') => CopyKey::Yank,
         // vi-style.
         KeyCode::Char('k') => CopyKey::Up,
         KeyCode::Char('j') => CopyKey::Down,

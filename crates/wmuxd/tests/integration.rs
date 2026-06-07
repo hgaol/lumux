@@ -233,3 +233,26 @@ fn exiting_only_shell_closes_session() {
     });
     assert!(closed, "exiting the last shell must close the session");
 }
+
+#[test]
+fn copy_mode_shows_mode_line() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("copy".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Produce some output so there's content, then enter copy-mode (Ctrl-b [).
+    c.send(&ClientMsg::Input(b"echo COPYABLE_TEXT\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("COPY"),
+        "copy-mode should render a mode line; got:\n{vt}"
+    );
+}

@@ -83,6 +83,28 @@ impl Grid {
         &self.scrollback
     }
 
+    /// Total number of history lines (scrollback) above the visible screen.
+    pub fn history_len(&self) -> usize {
+        self.scrollback.len()
+    }
+
+    /// A row from the combined history+visible buffer, where index 0 is the
+    /// oldest scrollback line and `history_len()+height-1` is the bottom visible
+    /// row. Used by copy-mode to scroll back through history seamlessly.
+    pub fn combined_row(&self, index: usize) -> Option<&Row> {
+        let hist = self.scrollback.len();
+        if index < hist {
+            self.scrollback.get(index)
+        } else {
+            self.rows.get(index - hist)
+        }
+    }
+
+    /// Total rows in the combined history+visible buffer.
+    pub fn combined_len(&self) -> usize {
+        self.scrollback.len() + self.height
+    }
+
     /// Take and clear the pending-bell flag.
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell)

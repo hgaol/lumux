@@ -60,4 +60,10 @@ impl Row {
         let s: String = self.cells.iter().map(|c| c.str()).collect();
         s.trim_end().to_string()
     }
+
+    /// The full row as a string including trailing blanks (for copy-mode column
+    /// math, where positions must line up with on-screen columns).
+    pub fn to_string_full(&self) -> String {
+        self.cells.iter().map(|c| c.str()).collect()
+    }
 }
