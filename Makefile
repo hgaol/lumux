@@ -1,4 +1,4 @@
-# wmux — developer & cross-build commands.
+# lumux — developer & cross-build commands.
 #
 # This repo is developed on Linux but targets the Windows host (and runs on
 # macOS/Linux too). Native dev commands need only a Rust toolchain. Cross-
@@ -21,7 +21,7 @@ MAC_X86      := x86_64-apple-darwin
 DIST         := dist
 
 # `install` replaces the destination by unlinking it first, so staging over a
-# binary that is currently running (e.g. a persistent wmux server) never hits
+# binary that is currently running (e.g. a persistent lumux server) never hits
 # ETXTBSY the way `cp` (in-place truncate) does. -m755 also sets the exec bit.
 INSTALL      := install -m755
 
@@ -32,7 +32,7 @@ INSTALL      := install -m755
 # ---------------------------------------------------------------------------
 .PHONY: help
 help: ## Show this help
-	@echo "wmux make targets:"
+	@echo "lumux make targets:"
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
@@ -69,7 +69,7 @@ check: ## Fast type-check of the workspace
 
 .PHONY: run
 run: ## Run the client (use ARGS=... e.g. make run ARGS="ls")
-	$(CARGO) run -p wmux -- $(ARGS)
+	$(CARGO) run -p lumux -- $(ARGS)
 
 .PHONY: clean
 clean: ## Remove build artifacts and dist/
@@ -107,28 +107,28 @@ bootstrap-cross: ## Install cargo-zigbuild (you must also have `zig` on PATH)
 .PHONY: dist-macos
 dist-macos: ## Cross-build universal macOS binary -> dist/macos/
 	rustup target add $(MAC_ARM) $(MAC_X86) >/dev/null 2>&1 || true
-	$(CARGO) zigbuild --release --target $(MAC_UNIVERSAL) -p wmux
+	$(CARGO) zigbuild --release --target $(MAC_UNIVERSAL) -p lumux
 	@mkdir -p $(DIST)/macos
-	$(INSTALL) target/$(MAC_UNIVERSAL)/release/wmux  $(DIST)/macos/wmux
+	$(INSTALL) target/$(MAC_UNIVERSAL)/release/lumux  $(DIST)/macos/lumux
 	@echo "Built universal macOS binary in $(DIST)/macos/ (unsigned)."
 
 .PHONY: dist-windows
 dist-windows: ## Cross-build runnable Windows .exe (gnu) -> dist/windows/
 	rustup target add $(WIN_GNU) >/dev/null 2>&1 || true
-	$(CARGO) zigbuild --release --target $(WIN_GNU) -p wmux
+	$(CARGO) zigbuild --release --target $(WIN_GNU) -p lumux
 	@mkdir -p $(DIST)/windows
-	$(INSTALL) target/$(WIN_GNU)/release/wmux.exe  $(DIST)/windows/wmux.exe
+	$(INSTALL) target/$(WIN_GNU)/release/lumux.exe  $(DIST)/windows/lumux.exe
 	@echo "Built Windows binary in $(DIST)/windows/ (gnu/MinGW ABI)."
 	@echo "NOTE: the production target is msvc; this gnu build is for quick"
 	@echo "      cross-testing from Linux. Use Windows CI for msvc release artifacts."
 
 .PHONY: dist-linux
 dist-linux: ## Build optimized Linux binary -> dist/linux/
-	$(CARGO) build --release -p wmux
+	$(CARGO) build --release -p lumux
 	@mkdir -p $(DIST)/linux
-	# install (not cp) unlinks the old inode first, so a running wmux server
+	# install (not cp) unlinks the old inode first, so a running lumux server
 	# from a previous build doesn't cause ETXTBSY ("Text file busy").
-	$(INSTALL) target/release/wmux  $(DIST)/linux/wmux
+	$(INSTALL) target/release/lumux  $(DIST)/linux/lumux
 	@echo "Built Linux binary in $(DIST)/linux/."
 
 .PHONY: dist

@@ -1,48 +1,48 @@
-# wmux
+# lumux
 
 A tmux-like terminal multiplexer for the **Windows host** — sessions, windows,
 and panes with tmux-style keybindings, attachable as **plain text** over SSH or
 Microsoft tunnel from inside Windows Terminal, conhost, or any VT terminal.
 
-## Why wmux
+## Why lumux
 
 WezTerm already offers persistence and panes on Windows, but it reattaches only
-through its own GPU GUI. wmux exists for the one thing that needs: **pure-text,
-in-terminal attach**. SSH into a Windows host, run `wmux attach`, and you get
+through its own GPU GUI. lumux exists for the one thing that needs: **pure-text,
+in-terminal attach**. SSH into a Windows host, run `lumux attach`, and you get
 your running session back as text — exactly like `tmux attach` on Linux. The
 session (and its processes) survives a dropped connection.
 
-wmux is shell-agnostic: PowerShell 5.x, cmd, pwsh, or anything else, because the
+lumux is shell-agnostic: PowerShell 5.x, cmd, pwsh, or anything else, because the
 daemon spawns shells under ConPTY, which translates legacy console output to VT.
 
 ## Architecture
 
-wmux is a **single binary** that plays two roles, like tmux:
+lumux is a **single binary** that plays two roles, like tmux:
 
 - **Server** — a background daemon that owns the pseudo-terminals and the
   session/window/pane tree. It outlives clients, which is what gives
   persistence. Terminal emulation is server-side: it parses each pane's output
   into a cell grid and re-renders damage-tracked VT to each client. Started by
-  re-execing the wmux binary with a hidden `--server` flag.
+  re-execing the lumux binary with a hidden `--server` flag.
 - **Client** — a thin front-end. It puts your terminal in raw mode and shuttles
   bytes to/from the server over a local named pipe (Windows) or Unix socket
   (Linux/macOS). Any VT terminal can render it; no GPU, no GUI.
 
-The client auto-starts the server on first use (`wmux new` / `wmux attach`), so
-you only ever run `wmux`.
+The client auto-starts the server on first use (`lumux new` / `lumux attach`), so
+you only ever run `lumux`.
 
 ## Usage
 
 ```
-wmux new [-s <session>] [--shell <profile>]   # create a session and attach
-wmux attach [-t <session>]                     # attach to an existing session
-wmux ls                                         # list sessions
-wmux kill-session -t <session>
-wmux kill-server
-wmux split-window [-h]                           # split active window (-h = left/right)
-wmux new-window
-wmux send-keys "<text>"                          # script input into the active pane
-wmux source-file <path>                          # reload config live
+lumux new [-s <session>] [--shell <profile>]   # create a session and attach
+lumux attach [-t <session>]                     # attach to an existing session
+lumux ls                                         # list sessions
+lumux kill-session -t <session>
+lumux kill-server
+lumux split-window [-h]                           # split active window (-h = left/right)
+lumux new-window
+lumux send-keys "<text>"                          # script input into the active pane
+lumux source-file <path>                          # reload config live
 ```
 
 ## Default keybindings
@@ -74,8 +74,8 @@ move; `u` / `d` half-page scroll; `Space` or `v` starts a selection; `Enter` or
 
 ## Configuration
 
-TOML at `%APPDATA%\wmux\config.toml` (Windows) or
-`$XDG_CONFIG_HOME/wmux/config.toml` (Linux/macOS); override with `$WMUX_CONFIG`.
+TOML at `%APPDATA%\lumux\config.toml` (Windows) or
+`$XDG_CONFIG_HOME/lumux/config.toml` (Linux/macOS); override with `$LUMUX_CONFIG`.
 A complete tmux-parity example is in [`examples/config.toml`](examples/config.toml).
 
 In TOML, all top-level keys must come **before** any `[table]` header — keep the
@@ -118,7 +118,7 @@ argv = ["pwsh.exe"]
 "M-Down" = "select-pane-down"
 ```
 
-Reload without restarting: `wmux source-file <path>` (or prefix + `r`).
+Reload without restarting: `lumux source-file <path>` (or prefix + `r`).
 
 ## Building
 
@@ -129,7 +129,7 @@ cargo build --release                                  # native
 cargo build --release --target x86_64-pc-windows-msvc  # Windows (from any host)
 ```
 
-Produces a single `wmux` binary (it runs as both client and server).
+Produces a single `lumux` binary (it runs as both client and server).
 
 ## Platform support
 

@@ -1,12 +1,12 @@
-# wmux configuration — tmux-parity example.
+# lumux configuration — tmux-parity example.
 #
 # Mirrors a typical ~/.tmux.conf: Ctrl-b prefix, |/- splits, Alt+Arrow pane
 # navigation, mouse on, a 10k scrollback, base-index 1, prefix-r reload, vi
 # copy keys, and a styled "REMOTE / Session / clock" status bar.
 #
-# Place at: %APPDATA%\wmux\config.toml (Windows) or
-#           ~/.config/wmux/config.toml (Linux/macOS).
-# Reload live with:  wmux source-file <path>   (or prefix + r)
+# Place at: %APPDATA%\lumux\config.toml (Windows) or
+#           ~/.config/lumux/config.toml (Linux/macOS).
+# Reload live with:  lumux source-file <path>   (or prefix + r)
 #
 # NOTE: in TOML, all top-level keys must appear BEFORE any [table] header.
 # Keep the scalar settings below above the [bindings] / [root_bindings] /

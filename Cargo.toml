@@ -1,11 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
-    "crates/wmux-core",
-    "crates/wmux-backend-unix",
-    "crates/wmux-backend-win",
-    "crates/wmuxd",
-    "crates/wmux",
+    "crates/lumux-core",
+    "crates/lumux-backend-unix",
+    "crates/lumux-backend-win",
+    "crates/lumux-server",
+    "crates/lumux",
 ]
 
 [workspace.package]
@@ -15,10 +15,10 @@ license = "MIT"
 repository = "local"
 
 [workspace.dependencies]
-wmux-core = { path = "crates/wmux-core" }
-wmuxd = { path = "crates/wmuxd" }
-wmux-backend-unix = { path = "crates/wmux-backend-unix" }
-wmux-backend-win = { path = "crates/wmux-backend-win" }
+lumux-core = { path = "crates/lumux-core" }
+lumux-server = { path = "crates/lumux-server" }
+lumux-backend-unix = { path = "crates/lumux-backend-unix" }
+lumux-backend-win = { path = "crates/lumux-backend-win" }
 
 # async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }

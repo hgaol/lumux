@@ -18,7 +18,7 @@ jobs:
       - name: build
         run: cargo build --workspace
       - name: test core
-        run: cargo test -p wmux-core
+        run: cargo test -p lumux-core
       - name: test workspace
         run: cargo test --workspace
 
@@ -36,11 +36,11 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: test core
-        run: cargo test -p wmux-core
+        run: cargo test -p lumux-core
       # ConPTY / named-pipe integration tests run on the real OS here, since
       # they cannot run on the Linux dev box or in cross-compilation.
       - name: test windows integration
-        run: cargo test -p wmuxd --test win_integration
+        run: cargo test -p lumux-server --test win_integration
 
   cross-check-windows:
     name: linux -> windows cross-check
