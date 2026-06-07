@@ -427,8 +427,16 @@ where
             Action::ReloadConfig => self.reload_config(client_id, session),
             Action::ShowHelp => self.daemon.toggle_help(client_id),
             Action::ChooseSession => self.daemon.open_chooser(client_id),
-            // Detach is handled at the client layer; SendPrefix is pass-through.
-            Action::Detach | Action::SendPrefix => {}
+            Action::Detach => {
+                // Tell the client to detach; the session keeps running. The
+                // client's reader loop breaks on Detached and restores the
+                // terminal. ClientGone arrives when its socket closes.
+                if let Some(h) = self.clients.get(&client_id) {
+                    let _ = h.out.send(ServerMsg::Detached);
+                }
+            }
+            // SendPrefix is handled as pass-through in the keymap, never here.
+            Action::SendPrefix => {}
         }
     }
 

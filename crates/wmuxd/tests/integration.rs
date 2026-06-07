@@ -552,3 +552,44 @@ fn prefix_s_switches_session() {
         "after switching, the client should see alpha's screen; got:\n{vt2}"
     );
 }
+
+#[test]
+fn prefix_d_detaches_but_keeps_session_alive() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("det".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Leave a marker on screen so we can prove the session survived.
+    c.send(&ClientMsg::Input(b"echo DETACH_SURVIVOR\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+
+    // Press the prefix (Ctrl-b) then 'd' to detach. The daemon must send
+    // ServerMsg::Detached in response (the bug: it used to be a no-op).
+    c.send(&ClientMsg::Input(vec![0x02, b'd']));
+    let (detached, _) =
+        c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Detached));
+    assert!(detached, "prefix d must make the daemon send Detached");
+    drop(c);
+
+    // Reattach: the session and its on-screen marker must still be there.
+    let mut c2 = TestClient::connect(&path);
+    c2.send(&ClientMsg::Attach {
+        session: Some("det".into()),
+        size: size(),
+    });
+    let (ok, vt) = c2.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    assert!(ok, "reattach after prefix-d detach must succeed");
+    let (_d, vt2) = c2.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        format!("{vt}{vt2}").contains("DETACH_SURVIVOR"),
+        "session must survive prefix-d detach"
+    );
+}

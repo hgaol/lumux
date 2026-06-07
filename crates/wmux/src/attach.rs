@@ -88,6 +88,11 @@ where
 
     let _term = RawTerminal::enter()?;
 
+    // Shared flag: set when the daemon detaches us (or the connection ends), so
+    // the stdin loop can notice even while no keys are being pressed.
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_done = done.clone();
+
     // Reader thread: daemon frames -> stdout.
     let reader_handle = std::thread::spawn(move || {
         let mut stdout = io::stdout();
@@ -112,14 +117,23 @@ where
                 _ => break,
             }
         }
+        reader_done.store(true, std::sync::atomic::Ordering::SeqCst);
     });
 
-    // Main thread: stdin -> daemon as Input frames.
+    // Main thread: stdin -> daemon as Input frames. Reads are time-bounded so a
+    // detach delivered while the user is idle still ends the client promptly.
     let mut stdin = io::stdin();
     let mut buf = [0u8; 4096];
     loop {
-        if reader_handle.is_finished() {
+        if done.load(std::sync::atomic::Ordering::SeqCst) {
             break;
+        }
+        // Wait briefly for stdin input; if nothing arrives, loop to re-check the
+        // detach flag rather than blocking forever in read().
+        match stdin_ready(&stdin, std::time::Duration::from_millis(100)) {
+            StdinState::Ready => {}
+            StdinState::Idle => continue,
+            StdinState::Closed => break,
         }
         let n = match stdin.read(&mut buf) {
             Ok(0) => break,
@@ -143,6 +157,57 @@ where
         let _ = out.flush();
     }
     Ok(())
+}
+
+/// Result of waiting for stdin readiness.
+enum StdinState {
+    /// Data is available to read now.
+    Ready,
+    /// The timeout elapsed with no data (caller should loop and re-check flags).
+    Idle,
+    /// Stdin reached EOF / errored.
+    Closed,
+}
+
+/// Wait up to `timeout` for stdin to have data, without consuming it. Lets the
+/// attach loop notice an out-of-band detach while the user is idle instead of
+/// blocking indefinitely in `read()`.
+#[cfg(unix)]
+fn stdin_ready(stdin: &std::io::Stdin, timeout: std::time::Duration) -> StdinState {
+    use std::os::fd::AsRawFd;
+    let fd = stdin.as_raw_fd();
+    let mut pfd = libc::pollfd {
+        fd,
+        events: libc::POLLIN,
+        revents: 0,
+    };
+    let ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+    let rc = unsafe { libc::poll(&mut pfd, 1, ms) };
+    if rc < 0 {
+        // EINTR or similar — treat as idle so the loop re-checks.
+        StdinState::Idle
+    } else if rc == 0 {
+        StdinState::Idle
+    } else if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+        StdinState::Closed
+    } else {
+        StdinState::Ready
+    }
+}
+
+/// Windows: wait on the stdin console/file handle.
+#[cfg(windows)]
+fn stdin_ready(_stdin: &std::io::Stdin, timeout: std::time::Duration) -> StdinState {
+    use std::os::windows::io::AsRawHandle;
+    let handle = std::io::stdin().as_raw_handle();
+    let ms = timeout.as_millis().min(u32::MAX as u128) as u32;
+    // WAIT_OBJECT_0 = 0 (signaled), WAIT_TIMEOUT = 0x102.
+    let rc = unsafe { windows_sys::Win32::System::Threading::WaitForSingleObject(handle as _, ms) };
+    match rc {
+        0 => StdinState::Ready,
+        0x102 => StdinState::Idle,
+        _ => StdinState::Closed,
+    }
 }
 
 #[cfg(unix)]
