@@ -13,8 +13,8 @@ use crate::model::{PaneId, PaneNode};
 /// Inputs needed to compose one window's screen. Borrowed from daemon state.
 pub struct WindowView<'a> {
     pub layout: &'a PaneNode,
-    /// Each pane's emulator grid, by id.
-    pub grids: &'a BTreeMap<PaneId, Grid>,
+    /// Each pane's emulator grid, by id (borrowed — no per-frame clone).
+    pub grids: &'a BTreeMap<PaneId, &'a Grid>,
     /// The focused pane (its cursor becomes the screen cursor).
     pub active_pane: PaneId,
 }

@@ -14,5 +14,6 @@ pub mod render;
 pub mod keymap;
 
 pub use traits::{
-    Clipboard, Listener, Pty, PtySize, PtySystem, PtyWriter, ShellCommand, Transport,
+    Clipboard, FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, PtyWriter,
+    ShellCommand, Transport,
 };

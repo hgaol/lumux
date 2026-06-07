@@ -79,12 +79,27 @@ pub trait PtySystem: Send + Sync {
 
 /// A bidirectional, message-framed connection between a client and the daemon.
 ///
-/// Implementations carry length-delimited frames (see `proto`). The transport
-/// itself is byte-oriented; framing lives in `proto`.
+/// Splittable into independent read and write halves so a reader thread can
+/// block on the socket while a writer thread concurrently sends frames — no
+/// shared lock, no head-of-line blocking. Unix sockets and Windows named pipes
+/// both support this via handle cloning. Framing (length prefix) lives in
+/// `proto`; these carry already-encoded frames.
 pub trait Transport: Send {
+    type Reader: FrameReader;
+    type Writer: FrameWriter;
+    /// Split into (reader, writer) halves backed by the same connection.
+    fn split(self) -> io::Result<(Self::Reader, Self::Writer)>;
+}
+
+/// The read half of a [`Transport`].
+pub trait FrameReader: Send {
     /// Read exactly one length-delimited frame. Returns `Ok(None)` on clean EOF.
     fn read_frame(&mut self) -> io::Result<Option<Vec<u8>>>;
-    /// Write one length-delimited frame.
+}
+
+/// The write half of a [`Transport`].
+pub trait FrameWriter: Send {
+    /// Write one already-encoded length-delimited frame.
     fn write_frame(&mut self, frame: &[u8]) -> io::Result<()>;
 }
 

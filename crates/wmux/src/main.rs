@@ -1,11 +1,18 @@
 //! wmux client + CLI entry point.
 //!
-//! Single multi-call binary: `wmux` is the client and command surface. It can
-//! also launch the daemon in-process / auto-spawn it (Phase 7+). The full
-//! tmux-ish verb set is filled in across Phases 7 and 9; this establishes the
-//! command tree so the workspace builds and `--help` works.
+//! Single multi-call binary: `wmux` is the client and command surface, and can
+//! auto-spawn the daemon. The interactive verbs (new/attach) put the terminal
+//! in raw mode and shuttle bytes; the control verbs (ls/kill) send a one-shot
+//! command and print the reply.
 
 use clap::{Parser, Subcommand};
+
+#[cfg(unix)]
+mod attach;
+#[cfg(unix)]
+mod control;
+#[cfg(unix)]
+mod term_unix;
 
 #[derive(Parser)]
 #[command(name = "wmux", version, about = "A tmux-like terminal multiplexer for the Windows host")]
@@ -25,7 +32,7 @@ enum Command {
         #[arg(long)]
         shell: Option<String>,
     },
-    /// Attach to an existing session.
+    /// Attach to an existing session (creating a default if none exists).
     Attach {
         #[arg(short = 't', long)]
         target: Option<String>,
@@ -50,14 +57,34 @@ fn main() -> anyhow::Result<()> {
         .init();
 
     let cli = Cli::parse();
-    match cli.command {
-        // Phase 7+ wires these verbs to the daemon over the transport.
-        Some(Command::New { .. }) => println!("wmux new: not yet implemented (Phase 7)"),
-        Some(Command::Attach { .. }) => println!("wmux attach: not yet implemented (Phase 7)"),
-        Some(Command::Ls) => println!("wmux ls: not yet implemented (Phase 7)"),
-        Some(Command::KillSession { .. }) => println!("wmux kill-session: not yet implemented (Phase 7)"),
-        Some(Command::KillServer) => println!("wmux kill-server: not yet implemented (Phase 7)"),
-        None => println!("wmux {}: run `wmux --help`", env!("CARGO_PKG_VERSION")),
+    run(cli.command)
+}
+
+#[cfg(unix)]
+fn run(command: Option<Command>) -> anyhow::Result<()> {
+    use wmux_core::proto::Command as Cmd;
+    match command {
+        Some(Command::New { session, shell, .. }) => attach::attach(session, true, shell),
+        Some(Command::Attach { target }) => attach::attach(target, false, None),
+        None => attach::attach(None, false, None),
+        Some(Command::Ls) => {
+            let reply = control::send_command(Cmd::ListSessions)?;
+            print!("{reply}");
+            Ok(())
+        }
+        Some(Command::KillSession { target }) => {
+            control::send_command(Cmd::KillSession { target })?;
+            Ok(())
+        }
+        Some(Command::KillServer) => {
+            control::send_command(Cmd::KillServer)?;
+            Ok(())
+        }
     }
-    Ok(())
+}
+
+#[cfg(windows)]
+fn run(_command: Option<Command>) -> anyhow::Result<()> {
+    // Phase 10 wires the Windows client (ConPTY input modes + named pipe).
+    anyhow::bail!("wmux: Windows client not yet implemented (Phase 10)")
 }

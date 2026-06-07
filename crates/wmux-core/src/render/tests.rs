@@ -13,6 +13,11 @@ fn grid_with(text: &str, w: usize, h: usize) -> Grid {
     g
 }
 
+/// Build a borrowed-grid map (the shape WindowView expects) from an owned one.
+fn refs(owned: &BTreeMap<PaneId, Grid>) -> BTreeMap<PaneId, &Grid> {
+    owned.iter().map(|(k, v)| (*k, v)).collect()
+}
+
 #[test]
 fn single_pane_fills_content_area() {
     let layout = PaneNode::leaf(p(1));
@@ -20,7 +25,7 @@ fn single_pane_fills_content_area() {
     grids.insert(p(1), grid_with("hello", 20, 5));
     let view = WindowView {
         layout: &layout,
-        grids: &grids,
+        grids: &refs(&grids),
         active_pane: p(1),
     };
     let screen = compose((20, 5), &view, None);
@@ -38,7 +43,7 @@ fn horizontal_split_draws_vertical_border() {
     grids.insert(p(2), grid_with("RIGHT", 9, 3));
     let view = WindowView {
         layout: &layout,
-        grids: &grids,
+        grids: &refs(&grids),
         active_pane: p(1),
     };
     let screen = compose((20, 3), &view, None);
@@ -56,7 +61,7 @@ fn status_bar_occupies_bottom_row() {
     grids.insert(p(1), grid_with("body", 20, 4));
     let view = WindowView {
         layout: &layout,
-        grids: &grids,
+        grids: &refs(&grids),
         active_pane: p(1),
     };
     let status = StatusBar {
@@ -81,7 +86,7 @@ fn active_pane_cursor_wins() {
     grids.insert(p(2), grid_with("bb", 9, 3));
     let view = WindowView {
         layout: &layout,
-        grids: &grids,
+        grids: &refs(&grids),
         active_pane: p(2),
     };
     let screen = compose((20, 3), &view, None);
@@ -98,7 +103,7 @@ fn client_renderer_full_then_incremental() {
     grids.insert(p(1), grid_with("frame one", 20, 3));
     let view = WindowView {
         layout: &layout,
-        grids: &grids,
+        grids: &refs(&grids),
         active_pane: p(1),
     };
     let mut cr = ClientRenderer::new();
@@ -112,7 +117,7 @@ fn client_renderer_full_then_incremental() {
     grids2.insert(p(1), grid_with("frame two", 20, 3));
     let view2 = WindowView {
         layout: &layout,
-        grids: &grids2,
+        grids: &refs(&grids2),
         active_pane: p(1),
     };
     let second = cr.render(compose((20, 3), &view2, None));
@@ -127,7 +132,7 @@ fn renderer_invalidate_forces_repaint() {
     grids.insert(p(1), grid_with("x", 10, 2));
     let view = WindowView {
         layout: &layout,
-        grids: &grids,
+        grids: &refs(&grids),
         active_pane: p(1),
     };
     let mut cr = ClientRenderer::new();
