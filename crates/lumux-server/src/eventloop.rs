@@ -47,6 +47,9 @@ pub enum Msg {
     PaneExited {
         pane: PaneId,
     },
+    /// Periodic timer: poll live panes for exited children (ConPTY may not
+    /// deliver read-EOF when a shell exits, so EOF alone can't be relied on).
+    Tick,
 }
 
 struct ClientHandle {
@@ -87,6 +90,7 @@ where
 {
     let (tx, rx) = channel::<Msg>();
     spawn_accept(listener, tx.clone());
+    spawn_ticker(tx.clone());
 
     let mut daemon = Daemon::new(pty_system);
     daemon.set_config(config);
@@ -99,9 +103,17 @@ where
     // Hold one tx so the loop never sees a disconnected channel while idle.
     drop(tx);
 
+    // The daemon auto-exits once it has served at least one client and then goes
+    // idle (no sessions, no clients). `served` gates this so the periodic Tick —
+    // which now drives the loop before any client connects — can't trip the
+    // emptiness check at startup and kill a freshly-bound daemon.
+    let mut served = false;
     for msg in rx {
+        if matches!(msg, Msg::ClientConnected { .. }) {
+            served = true;
+        }
         lp.handle(msg);
-        if lp.daemon.server.is_empty() && lp.clients.is_empty() {
+        if served && lp.daemon.server.is_empty() && lp.clients.is_empty() {
             break;
         }
     }
@@ -131,6 +143,15 @@ where
                 if let Some(sid) = self.pane_session.remove(&pane) {
                     let result = self.daemon.close_pane(sid, pane);
                     self.on_pane_exit(sid, pane, result);
+                }
+            }
+            Msg::Tick => {
+                // Reap children that exited without the reader seeing EOF (ConPTY).
+                for pane in self.daemon.reap_exited_panes() {
+                    if let Some(sid) = self.pane_session.remove(&pane) {
+                        let result = self.daemon.close_pane(sid, pane);
+                        self.on_pane_exit(sid, pane, result);
+                    }
                 }
             }
         }
@@ -729,6 +750,18 @@ where
         }
         out
     }
+}
+
+/// Background ticker: nudge the control loop on a fixed interval so it can poll
+/// pane children for exit. Cheap (one message every 250ms); the loop only does
+/// work when a child has actually exited. Ends when the control loop is gone.
+fn spawn_ticker(tx: Sender<Msg>) {
+    std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_millis(250));
+        if tx.send(Msg::Tick).is_err() {
+            break;
+        }
+    });
 }
 
 /// Accept thread: for each connection, split it and spawn reader+writer threads.

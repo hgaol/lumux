@@ -398,6 +398,26 @@ impl<S: PtySystem> Daemon<S> {
         Some(s.window(s.active_window())?.active_pane())
     }
 
+    /// Poll every live pane's child and return those that have exited. ConPTY
+    /// does not reliably deliver read-EOF when a shell exits (the output pipe can
+    /// stay open after the child is gone), so relying on the reader thread's EOF
+    /// alone would leak sessions on Windows. The control loop calls this on a
+    /// timer and cascade-closes each returned pane. Panes already marked dead
+    /// (their EOF path fired first) are skipped, so this never double-reports.
+    pub fn reap_exited_panes(&mut self) -> Vec<PaneId> {
+        let mut exited = Vec::new();
+        for (id, pane) in self.panes.iter_mut() {
+            if pane.dead {
+                continue;
+            }
+            if let Ok(Some(_)) = pane.writer.try_wait() {
+                pane.dead = true;
+                exited.push(*id);
+            }
+        }
+        exited
+    }
+
     /// Mark a pane dead (its child exited) and cascade-close it in the model.
     /// Returns the cascade result so the loop can notify/close clients.
     pub fn close_pane(&mut self, session: SessionId, pane: PaneId) -> CascadeResult {
