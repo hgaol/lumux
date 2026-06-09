@@ -554,6 +554,18 @@ fn mouse_enabled_sends_reporting_and_acts_on_events() {
         in_copy,
         "scroll-up with mouse on should enter copy-mode; got:\n{vt2}"
     );
+
+    // (3) Regression: pressing `q` must EXIT copy-mode. Entering via the mouse
+    // wheel bypasses the keymap's `feed`, so the keymap has to be forced into
+    // Copy mode at entry — otherwise `q` leaks to the shell and copy-mode sticks.
+    // After `q`, force a repaint and confirm the COPY mode line is gone.
+    c.send(&ClientMsg::Input(b"q".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 81, rows: 24 }));
+    let vt3 = c.drain(Duration::from_secs(2));
+    assert!(
+        !vt3.contains("-- COPY"),
+        "`q` must exit a mouse-initiated copy-mode; got:\n{vt3}"
+    );
 }
 
 #[test]

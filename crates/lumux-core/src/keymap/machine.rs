@@ -226,6 +226,14 @@ impl Keymap {
         reactions
     }
 
+    /// Force the keymap into copy-mode. Used when copy-mode is entered by a
+    /// non-keyboard path (e.g. a mouse wheel scroll), where the mode transition
+    /// doesn't flow through `feed`. Without this the keymap stays in `Normal`,
+    /// so copy-mode keys like `q`/arrows would leak through to the shell.
+    pub fn enter_copy_mode(&mut self) {
+        self.mode = Mode::Copy;
+    }
+
     /// Force-exit copy mode (e.g. on detach).
     pub fn reset(&mut self) {
         self.mode = Mode::Normal;

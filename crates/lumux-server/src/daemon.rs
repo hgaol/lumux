@@ -456,6 +456,14 @@ impl<S: PtySystem> Daemon<S> {
                     return;
                 }
                 self.copy.insert(client_id, CopyMode::enter(&p.grid));
+                // Keep the keymap in lockstep: copy-mode can be entered by the
+                // keyboard (where `feed` already set Copy mode) OR by a mouse
+                // wheel scroll (which bypasses `feed`). Forcing it here means keys
+                // like `q`/arrows are interpreted as copy-mode keys either way,
+                // instead of leaking through to the shell.
+                if let Some(k) = self.keymaps.get_mut(&client_id) {
+                    k.enter_copy_mode();
+                }
                 if let Some(r) = self.renderers.get_mut(&client_id) {
                     r.invalidate();
                 }
@@ -479,6 +487,11 @@ impl<S: PtySystem> Daemon<S> {
         };
         if !still {
             self.copy.remove(&client_id);
+            // Copy-mode ended: bring the keymap back to Normal so subsequent keys
+            // go to the shell (mirrors the keyboard `q`/Escape reset path).
+            if let Some(k) = self.keymaps.get_mut(&client_id) {
+                k.reset();
+            }
         }
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();
