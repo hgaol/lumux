@@ -456,7 +456,12 @@ impl<S: PtySystem> Daemon<S> {
         let size = self.server.effective_size(session)?;
         let s = self.server.session(session)?;
         let window = s.window(s.active_window())?;
-        let layout = window.layout.clone();
+        // When a pane is zoomed (tmux prefix z), render only that pane fullscreen
+        // by swapping in a single-leaf layout; otherwise use the real split tree.
+        let layout = match window.zoomed_pane() {
+            Some(pid) => lumux_core::model::PaneNode::leaf(pid),
+            None => window.layout.clone(),
+        };
         let active_pane = window.active_pane();
 
         // Collect references to the grids referenced by this window.
@@ -720,7 +725,14 @@ impl<S: PtySystem> Daemon<S> {
             size.rows.saturating_sub(1), // status bar row
         );
         if let Some(w) = s.window(s.active_window()) {
-            let rects = lumux_core::layout::compute(&w.layout, viewport);
+            // A zoomed pane fills the whole content area; otherwise lay out the
+            // real split tree. This must mirror render_for_client's choice so the
+            // PTY dimensions match what the client actually sees.
+            let layout = match w.zoomed_pane() {
+                Some(pid) => lumux_core::model::PaneNode::leaf(pid),
+                None => w.layout.clone(),
+            };
+            let rects = lumux_core::layout::compute(&layout, viewport);
             for pid in pane_ids {
                 if let (Some(rect), Some(p)) = (rects.get(&pid), self.panes.get_mut(&pid)) {
                     let psz = PtySize::new(rect.cols.max(1), rect.rows.max(1));

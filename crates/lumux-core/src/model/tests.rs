@@ -51,6 +51,62 @@ fn split_adds_pane_and_focuses_it() {
 }
 
 #[test]
+fn zoom_toggles_only_with_multiple_panes() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let wid = srv.session(sid).unwrap().active_window();
+
+    // Single pane: zoom is a no-op (nothing to maximize).
+    {
+        let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+        assert!(!w.toggle_zoom());
+        assert_eq!(w.zoomed_pane(), None);
+    }
+    // After a split there are two panes: zoom now latches the active one.
+    let new = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+    assert!(w.toggle_zoom());
+    assert_eq!(w.zoomed_pane(), Some(new));
+    // Toggling again unzooms.
+    assert!(!w.toggle_zoom());
+    assert_eq!(w.zoomed_pane(), None);
+}
+
+#[test]
+fn zoom_clears_on_focus_change_and_split() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let wid = srv.session(sid).unwrap().active_window();
+    srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+
+    let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+    w.toggle_zoom();
+    assert!(w.zoomed_pane().is_some());
+    // Moving focus to the next pane unzooms (tmux behavior).
+    w.focus_next_pane();
+    assert_eq!(w.zoomed_pane(), None, "focus change clears zoom");
+
+    // Re-zoom, then split — a new split also unzooms.
+    w.toggle_zoom();
+    assert!(w.zoomed_pane().is_some());
+    srv.split_active(sid, sh(), SplitDir::Vertical).unwrap();
+    let w = srv.session(sid).unwrap().window(wid).unwrap();
+    assert_eq!(w.zoomed_pane(), None, "split clears zoom");
+}
+
+#[test]
+fn resize_active_adjusts_layout() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let wid = srv.session(sid).unwrap().active_window();
+    srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+    // Resizing on the split's axis succeeds; off-axis is a no-op.
+    assert!(w.resize_active(SplitDir::Horizontal, 0.1));
+    assert!(!w.resize_active(SplitDir::Vertical, 0.1));
+}
+
+#[test]
 fn kill_one_of_two_panes_keeps_window() {
     let mut srv = Server::new();
     let sid = srv.new_session("s", sh());

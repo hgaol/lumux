@@ -38,6 +38,10 @@ pub struct Window {
     pub layout: PaneNode,
     panes: BTreeMap<PaneId, Pane>,
     active_pane: PaneId,
+    /// When `Some`, the active pane is zoomed: the renderer shows only this pane
+    /// fullscreen (tmux prefix z). Cleared on toggle, on focus change, and when
+    /// the zoomed pane goes away.
+    zoomed: Option<PaneId>,
 }
 
 impl Window {
@@ -52,11 +56,35 @@ impl Window {
             layout,
             panes,
             active_pane,
+            zoomed: None,
         }
     }
 
     pub fn active_pane(&self) -> PaneId {
         self.active_pane
+    }
+
+    /// The zoomed pane, if any (tmux prefix z). The renderer shows only this pane.
+    pub fn zoomed_pane(&self) -> Option<PaneId> {
+        self.zoomed
+    }
+
+    /// Toggle zoom on the active pane. Zooming a single-pane window is a no-op
+    /// (nothing to maximize). Returns the new zoom state.
+    pub fn toggle_zoom(&mut self) -> bool {
+        if self.zoomed.is_some() {
+            self.zoomed = None;
+        } else if self.pane_count() > 1 {
+            self.zoomed = Some(self.active_pane);
+        }
+        self.zoomed.is_some()
+    }
+
+    /// Adjust the divider nearest the active pane (tmux resize-pane). `axis` picks
+    /// horizontal vs. vertical splits; `step` is signed ratio space (positive =
+    /// toward the second child: right/down).
+    pub fn resize_active(&mut self, axis: SplitDir, step: f32) -> bool {
+        self.layout.resize_pane(self.active_pane, axis, step)
     }
 
     pub fn pane_ids(&self) -> Vec<PaneId> {
@@ -78,12 +106,17 @@ impl Window {
         if self.layout.split_leaf(target, new.id, dir) {
             self.active_pane = new.id;
             self.panes.insert(new.id, new);
+            self.zoomed = None; // a new split unzooms (tmux behavior)
         }
     }
 
     /// Remove a pane. Returns true if the window is now empty (caller closes
     /// the window).
     fn remove_pane(&mut self, id: PaneId) -> bool {
+        // Removing the zoomed pane (or collapsing the layout) clears zoom.
+        if self.zoomed == Some(id) {
+            self.zoomed = None;
+        }
         match self.layout.remove_pane(id) {
             Removed::NotFound => false,
             Removed::Gone => {
@@ -92,6 +125,7 @@ impl Window {
             }
             Removed::Collapsed => {
                 self.panes.remove(&id);
+                self.zoomed = None;
                 if self.active_pane == id {
                     // Focus the first remaining pane.
                     self.active_pane = self.layout.pane_ids()[0];
@@ -106,6 +140,7 @@ impl Window {
         let ids = self.layout.pane_ids();
         if let Some(pos) = ids.iter().position(|&i| i == self.active_pane) {
             self.active_pane = ids[(pos + 1) % ids.len()];
+            self.zoomed = None;
         }
     }
 
@@ -119,12 +154,14 @@ impl Window {
         let rects = crate::layout::compute(&self.layout, viewport);
         if let Some(next) = crate::layout::neighbor(&rects, self.active_pane, dir) {
             self.active_pane = next;
+            self.zoomed = None;
         }
     }
 
     pub fn focus_pane(&mut self, id: PaneId) -> bool {
         if self.panes.contains_key(&id) {
             self.active_pane = id;
+            self.zoomed = None;
             true
         } else {
             false

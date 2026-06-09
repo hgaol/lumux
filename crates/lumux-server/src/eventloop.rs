@@ -26,6 +26,9 @@ use lumux_core::traits::{FrameReader, FrameWriter, Listener, Pty, PtySize, PtySy
 
 use crate::daemon::Daemon;
 
+/// Ratio step per keyboard resize-pane keypress (~5% of the split each press).
+const RESIZE_STEP: f32 = 0.05;
+
 /// Messages funneled into the control loop from all source threads.
 pub enum Msg {
     ClientConnected {
@@ -445,6 +448,11 @@ where
             Action::SelectPaneRight => self.select_pane(session, Direction::Right),
             Action::SelectPaneUp => self.select_pane(session, Direction::Up),
             Action::SelectPaneDown => self.select_pane(session, Direction::Down),
+            Action::ResizePaneLeft => self.resize_pane(session, SplitDir::Horizontal, -RESIZE_STEP),
+            Action::ResizePaneRight => self.resize_pane(session, SplitDir::Horizontal, RESIZE_STEP),
+            Action::ResizePaneUp => self.resize_pane(session, SplitDir::Vertical, -RESIZE_STEP),
+            Action::ResizePaneDown => self.resize_pane(session, SplitDir::Vertical, RESIZE_STEP),
+            Action::ZoomPane => self.zoom_pane(session),
             Action::KillPane => {
                 if let Some(pid) = self.active_pane(session) {
                     let result = self.daemon.close_pane(session, pid);
@@ -569,6 +577,48 @@ where
             let wid = s.active_window();
             if let Some(w) = s.window_mut(wid) {
                 w.focus_direction(dir, viewport);
+            }
+        }
+    }
+
+    /// Adjust the divider nearest the active pane (tmux resize-pane) and re-fit
+    /// the PTYs to the new rectangles. `axis`/`step` are passed straight to the
+    /// window: positive step moves the divider right/down.
+    fn resize_pane(&mut self, session: SessionId, axis: SplitDir, step: f32) {
+        let changed = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let wid = s.active_window();
+                s.window_mut(wid)
+                    .map(|w| w.resize_active(axis, step))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if changed {
+            // Keep PTYs/grids in step with the new layout rectangles.
+            if let Some(size) = self.daemon.server.effective_size(session) {
+                self.daemon.resize_session(session, size);
+            }
+        }
+    }
+
+    /// Toggle zoom on the active pane (tmux prefix z) and re-fit PTYs, since the
+    /// zoomed pane now fills the whole content area (or returns to its split).
+    fn zoom_pane(&mut self, session: SessionId) {
+        let toggled = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let wid = s.active_window();
+                s.window_mut(wid).map(|w| w.toggle_zoom()).is_some()
+            })
+            .unwrap_or(false);
+        if toggled {
+            if let Some(size) = self.daemon.server.effective_size(session) {
+                self.daemon.resize_session(session, size);
             }
         }
     }

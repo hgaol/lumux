@@ -494,6 +494,48 @@ fn kill_pane_removes_split() {
     );
 }
 
+#[test]
+fn zoom_hides_other_panes_then_restores() {
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "zoom");
+    // Split so there are two panes with a divider.
+    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    let (saw, _) = c.collect_text(Duration::from_secs(5), "\u{2502}");
+    assert!(saw, "split should appear before zoom");
+
+    // Ctrl-b z zooms the active pane: only it shows, so the divider disappears.
+    c.send(&ClientMsg::Input(vec![0x02, b'z']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 81, rows: 24 }));
+    let vt = c.drain(Duration::from_secs(2));
+    assert!(
+        !vt.contains('\u{2502}'),
+        "zoom should hide the other pane (no divider); got:\n{vt}"
+    );
+
+    // Ctrl-b z again unzooms: the divider comes back.
+    c.send(&ClientMsg::Input(vec![0x02, b'z']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 82, rows: 24 }));
+    let (back, vt2) = c.collect_text(Duration::from_secs(3), "\u{2502}");
+    assert!(back, "unzoom should restore the split divider; got:\n{vt2}");
+}
+
+#[test]
+fn resize_pane_keeps_session_usable() {
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "resz");
+    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.collect_text(Duration::from_secs(5), "\u{2502}");
+    // Ctrl-b L / H nudge the divider; the daemon must stay alive and rendering.
+    c.send(&ClientMsg::Input(vec![0x02, b'L']));
+    c.send(&ClientMsg::Input(vec![0x02, b'H']));
+    c.drain(Duration::from_secs(1));
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo RESIZE_OK\r\n".to_vec(),
+    }));
+    let (ok, vt) = c.collect_text(Duration::from_secs(8), "RESIZE_OK");
+    assert!(ok, "session still works after resize-pane; got:\n{vt}");
+}
+
 // ===========================================================================
 // 5. Configuration
 // ===========================================================================

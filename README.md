@@ -57,6 +57,8 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `n` / `p` | next / previous window |
 | `0`–`9` | select window by index |
 | arrows | select pane in that direction |
+| `H` `J` `K` `L` | resize the active pane (left/down/up/right) |
+| `z` | zoom / unzoom the active pane |
 | `x` | kill the active pane |
 | `d` | detach (session keeps running) |
 | `[` | enter copy-mode |

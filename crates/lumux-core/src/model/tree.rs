@@ -90,6 +90,39 @@ impl PaneNode {
         }
     }
 
+    /// Nudge the divider of the nearest split (on the matching axis) that encloses
+    /// `target` by `step`. `step` is signed in *ratio* space: a positive step moves
+    /// the divider toward the second child (right for a horizontal split, down for a
+    /// vertical one), a negative step moves it the other way — matching tmux's
+    /// resize-pane -R/-D (positive) and -L/-U (negative). Returns true if a divider
+    /// was adjusted.
+    ///
+    /// Walks from the leaf upward (deepest matching split wins) so resizing acts on
+    /// the divider closest to the active pane, matching tmux.
+    pub fn resize_pane(&mut self, target: PaneId, axis: SplitDir, step: f32) -> bool {
+        match self {
+            PaneNode::Leaf(_) => false,
+            PaneNode::Split {
+                dir,
+                ratio,
+                first,
+                second,
+            } => {
+                // Try the children first (deepest split closest to the pane wins).
+                if first.resize_pane(target, axis, step) || second.resize_pane(target, axis, step) {
+                    return true;
+                }
+                // No deeper split on this axis handled it; if this split is on the
+                // requested axis and contains the target, move its divider here.
+                if *dir == axis && (first.contains(target) || second.contains(target)) {
+                    *ratio = (*ratio + step).clamp(0.05, 0.95);
+                    return true;
+                }
+                false
+            }
+        }
+    }
+
     /// Remove pane `target`, collapsing its parent split so the sibling takes
     /// the split's place. Returns:
     /// - `Removed::Gone` if the whole subtree was just that leaf (caller must
@@ -198,5 +231,61 @@ mod tests {
         t.split_leaf(p(1), p(2), SplitDir::Horizontal);
         assert_eq!(t.remove_pane(p(42)), Removed::NotFound);
         assert_eq!(t.pane_ids(), vec![p(1), p(2)]);
+    }
+
+    fn ratio_of(node: &PaneNode) -> f32 {
+        match node {
+            PaneNode::Split { ratio, .. } => *ratio,
+            _ => panic!("not a split"),
+        }
+    }
+
+    #[test]
+    fn resize_moves_divider_on_matching_axis() {
+        // [1 | 2] horizontal split at 0.5. Positive step moves divider right.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        assert!(t.resize_pane(p(1), SplitDir::Horizontal, 0.1));
+        assert!((ratio_of(&t) - 0.6).abs() < 1e-6);
+        // From the other pane, the same direction moves the same divider.
+        assert!(t.resize_pane(p(2), SplitDir::Horizontal, -0.2));
+        assert!((ratio_of(&t) - 0.4).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resize_ignores_wrong_axis() {
+        // A horizontal split can't be resized vertically.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        assert!(!t.resize_pane(p(1), SplitDir::Vertical, 0.1));
+        assert!((ratio_of(&t) - 0.5).abs() < 1e-6, "ratio unchanged");
+    }
+
+    #[test]
+    fn resize_clamps_to_bounds() {
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        // Push far past 1.0; must clamp at 0.95.
+        for _ in 0..50 {
+            t.resize_pane(p(1), SplitDir::Horizontal, 0.1);
+        }
+        assert!((ratio_of(&t) - 0.95).abs() < 1e-6);
+    }
+
+    #[test]
+    fn resize_targets_deepest_split_near_pane() {
+        // [1 | [2 / 3]] — resizing pane 2 vertically hits the inner 2/3 divider,
+        // not the outer horizontal one.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal); // [1|2]
+        t.split_leaf(p(2), p(3), SplitDir::Vertical); // [1 | [2/3]]
+        assert!(t.resize_pane(p(2), SplitDir::Vertical, 0.1));
+        // The outer split's ratio is untouched (still 0.5).
+        if let PaneNode::Split { ratio, second, .. } = &t {
+            assert!((ratio - 0.5).abs() < 1e-6, "outer ratio unchanged");
+            assert!((ratio_of(second) - 0.6).abs() < 1e-6, "inner divider moved");
+        } else {
+            panic!("expected a split");
+        }
     }
 }

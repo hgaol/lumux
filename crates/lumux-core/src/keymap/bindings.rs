@@ -21,6 +21,13 @@ pub enum Action {
     SelectPaneRight,
     SelectPaneUp,
     SelectPaneDown,
+    /// Directional pane resize (tmux resize-pane -L/-R/-U/-D).
+    ResizePaneLeft,
+    ResizePaneRight,
+    ResizePaneUp,
+    ResizePaneDown,
+    /// Toggle zoom on the active pane (tmux prefix z).
+    ZoomPane,
     Detach,
     EnterCopyMode,
     KillPane,
@@ -48,6 +55,11 @@ impl Action {
             Action::SelectPaneRight => "select pane to the right",
             Action::SelectPaneUp => "select pane above",
             Action::SelectPaneDown => "select pane below",
+            Action::ResizePaneLeft => "resize pane left",
+            Action::ResizePaneRight => "resize pane right",
+            Action::ResizePaneUp => "resize pane up",
+            Action::ResizePaneDown => "resize pane down",
+            Action::ZoomPane => "zoom/unzoom the active pane",
             Action::Detach => "detach (session keeps running)",
             Action::EnterCopyMode => "enter copy-mode",
             Action::KillPane => "kill the active pane",
@@ -97,6 +109,14 @@ impl Bindings {
         table.insert(Key::plain(KeyCode::Right), Action::SelectPaneRight);
         table.insert(Key::plain(KeyCode::Up), Action::SelectPaneUp);
         table.insert(Key::plain(KeyCode::Down), Action::SelectPaneDown);
+        // Zoom the active pane (tmux prefix z).
+        table.insert(Key::char('z'), Action::ZoomPane);
+        // Directional resize on the vi-style capitals (tmux's repeatable
+        // resize-pane bindings); arrows are taken by select-pane above.
+        table.insert(Key::char('H'), Action::ResizePaneLeft);
+        table.insert(Key::char('L'), Action::ResizePaneRight);
+        table.insert(Key::char('K'), Action::ResizePaneUp);
+        table.insert(Key::char('J'), Action::ResizePaneDown);
         for n in 0..=9u32 {
             table.insert(
                 Key::char(char::from_digit(n, 10).unwrap()),
