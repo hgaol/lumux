@@ -451,6 +451,40 @@ fn next_prev_window_navigation() {
     );
 }
 
+#[test]
+fn select_window_respects_base_index() {
+    // Regression: with base_index = 1 the status bar numbers windows 1,2,…, but
+    // pressing the digit indexed the window list directly (0-based), so "1"
+    // selected the SECOND window and the first was unreachable. The selection
+    // must now map the displayed number back through base_index.
+    let mut cfg = lumux_core::config::Config::default();
+    cfg.base_index = 1;
+    let path = start_daemon_with_config(cfg);
+    let mut c = new_cmd_session(&path, "win1");
+    // Create a second window (now numbered 2); it becomes active.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.drain(Duration::from_secs(1));
+
+    // Press prefix + 1: must focus the FIRST window. Its name is "0" (from the
+    // session's initial window), so the active marker lands on "1:0*".
+    c.send(&ClientMsg::Input(vec![0x02, b'1']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let vt = c.drain(Duration::from_secs(2));
+    assert!(
+        vt.contains("1:0*"),
+        "prefix 1 should select window #1 under base_index=1; got:\n{vt}"
+    );
+
+    // And prefix + 2 selects the second window (numbered 2, blank name): "2:*".
+    c.send(&ClientMsg::Input(vec![0x02, b'2']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
+    let vt2 = c.drain(Duration::from_secs(2));
+    assert!(
+        vt2.contains("2:*") && !vt2.contains("1:0*"),
+        "prefix 2 should move the active marker to window #2; got:\n{vt2}"
+    );
+}
+
 // ===========================================================================
 // 4. Panes
 // ===========================================================================

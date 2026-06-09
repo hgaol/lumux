@@ -352,12 +352,7 @@ where
                 }
             }
             Command::SelectWindow { index } => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    let ids = s.window_ids();
-                    if let Some(&wid) = ids.get(index as usize) {
-                        s.focus_window(wid);
-                    }
-                }
+                self.select_window_by_number(session, index);
                 self.render_session(session);
             }
             Command::SendKeys { keys } => {
@@ -454,14 +449,7 @@ where
                     s.focus_prev_window();
                 }
             }
-            Action::SelectWindow(n) => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    let ids = s.window_ids();
-                    if let Some(&wid) = ids.get(n as usize) {
-                        s.focus_window(wid);
-                    }
-                }
-            }
+            Action::SelectWindow(n) => self.select_window_by_number(session, n),
             Action::SelectPaneLeft => self.select_pane(session, Direction::Left),
             Action::SelectPaneRight => self.select_pane(session, Direction::Right),
             Action::SelectPaneUp => self.select_pane(session, Direction::Up),
@@ -588,6 +576,21 @@ where
 
     fn mouse_drag_end(&mut self) {
         // Stateless for v1: each drag event re-derives the ratio from position.
+    }
+
+    /// Focus a window by the number the user sees (status-bar number, which
+    /// includes the config's base-index). Mapping back through base-index is what
+    /// fixes the off-by-one when base_index = 1: pressing "1" selects the first
+    /// window, not the second. Numbers below base-index clamp to the first window.
+    fn select_window_by_number(&mut self, session: SessionId, number: u32) {
+        let base = self.daemon.base_index();
+        let pos = number.saturating_sub(base) as usize;
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            let ids = s.window_ids();
+            if let Some(&wid) = ids.get(pos) {
+                s.focus_window(wid);
+            }
+        }
     }
 
     /// Move focus geographically within the active window.

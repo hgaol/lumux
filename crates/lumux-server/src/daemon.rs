@@ -113,6 +113,13 @@ impl<S: PtySystem> Daemon<S> {
         self.config.mouse
     }
 
+    /// Lowest window/pane number shown to the user (tmux base-index). Window
+    /// selection keys/commands are offset by this so the digit a user presses
+    /// matches the number rendered in the status bar.
+    pub fn base_index(&self) -> u32 {
+        self.config.base_index
+    }
+
     /// Resolve a shell argv: explicit profile name, else config default, else
     /// the environment default.
     fn resolve_shell(&self, name: Option<&str>) -> Vec<String> {
