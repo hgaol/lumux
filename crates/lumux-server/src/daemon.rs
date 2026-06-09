@@ -174,10 +174,14 @@ impl<S: PtySystem> Daemon<S> {
         Ok((sid, pid, reader))
     }
 
-    /// Feed PTY output bytes into a pane's emulator.
-    pub fn feed_pane(&mut self, id: PaneId, bytes: &[u8]) {
+    /// Feed PTY output bytes into a pane's emulator. Returns true if the output
+    /// rang the terminal bell (BEL), so the caller can notify clients.
+    pub fn feed_pane(&mut self, id: PaneId, bytes: &[u8]) -> bool {
         if let Some(p) = self.panes.get_mut(&id) {
             p.grid.feed(bytes);
+            p.grid.take_bell()
+        } else {
+            false
         }
     }
 

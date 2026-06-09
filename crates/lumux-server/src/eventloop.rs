@@ -134,8 +134,18 @@ where
                 self.clients.remove(&client_id);
             }
             Msg::PaneOutput { pane, bytes } => {
-                self.daemon.feed_pane(pane, &bytes);
+                let rang = self.daemon.feed_pane(pane, &bytes);
                 if let Some(sid) = self.pane_session.get(&pane).copied() {
+                    if rang {
+                        // Forward a bell to each attached client (tmux's default
+                        // visual-bell-off behavior: the client emits a BEL so the
+                        // user's own terminal flashes/beeps per its settings).
+                        for id in self.session_clients(sid) {
+                            if let Some(h) = self.clients.get(&id) {
+                                let _ = h.out.send(ServerMsg::Event(Event::Bell));
+                            }
+                        }
+                    }
                     self.render_session(sid);
                 }
             }

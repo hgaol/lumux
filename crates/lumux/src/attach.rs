@@ -106,7 +106,17 @@ where
                         }
                         let _ = stdout.flush();
                     }
-                    Ok(ServerMsg::Detached) | Ok(ServerMsg::Event(_)) => break,
+                    Ok(ServerMsg::Detached) => break,
+                    // A bell flashes the user's own terminal; keep the session up.
+                    // Any other event (e.g. SessionClosed) ends the attach.
+                    Ok(ServerMsg::Event(ev)) => {
+                        if matches!(ev, lumux_core::proto::Event::Bell) {
+                            let _ = stdout.write_all(b"\x07");
+                            let _ = stdout.flush();
+                        } else {
+                            break;
+                        }
+                    }
                     Ok(ServerMsg::Reply(text)) => {
                         let _ = stdout.write_all(text.as_bytes());
                         let _ = stdout.flush();

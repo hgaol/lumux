@@ -539,6 +539,21 @@ fn send_keys_command_injects_into_pane() {
 }
 
 #[test]
+fn bell_in_pane_output_notifies_client() {
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "bell");
+    // Echo a literal BEL (0x07) so it shows up in the pane's PTY output. ConPTY
+    // relays it; the emulator decodes BEL and the daemon forwards Event::Bell.
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo \x07\r\n".to_vec(),
+    }));
+    let (rang, _) = c.wait_for(Duration::from_secs(8), |m| {
+        matches!(m, ServerMsg::Event(Event::Bell))
+    });
+    assert!(rang, "a BEL in pane output must reach the client as Event::Bell");
+}
+
+#[test]
 fn prefix_s_opens_session_chooser() {
     let path = start_daemon();
     // Two sessions so the chooser has something to list.
