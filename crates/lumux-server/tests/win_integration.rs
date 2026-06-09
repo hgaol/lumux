@@ -42,6 +42,18 @@ fn start_daemon() -> String {
     path
 }
 
+/// Like `start_daemon` but seeds the daemon with a specific config (used to
+/// exercise the styled status bar / time tokens).
+fn start_daemon_with_config(cfg: lumux_core::config::Config) -> String {
+    let path = unique_pipe();
+    let listener = PipeListener::bind(path.clone()).expect("bind pipe");
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(WinPtySystem, listener, cfg);
+    });
+    std::thread::sleep(Duration::from_millis(100));
+    path
+}
+
 /// A framed test client over the real named-pipe transport. The reader half runs
 /// on its own thread and forwards decoded `ServerMsg`s through a channel, so all
 /// waits below are timeout-bounded.
@@ -509,6 +521,43 @@ fn source_file_rebinds_prefix_live() {
         "rebound prefix Ctrl-a should trigger a split; got:\n{vt}"
     );
     let _ = std::fs::remove_file(&cfg_path);
+}
+
+#[test]
+fn status_bar_clock_shows_real_local_time() {
+    // Regression: now_parts() returned zeros on Windows, so %H:%M rendered as
+    // "00:00". With GetLocalTime wired, the status bar must show the real local
+    // hour. Configure a clock in status_left and assert the current hour appears.
+    let mut cfg = lumux_core::config::Config::default();
+    cfg.status_left = "T%H:%M".to_string();
+    let path = start_daemon_with_config(cfg);
+    let mut c = new_cmd_session(&path, "clock");
+    // Force a full repaint so the whole status row is sent.
+    c.send(&ClientMsg::Resize(WireSize { cols: 88, rows: 24 }));
+    let vt = c.drain(Duration::from_secs(2));
+
+    // The rendered clock must not be the old zero default…
+    assert!(
+        !vt.contains("T00:00") || real_hour() == 0,
+        "clock should show real local time, not the 00:00 stub; got:\n{vt}"
+    );
+    // …and must contain this machine's current "T<HH>:" prefix.
+    let needle = format!("T{:02}:", real_hour());
+    assert!(
+        vt.contains(&needle),
+        "status bar should show the local hour {needle}; got:\n{vt}"
+    );
+}
+
+/// Current local hour via the same Win32 call the daemon uses — keeps the test
+/// independent of the daemon's internal formatting.
+#[cfg(windows)]
+fn real_hour() -> u8 {
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    let mut st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut st) };
+    st.wHour as u8
 }
 
 // ===========================================================================

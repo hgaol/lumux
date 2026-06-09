@@ -807,9 +807,27 @@ fn now_parts() -> lumux_core::status::TimeParts {
     }
 }
 
-#[cfg(not(unix))]
+/// Windows: query the local wall clock via GetLocalTime so status-bar time
+/// tokens (%H:%M, %d-%b-%y) render the real time. GetLocalTime is infallible and
+/// already returns broken-out local components, so no timezone math is needed.
+#[cfg(windows)]
 fn now_parts() -> lumux_core::status::TimeParts {
-    // Windows: filled by the platform layer in a follow-up; default to zeros so
-    // time tokens render as 00:00 rather than failing.
+    use windows_sys::Win32::Foundation::SYSTEMTIME;
+    use windows_sys::Win32::System::SystemInformation::GetLocalTime;
+    let mut st: SYSTEMTIME = unsafe { std::mem::zeroed() };
+    unsafe { GetLocalTime(&mut st) };
+    lumux_core::status::TimeParts {
+        hour: st.wHour as u8,
+        minute: st.wMinute as u8,
+        second: st.wSecond as u8,
+        day: st.wDay as u8,
+        month: st.wMonth as u8,
+        year: st.wYear,
+    }
+}
+
+/// Other non-unix targets keep the zero default (no clock wired).
+#[cfg(not(any(unix, windows)))]
+fn now_parts() -> lumux_core::status::TimeParts {
     lumux_core::status::TimeParts::default()
 }

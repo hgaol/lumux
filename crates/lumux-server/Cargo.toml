@@ -16,8 +16,12 @@ anyhow = { workspace = true }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
+
 [dev-dependencies]
 lumux-backend-unix = { workspace = true }
 
 [target.'cfg(windows)'.dev-dependencies]
 lumux-backend-win = { workspace = true }
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_SystemInformation"] }
