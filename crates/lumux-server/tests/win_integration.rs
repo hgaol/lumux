@@ -529,6 +529,34 @@ fn kill_pane_removes_split() {
 }
 
 #[test]
+fn mouse_enabled_sends_reporting_and_acts_on_events() {
+    // With mouse = true the daemon must (1) tell the client terminal to start
+    // reporting (DECSET 1002/1003/1006) on attach, and (2) act on incoming SGR
+    // mouse sequences. A scroll-up over a pane enters copy-mode (the only
+    // mouse action with an observable, shell-independent result).
+    let mut cfg = lumux_core::config::Config::default();
+    cfg.mouse = true;
+    let path = start_daemon_with_config(cfg);
+    let mut c = new_cmd_session(&path, "mouse");
+
+    // (1) The mouse-enable sequence is pushed as a frame right after attach.
+    let (enabled, vt) = c.collect_text(Duration::from_secs(3), "\x1b[?1006h");
+    assert!(
+        enabled,
+        "mouse=true should send SGR mouse-reporting enable; got:\n{vt:?}"
+    );
+
+    // (2) Inject an SGR scroll-up (button 64) at row 1; the daemon consumes it
+    // (not forwarded to the shell) and enters copy-mode, showing the mode line.
+    c.send(&ClientMsg::Input(b"\x1b[<64;5;2M".to_vec()));
+    let (in_copy, vt2) = c.collect_text(Duration::from_secs(3), "COPY");
+    assert!(
+        in_copy,
+        "scroll-up with mouse on should enter copy-mode; got:\n{vt2}"
+    );
+}
+
+#[test]
 fn zoom_hides_other_panes_then_restores() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "zoom");

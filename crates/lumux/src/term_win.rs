@@ -14,7 +14,8 @@ use std::io::{self, Write};
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{
     GetConsoleMode, GetConsoleScreenBufferInfo, GetStdHandle, SetConsoleMode,
-    CONSOLE_SCREEN_BUFFER_INFO, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_PROCESSED_OUTPUT,
+    CONSOLE_SCREEN_BUFFER_INFO, DISABLE_NEWLINE_AUTO_RETURN, ENABLE_EXTENDED_FLAGS,
+    ENABLE_MOUSE_INPUT, ENABLE_PROCESSED_OUTPUT, ENABLE_QUICK_EDIT_MODE,
     ENABLE_VIRTUAL_TERMINAL_INPUT, ENABLE_VIRTUAL_TERMINAL_PROCESSING, STD_INPUT_HANDLE,
     STD_OUTPUT_HANDLE,
 };
@@ -49,7 +50,16 @@ impl RawTerminal {
             // Input: VT input on; disable line input/echo/processed so keys come
             // through raw. (ENABLE_LINE_INPUT=2, ENABLE_ECHO_INPUT=4,
             // ENABLE_PROCESSED_INPUT=1.)
-            let new_in = (orig_in & !(0x0002 | 0x0004 | 0x0001)) | ENABLE_VIRTUAL_TERMINAL_INPUT;
+            //
+            // Mouse: turn ENABLE_MOUSE_INPUT on and ENABLE_QUICK_EDIT_MODE off so
+            // the console hands mouse events to us (as VT/SGR sequences, since VT
+            // input is enabled) instead of using them for native text selection.
+            // Clearing QuickEdit only takes effect when ENABLE_EXTENDED_FLAGS is
+            // also set in the same call, so we set it explicitly.
+            let new_in = (orig_in & !(0x0002 | 0x0004 | 0x0001 | ENABLE_QUICK_EDIT_MODE))
+                | ENABLE_VIRTUAL_TERMINAL_INPUT
+                | ENABLE_MOUSE_INPUT
+                | ENABLE_EXTENDED_FLAGS;
             SetConsoleMode(in_handle, new_in);
 
             let mut out = io::stdout();
