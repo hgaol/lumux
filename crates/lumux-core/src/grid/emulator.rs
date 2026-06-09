@@ -12,7 +12,9 @@
 //! ignored for v1 rather than half-implemented.
 
 use termwiz::cell::{Cell, CellAttributes};
-use termwiz::escape::csi::{Cursor, Edit, EraseInDisplay, EraseInLine, Sgr, CSI};
+use termwiz::escape::csi::{
+    Cursor, DecPrivateMode, DecPrivateModeCode, Edit, EraseInDisplay, EraseInLine, Mode, Sgr, CSI,
+};
 use termwiz::escape::parser::Parser;
 use termwiz::escape::{Action, ControlCode};
 
@@ -32,6 +34,25 @@ pub struct Grid {
     saved_cursor: Option<(usize, usize)>,
     /// Pending bell since last drain.
     bell: bool,
+    /// Saved primary screen while the alternate screen is active (DEC 1049 / 47
+    /// / 1047). `None` means we're on the normal/primary screen. Full-screen apps
+    /// (vim, less, htop) draw on the alt screen and the primary is restored when
+    /// they exit — without this they paint over the shell and never restore it.
+    primary: Option<PrimaryScreen>,
+    /// DECAWM autowrap (mode 7). On by default.
+    autowrap: bool,
+    /// DEC text-cursor-enable (mode 25). Visible by default; apps hide it while
+    /// repainting so the renderer must honor it to avoid a flickering cursor.
+    cursor_visible: bool,
+}
+
+/// The primary-screen state stashed while the alternate screen is shown.
+struct PrimaryScreen {
+    rows: Vec<Row>,
+    cursor_x: usize,
+    cursor_y: usize,
+    pen: CellAttributes,
+    saved_cursor: Option<(usize, usize)>,
 }
 
 impl std::fmt::Debug for Grid {
@@ -60,6 +81,9 @@ impl Grid {
             parser: Parser::new(),
             saved_cursor: None,
             bell: false,
+            primary: None,
+            autowrap: true,
+            cursor_visible: true,
         }
     }
 
@@ -69,6 +93,19 @@ impl Grid {
 
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor_x, self.cursor_y)
+    }
+
+    /// Whether the alternate screen is currently active (a full-screen app like
+    /// vim/less is running). Copy-mode uses this to suppress scrollback, since
+    /// the alt screen has none.
+    pub fn alt_screen(&self) -> bool {
+        self.primary.is_some()
+    }
+
+    /// Whether the text cursor should be shown (DEC mode 25). Apps hide it while
+    /// repainting; the renderer honors this so the client cursor doesn't flicker.
+    pub fn cursor_visible(&self) -> bool {
+        self.cursor_visible
     }
 
     pub fn rows(&self) -> &[Row] {
@@ -144,9 +181,14 @@ impl Grid {
 
     fn print_char(&mut self, c: char) {
         if self.cursor_x >= self.width {
-            // Autowrap to next line.
-            self.cursor_x = 0;
-            self.line_feed();
+            if self.autowrap {
+                // Autowrap to next line.
+                self.cursor_x = 0;
+                self.line_feed();
+            } else {
+                // DECAWM off: keep overprinting the last column.
+                self.cursor_x = self.width - 1;
+            }
         }
         let cell = Cell::new(c, self.pen.clone());
         let advanced = self.rows[self.cursor_y].set_cell(self.cursor_x, cell);
@@ -175,9 +217,12 @@ impl Grid {
     /// Move cursor down one line, scrolling (and feeding scrollback) at bottom.
     fn line_feed(&mut self) {
         if self.cursor_y + 1 >= self.height {
-            // Scroll: top line goes to scrollback, append a fresh blank line.
+            // Scroll: top line goes to scrollback, append a fresh blank line. The
+            // alternate screen has no history, so its top line is just discarded.
             let scrolled = std::mem::replace(&mut self.rows[0], Row::blank(self.width));
-            self.scrollback.push(scrolled);
+            if self.primary.is_none() {
+                self.scrollback.push(scrolled);
+            }
             self.rows.remove(0);
             self.rows.push(Row::blank(self.width));
         } else {
@@ -190,7 +235,64 @@ impl Grid {
             CSI::Cursor(c) => self.cursor_csi(c),
             CSI::Edit(e) => self.edit_csi(e),
             CSI::Sgr(s) => self.sgr(s),
+            CSI::Mode(m) => self.mode_csi(m),
             _ => {}
+        }
+    }
+
+    /// DEC private modes we care about: alternate screen (1049/47/1047), text
+    /// cursor visibility (25), and autowrap (7). Everything else is ignored.
+    fn mode_csi(&mut self, mode: Mode) {
+        let (set, code) = match mode {
+            Mode::SetDecPrivateMode(DecPrivateMode::Code(c)) => (true, c),
+            Mode::ResetDecPrivateMode(DecPrivateMode::Code(c)) => (false, c),
+            _ => return,
+        };
+        match code {
+            DecPrivateModeCode::ClearAndEnableAlternateScreen
+            | DecPrivateModeCode::EnableAlternateScreen
+            | DecPrivateModeCode::OptEnableAlternateScreen => {
+                if set {
+                    self.enter_alt_screen();
+                } else {
+                    self.leave_alt_screen();
+                }
+            }
+            DecPrivateModeCode::ShowCursor => self.cursor_visible = set,
+            DecPrivateModeCode::AutoWrap => self.autowrap = set,
+            _ => {}
+        }
+    }
+
+    /// Switch to a fresh, blank alternate screen, stashing the primary one. A
+    /// no-op if already on the alt screen (apps may send the sequence twice).
+    fn enter_alt_screen(&mut self) {
+        if self.primary.is_some() {
+            return;
+        }
+        let saved_rows =
+            std::mem::replace(&mut self.rows, (0..self.height).map(|_| Row::blank(self.width)).collect());
+        self.primary = Some(PrimaryScreen {
+            rows: saved_rows,
+            cursor_x: self.cursor_x,
+            cursor_y: self.cursor_y,
+            pen: self.pen.clone(),
+            saved_cursor: self.saved_cursor,
+        });
+        self.cursor_x = 0;
+        self.cursor_y = 0;
+        self.pen = CellAttributes::default();
+    }
+
+    /// Restore the primary screen saved on the last `enter_alt_screen`. A no-op
+    /// if we're already on the primary screen.
+    fn leave_alt_screen(&mut self) {
+        if let Some(p) = self.primary.take() {
+            self.rows = p.rows;
+            self.cursor_x = p.cursor_x.min(self.width - 1);
+            self.cursor_y = p.cursor_y.min(self.height - 1);
+            self.pen = p.pen;
+            self.saved_cursor = p.saved_cursor;
         }
     }
 
@@ -351,7 +453,9 @@ impl Grid {
     }
 
     /// Resize the screen. Width change re-pads rows; height change adds/removes
-    /// rows from the top (feeding scrollback when shrinking).
+    /// rows from the top (feeding scrollback when shrinking). The stashed primary
+    /// screen (if we're on the alt screen) is resized in lockstep so it restores
+    /// at the right size when the full-screen app exits.
     pub fn resize(&mut self, width: usize, height: usize) {
         let width = width.max(1);
         let height = height.max(1);
@@ -360,18 +464,41 @@ impl Grid {
                 r.resize(width);
             }
         }
+        let on_alt = self.primary.is_some();
         if height < self.height {
-            // Remove from the top, pushing into scrollback.
+            // Remove from the top. The primary screen feeds scrollback; the alt
+            // screen has no history, so its excess top rows are just dropped.
             let remove = self.height - height;
             for _ in 0..remove {
                 let r = self.rows.remove(0);
-                self.scrollback.push(r);
+                if !on_alt {
+                    self.scrollback.push(r);
+                }
             }
             self.cursor_y = self.cursor_y.saturating_sub(remove);
         } else if height > self.height {
             for _ in 0..(height - self.height) {
                 self.rows.push(Row::blank(width));
             }
+        }
+        // Keep the stashed primary buffer dimensionally consistent.
+        if let Some(p) = self.primary.as_mut() {
+            if width != self.width {
+                for r in &mut p.rows {
+                    r.resize(width);
+                }
+            }
+            if height < p.rows.len() {
+                let remove = p.rows.len() - height;
+                p.rows.drain(0..remove);
+                p.cursor_y = p.cursor_y.saturating_sub(remove);
+            } else {
+                while p.rows.len() < height {
+                    p.rows.push(Row::blank(width));
+                }
+            }
+            p.cursor_x = p.cursor_x.min(width - 1);
+            p.cursor_y = p.cursor_y.min(height - 1);
         }
         self.width = width;
         self.height = height;

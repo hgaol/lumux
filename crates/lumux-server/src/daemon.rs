@@ -332,9 +332,15 @@ impl<S: PtySystem> Daemon<S> {
     }
 
     /// Enter copy-mode for `client_id`, anchored at the active pane's live tail.
+    /// No-op when the active pane is on the alternate screen: a full-screen app
+    /// (vim/less) owns the viewport and has no scrollback to browse, so copy-mode
+    /// there would only show stale primary-screen history (tmux blocks it too).
     pub fn enter_copy_mode(&mut self, client_id: u64, session: SessionId) {
         if let Some(pid) = self.active_pane(session) {
             if let Some(p) = self.panes.get(&pid) {
+                if p.grid.alt_screen() {
+                    return;
+                }
                 self.copy.insert(client_id, CopyMode::enter(&p.grid));
                 if let Some(r) = self.renderers.get_mut(&client_id) {
                     r.invalidate();

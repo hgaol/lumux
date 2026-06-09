@@ -168,3 +168,84 @@ fn tab_advances_to_stops() {
     g.feed(b"\t");
     assert_eq!(g.cursor().0, 16);
 }
+
+#[test]
+fn alt_screen_starts_blank_and_restores_primary() {
+    let mut g = grid();
+    g.feed(b"primary");
+    assert_eq!(g.screen_text()[0], "primary");
+    assert!(!g.alt_screen());
+
+    // Enter the alternate screen (DEC 1049): a fresh blank buffer.
+    g.feed(b"\x1b[?1049h");
+    assert!(g.alt_screen());
+    assert_eq!(g.screen_text()[0], "", "alt screen starts blank");
+    g.feed(b"ALT");
+    assert_eq!(g.screen_text()[0], "ALT");
+
+    // Leave it: the primary screen (and its text) comes back.
+    g.feed(b"\x1b[?1049l");
+    assert!(!g.alt_screen());
+    assert_eq!(g.screen_text()[0], "primary", "primary restored on exit");
+}
+
+#[test]
+fn alt_screen_scroll_does_not_touch_scrollback() {
+    let mut g = Grid::new(10, 2, 100);
+    // Fill primary with scrollback so we can prove the alt screen doesn't add.
+    g.feed(b"a\r\nb\r\nc\r\nd"); // scrolls a couple lines into history
+    let hist_before = g.history_len();
+    assert!(hist_before > 0);
+
+    g.feed(b"\x1b[?1049h");
+    // Scroll a bunch on the alt screen.
+    g.feed(b"1\r\n2\r\n3\r\n4\r\n5");
+    assert_eq!(
+        g.history_len(),
+        hist_before,
+        "alt-screen scrolling must not grow scrollback"
+    );
+    g.feed(b"\x1b[?1049l");
+    assert_eq!(g.history_len(), hist_before);
+}
+
+#[test]
+fn show_cursor_mode_toggles_visibility() {
+    let mut g = grid();
+    assert!(g.cursor_visible(), "cursor visible by default");
+    g.feed(b"\x1b[?25l"); // hide
+    assert!(!g.cursor_visible());
+    g.feed(b"\x1b[?25h"); // show
+    assert!(g.cursor_visible());
+}
+
+#[test]
+fn autowrap_off_overprints_last_column() {
+    let mut g = Grid::new(4, 2, 10);
+    g.feed(b"\x1b[?7l"); // DECAWM off
+    g.feed(b"abcdef"); // 6 chars into width-4: last column keeps the final char
+    assert_eq!(g.screen_text()[1], "", "no wrap to row 1");
+    assert_eq!(g.cursor().1, 0, "cursor stays on row 0 with autowrap off");
+    // Row 0 ends with the last-printed char 'f' overprinting column 3.
+    assert_eq!(g.screen_text()[0], "abcf");
+}
+
+#[test]
+fn alt_screen_survives_resize_and_restores_primary() {
+    let mut g = Grid::new(10, 3, 100);
+    g.feed(b"keepme");
+    g.feed(b"\x1b[?1049h");
+    g.feed(b"alt-content");
+    // Resize while on the alt screen (a full-screen app being resized).
+    g.resize(6, 4);
+    assert!(g.alt_screen());
+    // Leaving restores the primary, now at the new width, with its text intact.
+    g.feed(b"\x1b[?1049l");
+    assert!(!g.alt_screen());
+    assert_eq!(g.dimensions(), (6, 4));
+    assert!(
+        g.screen_text()[0].starts_with("keep"),
+        "primary text survives an alt-screen resize; got {:?}",
+        g.screen_text()[0]
+    );
+}

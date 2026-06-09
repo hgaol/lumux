@@ -172,16 +172,20 @@ pub fn compose(size: (usize, usize), view: &WindowView, status: Option<&StatusBa
         }
     }
 
-    // Map the active pane's cursor into screen space.
+    // Map the active pane's cursor into screen space, honoring DEC mode 25:
+    // a hidden cursor (full-screen apps hide it while repainting) stays None so
+    // the differ emits a hide rather than parking a stray block on screen.
     if let (Some(rect), Some(grid)) = (
         rects.get(&view.active_pane),
         view.grids.get(&view.active_pane),
     ) {
-        let (cx, cy) = grid.cursor();
-        let sx = rect.x as usize + cx;
-        let sy = rect.y as usize + cy;
-        if sx < w && sy < content_rows {
-            screen.set_cursor(Some((sx, sy)));
+        if grid.cursor_visible() {
+            let (cx, cy) = grid.cursor();
+            let sx = rect.x as usize + cx;
+            let sy = rect.y as usize + cy;
+            if sx < w && sy < content_rows {
+                screen.set_cursor(Some((sx, sy)));
+            }
         }
     }
 
