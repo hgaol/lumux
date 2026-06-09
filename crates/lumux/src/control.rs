@@ -25,24 +25,37 @@ pub fn send_command(cmd: Command) -> anyhow::Result<String> {
     writer.write_frame(&encode(&attach)?)?;
     let _ = reader.read_frame()?; // drain the Attached ack / first frame
 
+    // Issue the command, then immediately detach. Detaching is what bounds the
+    // read below: most commands (new-window, split-window, send-keys) produce no
+    // Reply, only render frames, so waiting for a Reply would block forever once
+    // the pane goes idle. The daemon always answers Detach with Detached (then
+    // closes the connection), so reading until Detached is guaranteed to finish —
+    // and the command is processed before the detach because the daemon handles
+    // client messages in order.
     writer.write_frame(&encode(&ClientMsg::Command(cmd))?)?;
-    let reply = read_reply(&mut reader);
     let _ = writer.write_frame(&encode(&ClientMsg::Detach)?);
+    let reply = read_until_detached(&mut reader);
     Ok(reply.unwrap_or_default())
 }
 
-fn read_reply<R: FrameReader>(reader: &mut R) -> Option<String> {
-    for _ in 0..16 {
+/// Drain frames until the daemon sends `Detached` (or the connection ends),
+/// returning the text of any `Reply` seen along the way. Always terminates:
+/// `Detached` is the daemon's guaranteed response to our `Detach`, after which
+/// it stops writing, so a subsequent read returns EOF.
+fn read_until_detached<R: FrameReader>(reader: &mut R) -> Option<String> {
+    let mut reply = None;
+    #[allow(clippy::while_let_loop)] // body breaks on Detached, not only on EOF
+    loop {
         match reader.read_frame() {
-            Ok(Some(bytes)) => {
-                if let Ok(ServerMsg::Reply(text)) = lumux_core::proto::decode::<ServerMsg>(&bytes) {
-                    return Some(text);
-                }
-            }
-            _ => break,
+            Ok(Some(bytes)) => match lumux_core::proto::decode::<ServerMsg>(&bytes) {
+                Ok(ServerMsg::Reply(text)) => reply = Some(text),
+                Ok(ServerMsg::Detached) => break,
+                _ => {}
+            },
+            _ => break, // EOF or decode/read error: nothing more is coming.
         }
     }
-    None
+    reply
 }
 
 #[cfg(unix)]
