@@ -59,6 +59,9 @@ enum Command {
     /// Kill the daemon and all sessions.
     KillServer,
     /// Split the active window of a session (sends a command to the daemon).
+    // `disable_help_flag` frees up `-h` so it can mean horizontal (tmux parity)
+    // instead of clap's auto help alias; `lumux help split-window` still works.
+    #[command(disable_help_flag = true)]
     SplitWindow {
         /// Split left/right (vertical divider) instead of top/bottom.
         #[arg(short = 'h', long)]
