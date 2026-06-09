@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>lumux — a tmux for the Windows host</title>
+<meta name="description" content="lumux is a tmux-like terminal multiplexer for the Windows host: persistent sessions, windows, and panes with tmux keybindings, attachable as plain text over SSH from inside any VT terminal." />
+<meta property="og:title" content="lumux — a tmux for the Windows host" />
+<meta property="og:description" content="Persistent sessions, windows, and panes with tmux keybindings — attach as plain text over SSH, no GUI." />
+<meta property="og:type" content="website" />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%2316181d'/><text x='12' y='62' font-family='monospace' font-size='42' fill='%2350fa7b'>%3E_</text></svg>" />
+<style>
+  :root {
+    --bg: #0d0f14;
+    --bg-soft: #16181d;
+    --bg-card: #1a1d24;
+    --border: #2a2e38;
+    --fg: #c9d1d9;
+    --fg-dim: #8b949e;
+    --green: #50fa7b;
+    --cyan: #8be9fd;
+    --purple: #bd93f9;
+    --yellow: #f1fa8c;
+    --red: #ff5555;
+    --pink: #ff79c6;
+    --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "JetBrains Mono", Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code { font-family: var(--mono); }
+
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---- top nav ---- */
+  nav {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(13,15,20,0.82);
+    backdrop-filter: blur(10px);
+    border-bottom: 1px solid var(--border);
+  }
+  nav .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
+  .brand { font-family: var(--mono); font-weight: 700; font-size: 1.15rem; color: var(--fg); }
+  .brand .caret { color: var(--green); }
+  nav .links { margin-left: auto; display: flex; gap: 24px; font-size: 0.93rem; }
+  nav .links a { color: var(--fg-dim); }
+  nav .links a:hover { color: var(--fg); text-decoration: none; }
+
+  /* ---- hero ---- */
+  .hero { padding: 72px 0 36px; }
+  .hero-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+  .badge {
+    display: inline-block; font-family: var(--mono); font-size: 0.78rem;
+    color: var(--green); border: 1px solid var(--border);
+    background: var(--bg-soft); padding: 4px 12px; border-radius: 100px; margin-bottom: 22px;
+  }
+  h1 { font-size: 3rem; line-height: 1.08; margin: 0 0 18px; letter-spacing: -0.02em; }
+  h1 .accent { color: var(--green); }
+  .lede { font-size: 1.18rem; color: var(--fg-dim); margin: 0 0 30px; }
+  .cta { display: flex; gap: 14px; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--mono); font-size: 0.95rem; font-weight: 600;
+    padding: 12px 22px; border-radius: 8px; cursor: pointer; border: 1px solid transparent;
+    transition: transform .08s ease, background .15s ease;
+  }
+  .btn:hover { transform: translateY(-1px); text-decoration: none; }
+  .btn-primary { background: var(--green); color: #07140c; }
+  .btn-primary:hover { background: #6dff95; }
+  .btn-ghost { background: transparent; color: var(--fg); border-color: var(--border); }
+  .btn-ghost:hover { border-color: var(--fg-dim); background: var(--bg-soft); }
+
+  /* ---- terminal mockup ---- */
+  .term {
+    background: #0a0c10; border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,0.7); overflow: hidden; font-family: var(--mono);
+  }
+  .term-bar {
+    display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+    background: var(--bg-soft); border-bottom: 1px solid var(--border);
+  }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.r { background: #ff5f56; } .dot.y { background: #ffbd2e; } .dot.g { background: #27c93f; }
+  .term-title { margin-left: 8px; font-size: 0.8rem; color: var(--fg-dim); }
+  .term-body { padding: 16px 18px; font-size: 0.86rem; line-height: 1.7; min-height: 290px; }
+  .term-body .pane-row { display: flex; gap: 0; }
+  .term-body .pane { flex: 1; }
+  .term-body .divider { color: var(--border); padding: 0 10px; }
+  .term-body .gutter { color: var(--border); }
+  .prompt { color: var(--green); }
+  .path { color: var(--purple); }
+  .comment { color: var(--fg-dim); }
+  .str { color: var(--yellow); }
+  .kw { color: var(--pink); }
+  .out { color: var(--fg); }
+  .cursor { background: var(--green); color: #0a0c10; animation: blink 1.1s step-end infinite; }
+  @keyframes blink { 50% { background: transparent; color: var(--green); } }
+  .statusbar {
+    margin-top: 14px; display: flex; font-size: 0.8rem; border-radius: 4px; overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .statusbar .seg { padding: 3px 12px; }
+  .statusbar .s-left { background: #7c2d2d; color: #fff; font-weight: 700; }
+  .statusbar .s-sess { background: #1b3a4b; color: var(--green); }
+  .statusbar .s-mid { background: var(--bg-soft); color: var(--fg-dim); flex: 1; text-align: center; }
+  .statusbar .s-win-active { color: var(--green); font-weight: 700; }
+  .statusbar .s-right { background: var(--bg-soft); color: var(--cyan); }
+
+  /* ---- sections ---- */
+  section { padding: 56px 0; border-top: 1px solid var(--border); }
+  .section-label { font-family: var(--mono); font-size: 0.8rem; color: var(--green); letter-spacing: 0.08em; text-transform: uppercase; }
+  h2 { font-size: 1.9rem; margin: 8px 0 10px; letter-spacing: -0.01em; }
+  .section-sub { color: var(--fg-dim); max-width: 640px; margin: 0 0 34px; }
+
+  /* ---- feature grid ---- */
+  .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .card {
+    background: var(--bg-card); border: 1px solid var(--border); border-radius: 10px;
+    padding: 22px; transition: border-color .15s ease, transform .1s ease;
+  }
+  .card:hover { border-color: #3a4150; transform: translateY(-2px); }
+  .card .ico { font-family: var(--mono); color: var(--green); font-size: 1.05rem; margin-bottom: 10px; }
+  .card h3 { margin: 0 0 6px; font-size: 1.06rem; }
+  .card p { margin: 0; color: var(--fg-dim); font-size: 0.92rem; }
+
+  /* ---- why / architecture ---- */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
+  .prose p { color: var(--fg-dim); }
+  .prose strong { color: var(--fg); }
+  .arch { font-family: var(--mono); font-size: 0.82rem; background: var(--bg-soft); border: 1px solid var(--border); border-radius: 10px; padding: 22px; color: var(--fg-dim); white-space: pre; overflow-x: auto; }
+  .arch b { color: var(--cyan); font-weight: 600; }
+  .arch .g { color: var(--green); }
+
+  /* ---- keybindings ---- */
+  .keys { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px 40px; }
+  .keyrow { display: flex; align-items: baseline; gap: 14px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+  kbd {
+    font-family: var(--mono); font-size: 0.82rem; background: var(--bg-soft);
+    border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px;
+    padding: 2px 8px; color: var(--cyan); white-space: nowrap; min-width: 64px; text-align: center;
+  }
+  .keyrow span { color: var(--fg-dim); font-size: 0.93rem; }
+  .prefix-note { font-family: var(--mono); font-size: 0.9rem; color: var(--fg-dim); margin-bottom: 24px; }
+  .prefix-note kbd { color: var(--green); }
+
+  /* ---- code blocks ---- */
+  pre {
+    background: #0a0c10; border: 1px solid var(--border); border-radius: 10px;
+    padding: 20px; overflow-x: auto; font-family: var(--mono); font-size: 0.84rem; line-height: 1.7;
+    margin: 0;
+  }
+  pre .c { color: var(--fg-dim); }
+  pre .k { color: var(--pink); }
+  pre .s { color: var(--yellow); }
+  pre .n { color: var(--purple); }
+  pre .g { color: var(--green); }
+  .codecols { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+
+  /* ---- footer ---- */
+  footer { border-top: 1px solid var(--border); padding: 40px 0 60px; color: var(--fg-dim); font-size: 0.9rem; }
+  footer .wrap { display: flex; justify-content: space-between; flex-wrap: wrap; gap: 16px; }
+  footer .brand { font-size: 1rem; }
+
+  .note { font-size: 0.82rem; color: var(--fg-dim); font-style: italic; margin-top: 10px; }
+
+  @media (max-width: 820px) {
+    .hero-grid, .split, .codecols { grid-template-columns: 1fr; }
+    .features { grid-template-columns: 1fr 1fr; }
+    .keys { grid-template-columns: 1fr; }
+    h1 { font-size: 2.3rem; }
+    nav .links { display: none; }
+  }
+  @media (max-width: 520px) {
+    .features { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <span class="brand"><span class="caret">&gt;_</span> lumux</span>
+    <div class="links">
+      <a href="#features">Features</a>
+      <a href="#why">Why</a>
+      <a href="#keys">Keys</a>
+      <a href="#config">Config</a>
+      <a href="#install">Install</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero">
+  <div class="wrap hero-grid">
+    <div>
+      <span class="badge">// ConPTY · pure-text attach · single binary</span>
+      <h1><span class="accent">tmux</span>, for the<br/>Windows host.</h1>
+      <p class="lede">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI.</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="#install">$ get lumux</a>
+        <a class="btn btn-ghost" href="#features">Explore features</a>
+      </div>
+    </div>
+
+    <div class="term" aria-hidden="true">
+      <div class="term-bar">
+        <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
+        <span class="term-title">ssh winhost — lumux attach</span>
+      </div>
+      <div class="term-body">
+        <div class="pane-row">
+          <div class="pane">
+            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; <span class="kw">lumux</span> attach</div>
+            <div class="comment"># reattached after a dropped SSH</div>
+            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; cargo build <span class="kw">--release</span></div>
+            <div class="out">&nbsp;&nbsp;Compiling lumux v0.1.0</div>
+            <div class="out">&nbsp;&nbsp;&nbsp;Finished release</div>
+            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; <span class="cursor">&nbsp;</span></div>
+          </div>
+          <div class="divider">│</div>
+          <div class="pane">
+            <div><span class="prompt">PS</span> <span class="path">~</span>&gt; <span class="kw">git</span> log <span class="kw">--oneline</span></div>
+            <div class="out" style="color:var(--yellow)">fd1b9fd</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: rename</div>
+            <div class="out" style="color:var(--yellow)">449662c</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: zoom</div>
+            <div><span class="prompt">PS</span> <span class="path">~</span>&gt; top</div>
+            <div class="out">load 0.42 · 8 tasks</div>
+          </div>
+        </div>
+        <div class="statusbar">
+          <span class="seg s-left">REMOTE</span>
+          <span class="seg s-sess">&nbsp;Session: srv&nbsp;</span>
+          <span class="seg s-mid">0:build <span class="s-win-active">1:logs*</span> 2:editor</span>
+          <span class="seg s-right">14:32 09-Jun</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<section id="features">
+  <div class="wrap">
+    <div class="section-label">// capabilities</div>
+    <h2>Everything you reach for in tmux</h2>
+    <p class="section-sub">Server-side terminal emulation parses each pane into a cell grid and streams damage-tracked VT to every client — so any dumb terminal can render a full multiplexer.</p>
+    <div class="features">
+      <div class="card">
+        <div class="ico">◰ session</div>
+        <h3>Persistent sessions</h3>
+        <p>Detach, drop the SSH, reconnect — your shells and their processes are still running. Survives connection loss.</p>
+      </div>
+      <div class="card">
+        <div class="ico">▤ windows</div>
+        <h3>Windows &amp; tabs</h3>
+        <p>Create, cycle, and jump to windows by index. A styled status bar shows the live window list with the active one marked.</p>
+      </div>
+      <div class="card">
+        <div class="ico">▦ panes</div>
+        <h3>Splits, resize &amp; zoom</h3>
+        <p>Split horizontally or vertically, navigate by direction, resize with the keyboard, and zoom one pane fullscreen.</p>
+      </div>
+      <div class="card">
+        <div class="ico">▥ vt</div>
+        <h3>Alternate screen</h3>
+        <p>vim, less, and htop render and restore correctly — full DEC alt-screen, cursor-visibility, and autowrap support.</p>
+      </div>
+      <div class="card">
+        <div class="ico">⎘ copy</div>
+        <h3>Copy-mode</h3>
+        <p>Scroll history with arrows or vi keys, select, and yank straight to your local clipboard via OSC-52.</p>
+      </div>
+      <div class="card">
+        <div class="ico">⚙ config</div>
+        <h3>Live config</h3>
+        <p>TOML config with a tmux-parity surface — prefix, bindings, shells, status bar. Reload without restarting.</p>
+      </div>
+      <div class="card">
+        <div class="ico">🖱 mouse</div>
+        <h3>Mouse support</h3>
+        <p>Click to select a pane, scroll the wheel into history, and drag a divider to resize. Optional, off by default.</p>
+      </div>
+      <div class="card">
+        <div class="ico">✎ rename</div>
+        <h3>Rename &amp; bell</h3>
+        <p>Rename windows and sessions from an inline prompt, and the terminal bell flashes through to your client.</p>
+      </div>
+      <div class="card">
+        <div class="ico">$ shell</div>
+        <h3>Shell-agnostic</h3>
+        <p>PowerShell 5.x, pwsh, cmd, or anything else — ConPTY translates legacy console output to VT for free.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="why">
+  <div class="wrap split">
+    <div class="prose">
+      <div class="section-label">// the one thing</div>
+      <h2>Pure-text, in-terminal attach</h2>
+      <p>WezTerm already offers persistence and panes on Windows — but it reattaches only through its own GPU GUI. lumux exists for the one thing that needs: <strong>plain-text attach from inside a terminal</strong>.</p>
+      <p>SSH into a Windows host, run <code style="color:var(--green)">lumux attach</code>, and you get your running session back as text — exactly like <code>tmux attach</code> on Linux. The session, and its processes, survive a dropped connection.</p>
+      <p>It's a <strong>single binary</strong> that plays two roles, like tmux: a background <strong>server</strong> that owns the pseudo-terminals and the session tree, and a thin <strong>client</strong> that shuttles bytes over a named pipe. The client auto-starts the server, so you only ever run <code>lumux</code>.</p>
+    </div>
+    <div>
+      <div class="arch">┌─────────────  <b>lumux</b> (one binary)  ─────────────┐
+│                                              │
+│   <span class="g">client</span>  ──raw keys──▶   <b>server / daemon</b>      │
+│   (raw mode)  ◀──VT frames──   (owns PTYs)    │
+│      │                            │           │
+│      ▼                            ▼           │
+│  your terminal              ConPTY × N        │
+│  (any VT, SSH)         PowerShell · cmd · …   │
+│                                              │
+└──────────────────────────────────────────────┘
+
+  Terminal emulation is <b>server-side</b>: each pane's
+  output is parsed into a cell grid and re-rendered
+  as <b>damage-tracked VT</b> to every attached client.</div>
+      <p class="note">Linux is a first-class dev/CI target too — the daemon runs end-to-end over Unix sockets, so the platform-independent logic is testable without Windows.</p>
+    </div>
+  </div>
+</section>
+
+<section id="keys">
+  <div class="wrap">
+    <div class="section-label">// keybindings</div>
+    <h2>Muscle memory included</h2>
+    <p class="prefix-note">Prefix is <kbd>Ctrl-b</kbd> (rebindable). After the prefix:</p>
+    <div class="keys">
+      <div class="keyrow"><kbd>|</kbd><span>split left / right</span></div>
+      <div class="keyrow"><kbd>- &nbsp;"</kbd><span>split top / bottom</span></div>
+      <div class="keyrow"><kbd>c</kbd><span>new window</span></div>
+      <div class="keyrow"><kbd>n &nbsp;p</kbd><span>next / previous window</span></div>
+      <div class="keyrow"><kbd>0–9</kbd><span>select window by index</span></div>
+      <div class="keyrow"><kbd>↑↓←→</kbd><span>select pane in that direction</span></div>
+      <div class="keyrow"><kbd>H J K L</kbd><span>resize the active pane</span></div>
+      <div class="keyrow"><kbd>z</kbd><span>zoom / unzoom the active pane</span></div>
+      <div class="keyrow"><kbd>x</kbd><span>kill the active pane</span></div>
+      <div class="keyrow"><kbd>,</kbd><span>rename the current window</span></div>
+      <div class="keyrow"><kbd>$</kbd><span>rename the current session</span></div>
+      <div class="keyrow"><kbd>[</kbd><span>enter copy-mode</span></div>
+      <div class="keyrow"><kbd>s</kbd><span>choose a session</span></div>
+      <div class="keyrow"><kbd>d</kbd><span>detach (session keeps running)</span></div>
+      <div class="keyrow"><kbd>r</kbd><span>reload the config file</span></div>
+      <div class="keyrow"><kbd>?</kbd><span>show the key-binding help</span></div>
+    </div>
+  </div>
+</section>
+
+<section id="config">
+  <div class="wrap">
+    <div class="section-label">// configuration</div>
+    <h2>A familiar <code>.toml</code></h2>
+    <p class="section-sub">Lives at <code>%APPDATA%\lumux\config.toml</code>. Reload live with <code>lumux source-file &lt;path&gt;</code> or prefix + <kbd style="font-size:.78rem">r</kbd>.</p>
+    <div class="codecols">
+<pre><span class="c"># prefix &amp; behavior</span>
+<span class="n">prefix</span> = <span class="s">"C-a"</span>          <span class="c"># Ctrl-a</span>
+<span class="n">mouse</span> = <span class="k">true</span>            <span class="c"># click/scroll/drag</span>
+<span class="n">scrollback</span> = <span class="g">10000</span>      <span class="c"># history per pane</span>
+<span class="n">base_index</span> = <span class="g">1</span>          <span class="c"># number from 1</span>
+<span class="n">default_shell</span> = <span class="s">"ps5"</span>
+
+<span class="c"># styled status bar</span>
+<span class="n">status_justify</span> = <span class="s">"centre"</span>
+<span class="n">status_left</span> = <span class="s">"#[bg=colour124] REMOTE "</span>
+<span class="n">status_right</span> = <span class="s">"%H:%M %d-%b-%y"</span></pre>
+<pre><span class="c"># shell profiles</span>
+<span class="k">[[shells]]</span>
+<span class="n">name</span> = <span class="s">"ps5"</span>
+<span class="n">argv</span> = [<span class="s">"powershell.exe"</span>, <span class="s">"-NoLogo"</span>]
+
+<span class="c"># bindings after the prefix</span>
+<span class="k">[bindings]</span>
+<span class="s">"C-s"</span> = <span class="s">"split-vertical"</span>
+<span class="s">"r"</span>   = <span class="s">"reload-config"</span>
+
+<span class="c"># fire without the prefix (bind -n)</span>
+<span class="k">[root_bindings]</span>
+<span class="s">"M-Left"</span>  = <span class="s">"select-pane-left"</span>
+<span class="s">"M-Right"</span> = <span class="s">"select-pane-right"</span></pre>
+    </div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="wrap">
+    <div class="section-label">// getting started</div>
+    <h2>Build &amp; run</h2>
+    <p class="section-sub">Requires Rust (stable). Produces a single <code>lumux</code> binary that runs as both client and server.</p>
+    <div class="codecols">
+<pre><span class="c"># build (native, or cross to Windows)</span>
+<span class="g">$</span> cargo build <span class="k">--release</span>
+<span class="g">$</span> cargo build <span class="k">--release</span> <span class="k">--target</span> \
+    x86_64-pc-windows-msvc
+
+<span class="c"># first run auto-starts the daemon</span>
+<span class="g">$</span> lumux new <span class="k">-s</span> work
+<span class="g">$</span> lumux ls
+<span class="g">$</span> lumux attach <span class="k">-t</span> work</pre>
+<pre><span class="c"># scripting the active session</span>
+<span class="g">$</span> lumux split-window <span class="k">-h</span>
+<span class="g">$</span> lumux new-window
+<span class="g">$</span> lumux rename-window editor
+<span class="g">$</span> lumux send-keys <span class="s">"cargo test"</span>
+<span class="g">$</span> lumux source-file ./my.toml
+
+<span class="c"># platform: Windows 10 1809+ (ConPTY)</span></pre>
+    </div>
+    <p class="note">Sessions survive client/connection loss, but not a full OS logout or reboot — a Windows Service for cross-logout survival is a future idea.</p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <span class="brand"><span class="caret" style="color:var(--green)">&gt;_</span> lumux</span>
+    <span>A tmux-like terminal multiplexer for the Windows host · MIT licensed</span>
+  </div>
+</footer>
+
+</body>
+</html>
