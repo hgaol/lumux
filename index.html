@@ -105,6 +105,13 @@
   .str { color: var(--yellow); }
   .kw { color: var(--pink); }
   .out { color: var(--fg); }
+  .ann { color: var(--fg-dim); font-size: 0.92em; }
+  .term-body .key {
+    display: inline-block; font-family: var(--mono); font-size: 0.82em;
+    color: var(--cyan); background: rgba(139,233,253,0.10);
+    border: 1px solid rgba(139,233,253,0.28); border-radius: 5px;
+    padding: 0 6px; margin-right: 2px;
+  }
   .cursor { background: var(--green); color: #0a0c10; animation: blink 1.1s step-end infinite; }
   @keyframes blink { 50% { background: transparent; color: var(--green); } }
   .statusbar {
@@ -238,7 +245,7 @@
 
 <header class="hero">
   <div class="wrap hero-top">
-    <span class="badge">// ConPTY · pure-text attach · single binary</span>
+    <span class="badge">// written in Rust · ConPTY · pure-text attach · single binary</span>
     <h1><span class="accent">tmux</span>, for the Windows host.</h1>
     <p class="lede">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI. <strong style="color:var(--fg)">Runs natively on Windows, Linux, and macOS</strong> from a single binary.</p>
     <div class="cta">
@@ -256,26 +263,31 @@
       <div class="term-body">
         <div class="pane-row">
           <div class="pane">
-            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; <span class="kw">lumux</span> attach</div>
-            <div class="comment"># reattached after a dropped SSH</div>
-            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; cargo build <span class="kw">--release</span></div>
-            <div class="out">&nbsp;&nbsp;Compiling lumux v0.1.0</div>
-            <div class="out">&nbsp;&nbsp;&nbsp;Finished release</div>
-            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; <span class="cursor">&nbsp;</span></div>
+            <div class="comment"># left pane — reattached after a dropped SSH</div>
+            <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; tail <span class="kw">-f</span> app.log</div>
+            <div class="out">listening on :8080</div>
+            <div class="out">request 200 /healthz</div>
+            <div class="ann">&nbsp;</div>
+            <div class="ann"><span class="key">C-b</span> <span class="key">|</span> &nbsp;split a pane &nbsp;&rarr;</div>
+            <div class="ann"><span class="key">C-b</span> <span class="key">c</span> &nbsp;new window</div>
+            <div class="ann"><span class="key">C-b</span> <span class="key">d</span> &nbsp;detach — keeps running</div>
           </div>
           <div class="divider">│</div>
           <div class="pane">
-            <div><span class="prompt">PS</span> <span class="path">~</span>&gt; <span class="kw">git</span> log <span class="kw">--oneline</span></div>
-            <div class="out" style="color:var(--yellow)">fd1b9fd</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: copy-mode</div>
-            <div class="out" style="color:var(--yellow)">449662c</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: session switcher</div>
-            <div><span class="prompt">PS</span> <span class="path">~</span>&gt; top</div>
-            <div class="out">load 0.42 · 8 tasks</div>
+            <div class="comment"># right pane — opened with C-b |</div>
+            <div><span class="prompt">PS</span> <span class="path">~</span>&gt; pwsh</div>
+            <div class="out">PowerShell 7.4 · pane inherits the dir</div>
+            <div><span class="prompt">PS</span> <span class="path">~</span>&gt; <span class="cursor">&nbsp;</span></div>
+            <div class="ann">&nbsp;</div>
+            <div class="ann"><span class="key">C-b</span> <span class="key">[</span> &nbsp;copy-mode · scroll &amp; yank</div>
+            <div class="ann"><span class="key">C-b</span> <span class="key">s</span> &nbsp;switch session</div>
+            <div class="ann"><span class="key">C-b</span> <span class="key">?</span> &nbsp;key-binding help</div>
           </div>
         </div>
         <div class="statusbar">
           <span class="seg s-left">REMOTE</span>
           <span class="seg s-sess">&nbsp;Session: srv&nbsp;</span>
-          <span class="seg s-mid">0:build <span class="s-win-active">1:logs*</span> 2:editor</span>
+          <span class="seg s-mid">1:logs* 2:shell 3:editor</span>
           <span class="seg s-right">14:32 09-Jun</span>
         </div>
       </div>
@@ -345,7 +357,7 @@
       <h2>Pure-text, in-terminal attach</h2>
       <p>WezTerm already offers persistence and panes on Windows — but it reattaches only through its own GPU GUI. lumux exists for the one thing that needs: <strong>plain-text attach from inside a terminal</strong>.</p>
       <p>SSH into a Windows host, run <code style="color:var(--green)">lumux attach</code>, and you get your running session back as text — exactly like <code>tmux attach</code> on Linux. The session, and its processes, survive a dropped connection.</p>
-      <p>It's a <strong>single binary</strong> that plays two roles, like tmux: a background <strong>server</strong> that owns the pseudo-terminals and the session tree, and a thin <strong>client</strong> that shuttles bytes over a named pipe. The client auto-starts the server, so you only ever run <code>lumux</code>.</p>
+      <p>It's a <strong>single binary</strong> written in <strong>Rust</strong> that plays two roles, like tmux: a background <strong>server</strong> that owns the pseudo-terminals and the session tree, and a thin <strong>client</strong> that shuttles bytes over a named pipe. The client auto-starts the server, so you only ever run <code>lumux</code>.</p>
     </div>
     <div>
       <div class="arch">┌─────────────  <b>lumux</b> (one binary)  ─────────────┐
