@@ -21,6 +21,9 @@ pub enum Mode {
     Help,
     /// Showing the session switcher; navigation keys pick a session.
     ChooseSession,
+    /// Capturing text for a prompt (rename-window/-session): printable keys
+    /// extend the buffer, Enter commits, Escape cancels.
+    Prompt,
 }
 
 /// What the daemon should do in response to a chunk of decoded input.
@@ -34,6 +37,21 @@ pub enum Reaction {
     Copy(CopyKey),
     /// A session-switcher key (daemon moves the selection / confirms / cancels).
     Session(SessionKey),
+    /// A prompt edit key (text entry for rename); the daemon edits its buffer.
+    Prompt(PromptKey),
+}
+
+/// Keys handled while a text prompt is open (rename-window/-session).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PromptKey {
+    /// Append a typed character to the buffer.
+    Char(char),
+    /// Delete the last character (Backspace).
+    Backspace,
+    /// Commit the buffer (Enter).
+    Confirm,
+    /// Abandon the prompt (Escape).
+    Cancel,
 }
 
 /// Keys handled while the session switcher is open.
@@ -154,9 +172,25 @@ impl Keymap {
                             self.mode = Mode::ChooseSession;
                             reactions.push(Reaction::Do(Action::ChooseSession));
                         }
+                        Some(action @ (Action::RenameWindow | Action::RenameSession)) => {
+                            // Open a text prompt; the daemon seeds the buffer and
+                            // renders the input line. Subsequent keys edit it.
+                            self.mode = Mode::Prompt;
+                            reactions.push(Reaction::Do(action));
+                        }
                         Some(action) => reactions.push(Reaction::Do(action)),
                         None => { /* unknown command: no-op, back to Normal */ }
                     }
+                }
+                Mode::Prompt => {
+                    flush_passthrough!();
+                    if let Some(pk) = prompt_key(&key) {
+                        if matches!(pk, PromptKey::Confirm | PromptKey::Cancel) {
+                            self.mode = Mode::Normal;
+                        }
+                        reactions.push(Reaction::Prompt(pk));
+                    }
+                    // Non-text keys (arrows, etc.) are ignored in the prompt.
                 }
                 Mode::Copy => {
                     flush_passthrough!();
@@ -209,6 +243,26 @@ fn session_key(key: &Key) -> Option<SessionKey> {
         _ => return None,
     };
     Some(sk)
+}
+
+/// Map a key to a prompt edit action while a text prompt (rename) is open.
+fn prompt_key(key: &Key) -> Option<PromptKey> {
+    // Backspace arrives as Ctrl-H (0x08) or DEL (0x7f) depending on the terminal.
+    if (key.ctrl && key.code == KeyCode::Char('h'))
+        || key.code == KeyCode::Char('\u{7f}')
+        || key.code == KeyCode::Char('\u{8}')
+    {
+        return Some(PromptKey::Backspace);
+    }
+    let pk = match key.code {
+        KeyCode::Enter => PromptKey::Confirm,
+        KeyCode::Escape => PromptKey::Cancel,
+        KeyCode::Space => PromptKey::Char(' '),
+        // Plain printable characters extend the buffer; ignore ctrl/alt combos.
+        KeyCode::Char(c) if !key.ctrl && !key.alt && !c.is_control() => PromptKey::Char(c),
+        _ => return None,
+    };
+    Some(pk)
 }
 
 fn copy_key(key: &Key) -> Option<CopyKey> {

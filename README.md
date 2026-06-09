@@ -42,6 +42,8 @@ lumux kill-server
 lumux split-window [-h]                           # split active window (-h = left/right)
 lumux new-window
 lumux send-keys "<text>"                          # script input into the active pane
+lumux rename-window <name>                        # rename the active window
+lumux rename-session <name>                       # rename the current session
 lumux source-file <path>                          # reload config live
 ```
 
@@ -59,6 +61,8 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | arrows | select pane in that direction |
 | `H` `J` `K` `L` | resize the active pane (left/down/up/right) |
 | `z` | zoom / unzoom the active pane |
+| `,` | rename the current window |
+| `$` | rename the current session |
 | `x` | kill the active pane |
 | `d` | detach (session keeps running) |
 | `[` | enter copy-mode |

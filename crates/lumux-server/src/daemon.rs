@@ -48,8 +48,25 @@ pub struct Daemon<S: PtySystem> {
     help: std::collections::BTreeSet<u64>,
     /// Clients in the session switcher, with their current highlighted index.
     choosing: BTreeMap<u64, usize>,
+    /// Clients with an open text prompt (rename-window/-session): the target and
+    /// the buffer typed so far.
+    prompt: BTreeMap<u64, Prompt>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
+}
+
+/// An open rename prompt: what it renames, plus the in-progress text.
+#[derive(Clone)]
+pub struct Prompt {
+    pub target: PromptTarget,
+    pub buffer: String,
+}
+
+/// What an open prompt will rename when confirmed.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PromptTarget {
+    Window,
+    Session,
 }
 
 impl<S: PtySystem> Daemon<S> {
@@ -68,6 +85,7 @@ impl<S: PtySystem> Daemon<S> {
             message: BTreeMap::new(),
             help: std::collections::BTreeSet::new(),
             choosing: BTreeMap::new(),
+            prompt: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -210,7 +228,92 @@ impl<S: PtySystem> Daemon<S> {
         self.message.remove(&client_id);
         self.help.remove(&client_id);
         self.choosing.remove(&client_id);
+        self.prompt.remove(&client_id);
         self.server.detach_client(client_id);
+    }
+
+    /// Open a rename prompt for a client, seeded with the current name so the
+    /// user can edit rather than retype it (tmux prefix , / $).
+    pub fn open_prompt(&mut self, client_id: u64, session: SessionId, target: PromptTarget) {
+        let seed = match target {
+            PromptTarget::Session => self.server.session(session).map(|s| s.name.clone()),
+            PromptTarget::Window => self.server.session(session).and_then(|s| {
+                s.window(s.active_window()).map(|w| w.name.clone())
+            }),
+        }
+        .unwrap_or_default();
+        self.prompt.insert(
+            client_id,
+            Prompt {
+                target,
+                buffer: seed,
+            },
+        );
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    pub fn in_prompt(&self, client_id: u64) -> bool {
+        self.prompt.contains_key(&client_id)
+    }
+
+    /// Append a character to a client's open prompt buffer.
+    pub fn prompt_push(&mut self, client_id: u64, c: char) {
+        if let Some(p) = self.prompt.get_mut(&client_id) {
+            p.buffer.push(c);
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Delete the last character of a client's open prompt buffer.
+    pub fn prompt_backspace(&mut self, client_id: u64) {
+        if let Some(p) = self.prompt.get_mut(&client_id) {
+            p.buffer.pop();
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Cancel a client's prompt without applying it.
+    pub fn prompt_cancel(&mut self, client_id: u64) {
+        if self.prompt.remove(&client_id).is_some() {
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Commit a client's prompt: apply the typed name to the window or session.
+    /// An empty name is ignored (keeps the existing one, matching tmux).
+    pub fn prompt_confirm(&mut self, client_id: u64, session: SessionId) {
+        let Some(p) = self.prompt.remove(&client_id) else {
+            return;
+        };
+        let name = p.buffer.trim().to_string();
+        if !name.is_empty() {
+            match p.target {
+                PromptTarget::Session => {
+                    if let Some(s) = self.server.session_mut(session) {
+                        s.name = name;
+                    }
+                }
+                PromptTarget::Window => {
+                    if let Some(s) = self.server.session_mut(session) {
+                        let wid = s.active_window();
+                        if let Some(w) = s.window_mut(wid) {
+                            w.name = name;
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
     }
 
     /// Toggle the help overlay for a client (tmux prefix ?). Showing it the
@@ -495,6 +598,17 @@ impl<S: PtySystem> Daemon<S> {
     ) {
         use lumux_core::render::{Justify, StyledStatus};
         use lumux_core::status::{self, StatusContext};
+
+        // An open rename prompt takes over the whole row (tmux's command prompt).
+        if let Some(p) = self.prompt.get(&client_id) {
+            let label = match p.target {
+                PromptTarget::Window => "rename-window",
+                PromptTarget::Session => "rename-session",
+            };
+            let line = format!("({label}) {}", p.buffer);
+            screen.status_line(screen.dimensions().1.saturating_sub(1), &line);
+            return;
+        }
 
         // A pending display-message takes over the whole row.
         if let Some(msg) = self.message.get(&client_id) {

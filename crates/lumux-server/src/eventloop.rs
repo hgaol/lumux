@@ -18,7 +18,7 @@ use std::io::Read;
 use std::sync::mpsc::{channel, Sender};
 
 use lumux_core::copymode::osc52;
-use lumux_core::keymap::{Action, CopyKey, Reaction, SessionKey};
+use lumux_core::keymap::{Action, CopyKey, PromptKey, Reaction, SessionKey};
 use lumux_core::layout::Direction;
 use lumux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use lumux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
@@ -297,6 +297,9 @@ where
                                 session = new_session;
                             }
                         }
+                        Reaction::Prompt(pk) => {
+                            self.handle_prompt_key(client_id, session, pk);
+                        }
                     }
                 }
                 self.render_session(session);
@@ -363,6 +366,21 @@ where
                 if let Some(pid) = self.active_pane(session) {
                     let _ = self.daemon.write_pane(pid, &keys);
                 }
+            }
+            Command::RenameWindow { name } => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    let wid = s.active_window();
+                    if let Some(w) = s.window_mut(wid) {
+                        w.name = name;
+                    }
+                }
+                self.render_session(session);
+            }
+            Command::RenameSession { name } => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    s.name = name;
+                }
+                self.render_session(session);
             }
             Command::SourceFile { path } => {
                 let reply = match std::fs::read_to_string(&path) {
@@ -453,6 +471,14 @@ where
             Action::ResizePaneUp => self.resize_pane(session, SplitDir::Vertical, -RESIZE_STEP),
             Action::ResizePaneDown => self.resize_pane(session, SplitDir::Vertical, RESIZE_STEP),
             Action::ZoomPane => self.zoom_pane(session),
+            Action::RenameWindow => {
+                self.daemon
+                    .open_prompt(client_id, session, crate::daemon::PromptTarget::Window);
+            }
+            Action::RenameSession => {
+                self.daemon
+                    .open_prompt(client_id, session, crate::daemon::PromptTarget::Session);
+            }
             Action::KillPane => {
                 if let Some(pid) = self.active_pane(session) {
                     let result = self.daemon.close_pane(session, pid);
@@ -675,8 +701,21 @@ where
         }
     }
 
-    /// Drive copy-mode navigation/selection/yank for a client. Space/'v' starts
-    /// a selection, Enter/'y' yanks (and forwards an OSC-52 clipboard sequence),
+    /// Drive an open rename prompt: edit the buffer, or commit/cancel it.
+    fn handle_prompt_key(&mut self, client_id: u64, session: SessionId, pk: PromptKey) {
+        match pk {
+            PromptKey::Char(c) => self.daemon.prompt_push(client_id, c),
+            PromptKey::Backspace => self.daemon.prompt_backspace(client_id),
+            PromptKey::Cancel => self.daemon.prompt_cancel(client_id),
+            PromptKey::Confirm => self.daemon.prompt_confirm(client_id, session),
+        }
+        // Reset the keymap out of Prompt mode once the prompt closes.
+        if matches!(pk, PromptKey::Confirm | PromptKey::Cancel) {
+            if let Some(k) = self.daemon.keymap_mut(client_id) {
+                k.reset();
+            }
+        }
+    }
     /// q/Escape quits.
     fn handle_copy_key(&mut self, client_id: u64, session: SessionId, ck: CopyKey) {
         match ck {

@@ -28,6 +28,10 @@ pub enum Action {
     ResizePaneDown,
     /// Toggle zoom on the active pane (tmux prefix z).
     ZoomPane,
+    /// Open a prompt to rename the current window (tmux prefix ,).
+    RenameWindow,
+    /// Open a prompt to rename the current session (tmux prefix $).
+    RenameSession,
     Detach,
     EnterCopyMode,
     KillPane,
@@ -60,6 +64,8 @@ impl Action {
             Action::ResizePaneUp => "resize pane up",
             Action::ResizePaneDown => "resize pane down",
             Action::ZoomPane => "zoom/unzoom the active pane",
+            Action::RenameWindow => "rename the current window",
+            Action::RenameSession => "rename the current session",
             Action::Detach => "detach (session keeps running)",
             Action::EnterCopyMode => "enter copy-mode",
             Action::KillPane => "kill the active pane",
@@ -117,6 +123,9 @@ impl Bindings {
         table.insert(Key::char('L'), Action::ResizePaneRight);
         table.insert(Key::char('K'), Action::ResizePaneUp);
         table.insert(Key::char('J'), Action::ResizePaneDown);
+        // Rename prompts (tmux prefix , and $).
+        table.insert(Key::char(','), Action::RenameWindow);
+        table.insert(Key::char('$'), Action::RenameSession);
         for n in 0..=9u32 {
             table.insert(
                 Key::char(char::from_digit(n, 10).unwrap()),

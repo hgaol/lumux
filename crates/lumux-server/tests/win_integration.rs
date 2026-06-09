@@ -665,3 +665,37 @@ fn prefix_s_opens_session_chooser() {
         "chooser should list both sessions; got:\n{vt}"
     );
 }
+
+#[test]
+fn rename_window_via_prompt_updates_status() {
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "rn");
+    // Ctrl-b , opens the rename-window prompt; the prompt label appears.
+    c.send(&ClientMsg::Input(vec![0x02, b',']));
+    let (opened, _) = c.collect_text(Duration::from_secs(3), "rename-window");
+    assert!(opened, "prefix , should open the rename-window prompt");
+    // Clear the seeded name (a few backspaces), type a new one, confirm.
+    c.send(&ClientMsg::Input(vec![0x7f; 8])); // backspaces
+    c.send(&ClientMsg::Input(b"editor".to_vec()));
+    c.send(&ClientMsg::Input(b"\r".to_vec())); // Enter commits
+    // Force a full repaint so the status row (window list) is re-sent.
+    c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
+    let (named, vt) = c.collect_text(Duration::from_secs(3), "editor");
+    assert!(named, "renamed window should appear in the status bar; got:\n{vt}");
+}
+
+#[test]
+fn rename_session_via_cli_command() {
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "oldname");
+    // The CLI rename-session path is a structured Command.
+    c.send(&ClientMsg::Command(Command::RenameSession {
+        name: "newname".into(),
+    }));
+    // List sessions: the new name must be reported, the old one gone.
+    c.send(&ClientMsg::Command(Command::ListSessions));
+    let (ok, reply) = c.wait_for(Duration::from_secs(3), |m| {
+        matches!(m, ServerMsg::Reply(t) if t.contains("newname"))
+    });
+    assert!(ok, "rename-session should take effect; got:\n{reply}");
+}

@@ -222,3 +222,41 @@ fn session_switcher_cancel_returns_to_normal() {
     assert_eq!(r, vec![Reaction::Session(SessionKey::Cancel)]);
     assert_eq!(k.mode(), Mode::Normal);
 }
+
+#[test]
+fn prefix_comma_opens_rename_window_prompt() {
+    use crate::keymap::PromptKey;
+    let mut k = km();
+    // Ctrl-b , opens the rename-window prompt.
+    let r = k.feed(&[0x02, b',']);
+    assert_eq!(r, vec![Reaction::Do(Action::RenameWindow)]);
+    assert_eq!(k.mode(), Mode::Prompt);
+    // Typing extends the buffer; backspace deletes; Enter confirms.
+    assert_eq!(k.feed(b"a"), vec![Reaction::Prompt(PromptKey::Char('a'))]);
+    assert_eq!(k.feed(b"b"), vec![Reaction::Prompt(PromptKey::Char('b'))]);
+    assert_eq!(k.feed(b"\x7f"), vec![Reaction::Prompt(PromptKey::Backspace)]);
+    let r = k.feed(b"\r");
+    assert_eq!(r, vec![Reaction::Prompt(PromptKey::Confirm)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
+fn prefix_dollar_opens_rename_session_prompt_and_cancels() {
+    use crate::keymap::PromptKey;
+    let mut k = km();
+    let r = k.feed(&[0x02, b'$']);
+    assert_eq!(r, vec![Reaction::Do(Action::RenameSession)]);
+    assert_eq!(k.mode(), Mode::Prompt);
+    // Escape cancels and returns to Normal.
+    let r = k.feed(b"\x1b");
+    assert_eq!(r, vec![Reaction::Prompt(PromptKey::Cancel)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
+fn prompt_space_is_captured_as_char() {
+    use crate::keymap::PromptKey;
+    let mut k = km();
+    k.feed(&[0x02, b',']);
+    assert_eq!(k.feed(b" "), vec![Reaction::Prompt(PromptKey::Char(' '))]);
+}

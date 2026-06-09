@@ -122,6 +122,10 @@ pub enum Command {
     PrevWindow,
     SourceFile { path: String },
     SendKeys { keys: Vec<u8> },
+    /// Rename the active window of the client's session.
+    RenameWindow { name: String },
+    /// Rename the client's session.
+    RenameSession { name: String },
 }
 
 /// Daemon -> client.

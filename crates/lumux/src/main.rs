@@ -74,6 +74,16 @@ enum Command {
         /// The keys to send (sent verbatim, with a trailing newline added).
         keys: String,
     },
+    /// Rename the active window of the current session.
+    RenameWindow {
+        /// The new window name.
+        name: String,
+    },
+    /// Rename the current session.
+    RenameSession {
+        /// The new session name.
+        name: String,
+    },
     /// Reload configuration from a TOML file.
     SourceFile { path: String },
 }
@@ -134,6 +144,14 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
             let mut bytes = keys.into_bytes();
             bytes.push(b'\n');
             control::send_command(Cmd::SendKeys { keys: bytes })?;
+            Ok(())
+        }
+        Some(Command::RenameWindow { name }) => {
+            control::send_command(Cmd::RenameWindow { name })?;
+            Ok(())
+        }
+        Some(Command::RenameSession { name }) => {
+            control::send_command(Cmd::RenameSession { name })?;
             Ok(())
         }
         Some(Command::SourceFile { path }) => {
