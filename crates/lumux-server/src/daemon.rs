@@ -600,9 +600,15 @@ impl<S: PtySystem> Daemon<S> {
             grids: &grids,
             active_pane,
         };
-        // Compose panes without a built-in status row; we paint a styled status
-        // (or a transient message) onto the bottom row ourselves.
-        let mut screen = compose((size.cols as usize, size.rows as usize), &view, None);
+        // Compose panes without a built-in status row, but reserve the bottom
+        // row so panes don't extend into it; we then paint our own styled status
+        // (or a transient message) onto that reserved row.
+        let mut screen = compose(
+            (size.cols as usize, size.rows as usize),
+            &view,
+            None,
+            true,
+        );
         self.paint_status(&mut screen, client_id, session);
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))

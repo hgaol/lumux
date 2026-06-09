@@ -131,12 +131,20 @@ impl StyledStatus {
     }
 }
 
-/// Compose `view` into a Screen of `size`, reserving the bottom row for
-/// `status` when present. Pane cursor (of the active pane) maps to the screen.
-pub fn compose(size: (usize, usize), view: &WindowView, status: Option<&StatusBar>) -> Screen {
+/// Compose `view` into a Screen of `size`. The bottom row is reserved for the
+/// status bar whenever `status` is supplied OR `reserve_status_row` is set — the
+/// latter lets a caller (the daemon) paint its own styled status afterward while
+/// still keeping panes out of that row. Pane cursor (of the active pane) maps to
+/// the screen.
+pub fn compose(
+    size: (usize, usize),
+    view: &WindowView,
+    status: Option<&StatusBar>,
+    reserve_status_row: bool,
+) -> Screen {
     let (w, h) = size;
     let mut screen = Screen::new(w, h);
-    let content_rows = if status.is_some() {
+    let content_rows = if status.is_some() || reserve_status_row {
         h.saturating_sub(1)
     } else {
         h
