@@ -172,6 +172,21 @@
 
   .note { font-size: 0.82rem; color: var(--fg-dim); font-style: italic; margin-top: 10px; }
 
+  /* ---- alias tip ---- */
+  .alias-tip {
+    margin: 26px 0 8px;
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--green);
+    border-radius: 10px;
+    background: linear-gradient(180deg, rgba(80,250,123,0.05), transparent);
+    padding: 20px 22px;
+  }
+  .alias-head { font-weight: 700; font-size: 1.05rem; margin-bottom: 4px; }
+  .alias-head code { color: var(--green); font-size: 0.95em; }
+  .alias-ico { color: var(--green); margin-right: 6px; }
+  .alias-tip > p { color: var(--fg-dim); margin: 4px 0 14px; max-width: 720px; }
+  .alias-tip .codecols { gap: 14px; }
+
   @media (max-width: 820px) {
     .hero-grid, .split, .codecols { grid-template-columns: 1fr; }
     .features { grid-template-columns: 1fr 1fr; }
@@ -229,8 +244,8 @@
           <div class="divider">│</div>
           <div class="pane">
             <div><span class="prompt">PS</span> <span class="path">~</span>&gt; <span class="kw">git</span> log <span class="kw">--oneline</span></div>
-            <div class="out" style="color:var(--yellow)">fd1b9fd</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: rename</div>
-            <div class="out" style="color:var(--yellow)">449662c</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: zoom</div>
+            <div class="out" style="color:var(--yellow)">fd1b9fd</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: copy-mode</div>
+            <div class="out" style="color:var(--yellow)">449662c</div><div class="out comment" style="margin-top:-8px">&nbsp;&nbsp;&nbsp;feat: session switcher</div>
             <div><span class="prompt">PS</span> <span class="path">~</span>&gt; top</div>
             <div class="out">load 0.42 · 8 tasks</div>
           </div>
@@ -255,17 +270,17 @@
       <div class="card">
         <div class="ico">◰ session</div>
         <h3>Persistent sessions</h3>
-        <p>Detach, drop the SSH, reconnect — your shells and their processes are still running. Survives connection loss.</p>
+        <p>Detach, drop the SSH, reconnect — your shells and their processes are still running. Switch between sessions with <kbd>prefix</kbd> <kbd>s</kbd>.</p>
       </div>
       <div class="card">
         <div class="ico">▤ windows</div>
         <h3>Windows &amp; tabs</h3>
-        <p>Create, cycle, and jump to windows by index. A styled status bar shows the live window list with the active one marked.</p>
+        <p>Create, cycle, and jump to windows by index. A styled status bar shows the live window list with the active one marked <code>*</code>.</p>
       </div>
       <div class="card">
         <div class="ico">▦ panes</div>
-        <h3>Splits, resize &amp; zoom</h3>
-        <p>Split horizontally or vertically, navigate by direction, resize with the keyboard, and zoom one pane fullscreen.</p>
+        <h3>Split &amp; navigate</h3>
+        <p>Split horizontally or vertically — new panes inherit the current directory — and move focus by direction with the arrow keys.</p>
       </div>
       <div class="card">
         <div class="ico">▥ vt</div>
@@ -288,9 +303,9 @@
         <p>Click to select a pane, scroll the wheel into history, and drag a divider to resize. Optional, off by default.</p>
       </div>
       <div class="card">
-        <div class="ico">✎ rename</div>
-        <h3>Rename &amp; bell</h3>
-        <p>Rename windows and sessions from an inline prompt, and the terminal bell flashes through to your client.</p>
+        <div class="ico">⮂ switch</div>
+        <h3>Session switcher</h3>
+        <p>Press <kbd>prefix</kbd> <kbd>s</kbd> for an interactive list of every session, or <kbd>prefix</kbd> <kbd>?</kbd> for a help overlay generated from your live keymap.</p>
       </div>
       <div class="card">
         <div class="ico">$ shell</div>
@@ -342,17 +357,15 @@
       <div class="keyrow"><kbd>n &nbsp;p</kbd><span>next / previous window</span></div>
       <div class="keyrow"><kbd>0–9</kbd><span>select window by index</span></div>
       <div class="keyrow"><kbd>↑↓←→</kbd><span>select pane in that direction</span></div>
-      <div class="keyrow"><kbd>H J K L</kbd><span>resize the active pane</span></div>
-      <div class="keyrow"><kbd>z</kbd><span>zoom / unzoom the active pane</span></div>
       <div class="keyrow"><kbd>x</kbd><span>kill the active pane</span></div>
-      <div class="keyrow"><kbd>,</kbd><span>rename the current window</span></div>
-      <div class="keyrow"><kbd>$</kbd><span>rename the current session</span></div>
       <div class="keyrow"><kbd>[</kbd><span>enter copy-mode</span></div>
-      <div class="keyrow"><kbd>s</kbd><span>choose a session</span></div>
+      <div class="keyrow"><kbd>s</kbd><span>choose / switch session</span></div>
       <div class="keyrow"><kbd>d</kbd><span>detach (session keeps running)</span></div>
       <div class="keyrow"><kbd>r</kbd><span>reload the config file</span></div>
       <div class="keyrow"><kbd>?</kbd><span>show the key-binding help</span></div>
+      <div class="keyrow"><kbd>Ctrl-b</kbd><span>send a literal Ctrl-b to the shell</span></div>
     </div>
+    <p class="prefix-note" style="margin-top:22px">Without the prefix (configurable root bindings) — e.g. <kbd>Alt</kbd>+<kbd>↑↓←→</kbd> jumps panes instantly. With <code>mouse = true</code>: click selects a pane, the wheel scrolls history, and dragging a divider resizes.</p>
   </div>
 </section>
 
@@ -409,12 +422,29 @@
 <pre><span class="c"># scripting the active session</span>
 <span class="g">$</span> lumux split-window <span class="k">-h</span>
 <span class="g">$</span> lumux new-window
-<span class="g">$</span> lumux rename-window editor
 <span class="g">$</span> lumux send-keys <span class="s">"cargo test"</span>
 <span class="g">$</span> lumux source-file ./my.toml
+<span class="g">$</span> lumux kill-session <span class="k">-t</span> work
 
 <span class="c"># platform: Windows 10 1809+ (ConPTY)</span></pre>
     </div>
+
+    <div class="alias-tip">
+      <div class="alias-head"><span class="alias-ico">⌨</span> Tip — alias it to <code>lm</code></div>
+      <p>Like <code>tmux</code>, you live <em>inside</em> lumux once attached, so you only type the name to start or reattach. Drop it to two characters:</p>
+      <div class="codecols">
+<pre><span class="c"># PowerShell  ($PROFILE)</span>
+<span class="g">&gt;</span> Set-Alias lm lumux
+<span class="c"># or, to pass args through:</span>
+<span class="g">&gt;</span> function lm { lumux <span class="k">@args</span> }</pre>
+<pre><span class="c"># bash / zsh  (~/.bashrc, ~/.zshrc)</span>
+<span class="g">$</span> alias lm=lumux
+
+<span class="c"># then:</span>
+<span class="g">$</span> lm new <span class="k">-s</span> work   <span class="c"># lm a / lm ls …</span></pre>
+      </div>
+    </div>
+
     <p class="note">Sessions survive client/connection loss, but not a full OS logout or reboot — a Windows Service for cross-logout survival is a future idea.</p>
   </div>
 </section>
