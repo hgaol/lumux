@@ -4,9 +4,9 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>lumux — a tmux for the Windows host</title>
-<meta name="description" content="lumux is a tmux-like terminal multiplexer for the Windows host: persistent sessions, windows, and panes with tmux keybindings, attachable as plain text over SSH from inside any VT terminal." />
+<meta name="description" content="lumux is a tmux-like terminal multiplexer, Windows-first but cross-platform (Linux, macOS): persistent sessions, windows, and panes with tmux keybindings, attachable as plain text over SSH from inside any VT terminal." />
 <meta property="og:title" content="lumux — a tmux for the Windows host" />
-<meta property="og:description" content="Persistent sessions, windows, and panes with tmux keybindings — attach as plain text over SSH, no GUI." />
+<meta property="og:description" content="Persistent sessions, windows, and panes with tmux keybindings — attach as plain text over SSH, no GUI. Windows-first, runs on Linux and macOS too." />
 <meta property="og:type" content="website" />
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%2316181d'/><text x='12' y='62' font-family='monospace' font-size='42' fill='%2350fa7b'>%3E_</text></svg>" />
 <style>
@@ -132,6 +132,20 @@
   .card h3 { margin: 0 0 6px; font-size: 1.06rem; }
   .card p { margin: 0; color: var(--fg-dim); font-size: 0.92rem; }
 
+  /* ---- platforms ---- */
+  .platforms { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; }
+  .pcard {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 22px 20px;
+  }
+  .pcard .picon { font-size: 1.7rem; line-height: 1; margin-bottom: 10px; }
+  .pcard h3 { margin: 0 0 2px; font-size: 1.12rem; }
+  .pcard .ptag {
+    margin: 0 0 10px; font-family: var(--mono); font-size: 0.74rem;
+    text-transform: uppercase; letter-spacing: 0.08em; color: var(--green);
+  }
+  .pcard p { margin: 0; color: var(--fg-dim); font-size: 0.9rem; }
+
   /* ---- why / architecture ---- */
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 40px; align-items: start; }
   .prose p { color: var(--fg-dim); }
@@ -190,6 +204,7 @@
   @media (max-width: 820px) {
     .hero-grid, .split, .codecols { grid-template-columns: 1fr; }
     .features { grid-template-columns: 1fr 1fr; }
+    .platforms { grid-template-columns: 1fr; }
     .keys { grid-template-columns: 1fr; }
     h1 { font-size: 2.3rem; }
     nav .links { display: none; }
@@ -207,6 +222,7 @@
     <div class="links">
       <a href="#features">Features</a>
       <a href="#why">Why</a>
+      <a href="#platforms">Platforms</a>
       <a href="#keys">Keys</a>
       <a href="#config">Config</a>
       <a href="#install">Install</a>
@@ -219,7 +235,7 @@
     <div>
       <span class="badge">// ConPTY · pure-text attach · single binary</span>
       <h1><span class="accent">tmux</span>, for the<br/>Windows host.</h1>
-      <p class="lede">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI.</p>
+      <p class="lede">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI. <strong style="color:var(--fg)">Runs natively on Windows, Linux, and macOS</strong> from a single binary.</p>
       <div class="cta">
         <a class="btn btn-primary" href="#install">$ get lumux</a>
         <a class="btn btn-ghost" href="#features">Explore features</a>
@@ -340,7 +356,35 @@
   Terminal emulation is <b>server-side</b>: each pane's
   output is parsed into a cell grid and re-rendered
   as <b>damage-tracked VT</b> to every attached client.</div>
-      <p class="note">Linux is a first-class dev/CI target too — the daemon runs end-to-end over Unix sockets, so the platform-independent logic is testable without Windows.</p>
+      <p class="note">Because the whole multiplexer is platform-independent and talks to the OS through two small traits (PTY + transport), the same daemon and client run on Windows (ConPTY + named pipe) and Unix (PTY + socket) alike.</p>
+    </div>
+  </div>
+</section>
+
+<section id="platforms">
+  <div class="wrap">
+    <div class="section-label">// runs everywhere</div>
+    <h2>Windows-first, not Windows-only</h2>
+    <p class="section-sub">lumux exists because Windows had no tmux. But it's built cross-platform from the ground up — one codebase, one binary, native on each OS. No WSL, no emulation.</p>
+    <div class="platforms">
+      <div class="pcard">
+        <div class="picon">🪟</div>
+        <h3>Windows</h3>
+        <p class="ptag">the target</p>
+        <p>ConPTY drives any shell — PowerShell 5.x, pwsh, cmd. Connects over a named pipe. Tested over real ConPTY on Windows CI. Requires Windows 10 1809+.</p>
+      </div>
+      <div class="pcard">
+        <div class="picon">🐧</div>
+        <h3>Linux</h3>
+        <p class="ptag">primary dev / CI</p>
+        <p>Native Unix-PTY backend over a Unix socket. The full test suite runs here every commit — attach, detach/reattach, splits, copy-mode, the lot.</p>
+      </div>
+      <div class="pcard">
+        <div class="picon">🍎</div>
+        <h3>macOS</h3>
+        <p class="ptag">universal binary</p>
+        <p>Same Unix backend as Linux. Ships as a universal2 binary — one file, native on both Apple Silicon and Intel.</p>
+      </div>
     </div>
   </div>
 </section>
@@ -410,8 +454,10 @@
     <h2>Build &amp; run</h2>
     <p class="section-sub">Requires Rust (stable). Produces a single <code>lumux</code> binary that runs as both client and server.</p>
     <div class="codecols">
-<pre><span class="c"># build (native, or cross to Windows)</span>
+<pre><span class="c"># native build — Windows, Linux, or macOS</span>
 <span class="g">$</span> cargo build <span class="k">--release</span>
+
+<span class="c"># or cross-compile to another OS</span>
 <span class="g">$</span> cargo build <span class="k">--release</span> <span class="k">--target</span> \
     x86_64-pc-windows-msvc
 
@@ -426,7 +472,7 @@
 <span class="g">$</span> lumux source-file ./my.toml
 <span class="g">$</span> lumux kill-session <span class="k">-t</span> work
 
-<span class="c"># platform: Windows 10 1809+ (ConPTY)</span></pre>
+<span class="c"># Windows 10 1809+ · Linux · macOS</span></pre>
     </div>
 
     <div class="alias-tip">
@@ -452,7 +498,7 @@
 <footer>
   <div class="wrap">
     <span class="brand"><span class="caret" style="color:var(--green)">&gt;_</span> lumux</span>
-    <span>A tmux-like terminal multiplexer for the Windows host · MIT licensed</span>
+    <span>A tmux-like terminal multiplexer — Windows-first, runs on Linux &amp; macOS · MIT licensed</span>
   </div>
 </footer>
 
