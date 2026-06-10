@@ -170,6 +170,12 @@ impl<S: PtySystem> Daemon<S> {
     /// Returns the reader so the event loop can pump the pane's output. `cwd`
     /// sets the child's working directory (used to inherit the active pane's
     /// directory on splits/new-windows).
+    ///
+    /// `size` is the full client viewport; the bottom row is reserved for the
+    /// status bar, so the PTY/grid is sized to `rows - 1`. Without this the shell
+    /// believes it has the full height and writes its last line onto the status
+    /// row. Multi-pane windows are then refined to exact per-rect sizes by the
+    /// caller via [`Self::resize_session`].
     fn spawn_pane(
         &mut self,
         id: PaneId,
@@ -177,15 +183,16 @@ impl<S: PtySystem> Daemon<S> {
         size: PtySize,
         cwd: Option<String>,
     ) -> std::io::Result<<S::Pty as Pty>::Reader> {
+        let content = PtySize::new(size.cols, size.rows.saturating_sub(1).max(1));
         let cmd = ShellCommand {
             argv: shell.to_vec(),
             cwd,
         };
-        let pty = self.pty_system.spawn(&cmd, size)?;
+        let pty = self.pty_system.spawn(&cmd, content)?;
         let (writer, reader) = pty.split()?;
         let grid = Grid::new(
-            size.cols as usize,
-            size.rows as usize,
+            content.cols as usize,
+            content.rows as usize,
             self.scrollback_lines(),
         );
         self.panes.insert(

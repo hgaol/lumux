@@ -444,6 +444,28 @@ fn send_prefix_twice_passes_literal_to_shell() {
 // ===========================================================================
 
 #[test]
+fn fresh_pane_reserves_status_row_in_pty_height() {
+    // Regression: panes were spawned at the full client height, so the shell
+    // thought it owned the bottom row and wrote its prompt there — overlapping
+    // the status bar (which the daemon paints on that same row). A pane's grid
+    // (and thus its PTY) must be sized to rows-1. Drive the Daemon directly so we
+    // can read the grid dimensions of the freshly-spawned pane.
+    use lumux_server::Daemon;
+    let mut d = Daemon::new(WinPtySystem);
+    let (sid, pid, _reader) = d
+        .new_session("h", Some(vec!["cmd.exe".into()]), size().into())
+        .expect("spawn session");
+    let _ = sid;
+    let pane = d.live_pane_mut(pid).expect("pane exists");
+    let (cols, rows) = pane.grid.dimensions();
+    assert_eq!(cols, 80, "full width is used");
+    assert_eq!(
+        rows, 23,
+        "pane grid must reserve the status row (24 -> 23), got {rows}"
+    );
+}
+
+#[test]
 fn new_window_and_status_lists_windows() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "wins");

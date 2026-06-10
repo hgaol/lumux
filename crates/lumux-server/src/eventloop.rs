@@ -774,6 +774,10 @@ where
         if let Ok(Some((pid, reader))) = self.daemon.split_active(session, dir, size) {
             self.pane_session.insert(pid, session);
             spawn_pane_reader(pid, reader, self.tx.clone());
+            // Re-fit every pane in the window to its exact layout rect (the new
+            // pane was spawned at the content height; the split means both panes
+            // are now smaller).
+            self.daemon.resize_session(session, size);
         }
     }
 
@@ -786,6 +790,7 @@ where
         if let Ok(Some((pid, reader))) = self.daemon.new_window(session, size) {
             self.pane_session.insert(pid, session);
             spawn_pane_reader(pid, reader, self.tx.clone());
+            self.daemon.resize_session(session, size);
         }
     }
 
