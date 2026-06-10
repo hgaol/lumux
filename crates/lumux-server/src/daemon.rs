@@ -727,6 +727,75 @@ impl<S: PtySystem> Daemon<S> {
         styled.render(screen);
     }
 
+    /// Hit-test a click on the status row against the window list: return the
+    /// window id whose entry was clicked, if any. Rebuilds the same StyledStatus
+    /// the renderer drew, so the column ranges line up exactly with what's shown.
+    /// `col` is the clicked column; `width` is the status bar width (session cols).
+    pub fn status_window_at(
+        &self,
+        session: SessionId,
+        col: u16,
+        width: usize,
+    ) -> Option<lumux_core::model::WindowId> {
+        use lumux_core::render::{Justify, StyledStatus};
+        use lumux_core::status::{self, StatusContext};
+
+        // A prompt or flash message owns the whole row — no window list to hit.
+        let s = self.server.session(session)?;
+        let window = s.window(s.active_window())?;
+        let base_idx = self.config.base_index;
+        let ctx = StatusContext {
+            session: s.name.clone(),
+            window: window.name.clone(),
+            window_index: window_index(s, window.id) + base_idx,
+            pane_index: base_idx,
+            host: hostname(),
+            time: now_parts(),
+        };
+        let base = StyledStatus::base_attrs(&self.config.status_bg, &self.config.status_fg);
+        let left_fmt = if self.config.status_left.is_empty() {
+            &self.config.status_format
+        } else {
+            &self.config.status_left
+        };
+        let wids = s.window_ids();
+        let entries: Vec<status::WindowEntry> = wids
+            .iter()
+            .enumerate()
+            .filter_map(|(i, wid)| {
+                s.window(*wid).map(|w| status::WindowEntry {
+                    index: i as u32 + base_idx,
+                    name: w.name.clone(),
+                    active: *wid == s.active_window(),
+                })
+            })
+            .collect();
+        let styled = StyledStatus {
+            left: status::format(left_fmt, &ctx),
+            centre: status::window_list(&entries, &base),
+            right: status::format(&self.config.status_right, &ctx),
+            base,
+            justify: match self.config.status_justify.as_str() {
+                "centre" | "center" => Justify::Centre,
+                "right" => Justify::Right,
+                _ => Justify::Left,
+            },
+        };
+        // Map the click column into the centre segment, then to a window entry.
+        let cx = styled.centre_start(width);
+        let click = col as usize;
+        if click < cx {
+            return None;
+        }
+        let rel = click - cx;
+        for (pos, start, end) in status::window_list_hit_ranges(&entries) {
+            if rel >= start && rel < end {
+                return wids.get(pos).copied();
+            }
+        }
+        None
+    }
+
     /// Render the active pane's scrolled history for a client in copy-mode.
     fn render_copy_mode(&mut self, client_id: u64, session: SessionId) -> Option<String> {
         use lumux_core::render::Screen;

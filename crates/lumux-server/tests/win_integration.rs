@@ -596,6 +596,41 @@ fn mouse_enabled_sends_reporting_and_acts_on_events() {
 }
 
 #[test]
+fn mouse_click_status_bar_switches_window() {
+    // Clicking a window entry in the status bar switches to that window (tmux).
+    // Use a left-justified bar with an empty left segment so the window list
+    // starts at column 0 and the click column is deterministic.
+    let mut cfg = lumux_core::config::Config::default();
+    cfg.mouse = true;
+    cfg.status_justify = "left".into();
+    cfg.status_left = String::new();
+    cfg.status_format = String::new(); // left segment empty -> centre at col 0
+    let path = start_daemon_with_config(cfg);
+    let mut c = new_cmd_session(&path, "wclick");
+    // Create a second window (index 1); it becomes active. Status row (default
+    // 24 rows -> row index 23) now reads "0:0 1:" at the far left.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.drain(Duration::from_secs(1));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let before = c.drain(Duration::from_secs(1));
+    assert!(
+        before.contains("1:") && before.contains('*'),
+        "window 1 should be active before the click; got:\n{before}"
+    );
+
+    // SGR left-click (button 0) on the status row at column 1 (1-based) = the
+    // "0" of entry "0:0" (window 0). Row is 24 (1-based) = bottom row.
+    c.send(&ClientMsg::Input(b"\x1b[<0;1;24M".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 81, rows: 24 }));
+    let after = c.drain(Duration::from_secs(2));
+    // Window 0 ("0:0") must now carry the active marker.
+    assert!(
+        after.contains("0:0*"),
+        "clicking the first window entry should activate window 0; got:\n{after}"
+    );
+}
+
+#[test]
 fn zoom_hides_other_panes_then_restores() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "zoom");

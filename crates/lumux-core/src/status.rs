@@ -33,13 +33,12 @@ pub struct WindowEntry {
 pub fn window_list(entries: &[WindowEntry], base: &CellAttributes) -> Vec<Span> {
     let mut spans = Vec::new();
     for (i, e) in entries.iter().enumerate() {
-        let marker = if e.active { "*" } else { "" };
         let mut attrs = base.clone();
         if e.active {
             attrs.set_reverse(true);
         }
         spans.push(Span {
-            text: format!("{}:{}{marker}", e.index, e.name),
+            text: entry_text(e),
             attrs,
         });
         if i + 1 < entries.len() {
@@ -50,6 +49,32 @@ pub fn window_list(entries: &[WindowEntry], base: &CellAttributes) -> Vec<Span> 
         }
     }
     spans
+}
+
+/// The display text for one window entry in the list (must match `window_list`).
+fn entry_text(e: &WindowEntry) -> String {
+    let marker = if e.active { "*" } else { "" };
+    format!("{}:{}{marker}", e.index, e.name)
+}
+
+/// Column ranges, within the centre segment, occupied by each window entry —
+/// `(entry_position, start_col, end_col)` where columns are relative to the
+/// start of the centre segment. The separator space between entries belongs to
+/// no entry. Used to map a status-bar click back to the window the user hit; the
+/// formatting mirrors [`window_list`] exactly so the ranges line up with what is
+/// drawn. `entry_position` is the 0-based index into the window list.
+pub fn window_list_hit_ranges(entries: &[WindowEntry]) -> Vec<(usize, usize, usize)> {
+    let mut ranges = Vec::new();
+    let mut col = 0usize;
+    for (i, e) in entries.iter().enumerate() {
+        let width = entry_text(e).chars().count();
+        ranges.push((i, col, col + width));
+        col += width;
+        if i + 1 < entries.len() {
+            col += 1; // separator space
+        }
+    }
+    ranges
 }
 
 /// Values substituted into format variable tokens.
@@ -338,5 +363,30 @@ mod tests {
         // Inactive entries are not.
         let inactive = spans.iter().find(|s| s.text == "1:bash").unwrap();
         assert!(!inactive.attrs.reverse());
+    }
+
+    #[test]
+    fn window_list_hit_ranges_match_rendered_text() {
+        // "1:bash 2:vim* 3:logs"
+        //  0123456789...
+        let entries = vec![
+            WindowEntry { index: 1, name: "bash".into(), active: false },
+            WindowEntry { index: 2, name: "vim".into(), active: true },
+            WindowEntry { index: 3, name: "logs".into(), active: false },
+        ];
+        let ranges = window_list_hit_ranges(&entries);
+        // "1:bash" = cols 0..6, sep at 6, "2:vim*" = 7..13, sep at 13,
+        // "3:logs" = 14..20.
+        assert_eq!(ranges, vec![(0, 0, 6), (1, 7, 13), (2, 14, 20)]);
+        // The separator column (6) belongs to no entry.
+        let hit = |c: usize| ranges.iter().find(|(_, s, e)| c >= *s && c < *e).map(|(i, _, _)| *i);
+        assert_eq!(hit(0), Some(0)); // '1'
+        assert_eq!(hit(5), Some(0)); // 'h' of bash
+        assert_eq!(hit(6), None); // the space
+        assert_eq!(hit(7), Some(1)); // '2'
+        assert_eq!(hit(12), Some(1)); // '*'
+        assert_eq!(hit(14), Some(2)); // '3'
+        assert_eq!(hit(19), Some(2)); // 's' of logs
+        assert_eq!(hit(20), None); // past the end
     }
 }

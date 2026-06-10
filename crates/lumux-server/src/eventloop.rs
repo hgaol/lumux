@@ -523,13 +523,27 @@ where
         rest
     }
 
-    /// Click: focus the pane under the cursor.
+    /// Click: focus the pane under the cursor, or switch windows when the click
+    /// lands on a window entry in the status bar's bottom row.
     fn mouse_select_pane(&mut self, session: SessionId, col: u16, row: u16) {
         let size = self
             .daemon
             .server
             .effective_size(session)
             .unwrap_or(PtySize::new(80, 24));
+        // The status bar is the last row. A click there hit-tests the window list
+        // (tmux: click a window name to switch to it).
+        if row == size.rows.saturating_sub(1) {
+            if let Some(wid) = self
+                .daemon
+                .status_window_at(session, col, size.cols as usize)
+            {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    s.focus_window(wid);
+                }
+            }
+            return;
+        }
         let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
         if let Some(s) = self.daemon.server.session_mut(session) {
             let wid = s.active_window();

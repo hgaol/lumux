@@ -129,6 +129,19 @@ impl StyledStatus {
         };
         Self::paint(screen, y, cx, &self.centre, &self.base);
     }
+
+    /// Starting column where the centre segment (the window list) is painted,
+    /// for a status bar of width `w`. Mirrors the justification math in `render`
+    /// so click hit-testing lines up exactly with what was drawn.
+    pub fn centre_start(&self, w: usize) -> usize {
+        let rw = Self::span_width(&self.right);
+        let cw = Self::span_width(&self.centre);
+        match self.justify {
+            Justify::Left => Self::span_width(&self.left),
+            Justify::Right => w.saturating_sub(rw + cw),
+            Justify::Centre => w.saturating_sub(cw) / 2,
+        }
+    }
 }
 
 /// Compose `view` into a Screen of `size`. The bottom row is reserved for the
