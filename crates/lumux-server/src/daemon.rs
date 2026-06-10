@@ -22,7 +22,39 @@ pub struct LivePane<W: PtyWriter> {
     pub dead: bool,
 }
 
-/// The default shell argv when a client doesn't specify one.
+/// The default shell argv when a client doesn't specify one and the config sets
+/// no `default_shell`.
+///
+/// On Windows this must be a real Windows executable: a Unix-style `SHELL` value
+/// (e.g. `/bin/bash.exe` from an MSYS/Git-bash env, or the `/bin/sh` fallback)
+/// is not a path ConPTY/CreateProcess can resolve, so the pane would die on
+/// spawn and leave an empty window. We therefore ignore `SHELL` on Windows and
+/// use PowerShell (always present on Win10 1809+ and on PATH), falling back to
+/// `%COMSPEC%` (cmd.exe) if PowerShell somehow isn't resolvable.
+#[cfg(windows)]
+pub fn default_shell() -> Vec<String> {
+    // PowerShell is the documented default and matches the typical Windows host.
+    // COMSPEC is the guaranteed-present cmd.exe fallback.
+    if which_on_path("powershell.exe") {
+        vec!["powershell.exe".to_string()]
+    } else if let Ok(comspec) = std::env::var("COMSPEC") {
+        vec![comspec]
+    } else {
+        vec!["cmd.exe".to_string()]
+    }
+}
+
+/// Best-effort check that an executable is resolvable on PATH (Windows).
+#[cfg(windows)]
+fn which_on_path(exe: &str) -> bool {
+    let Ok(path) = std::env::var("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path).any(|dir| dir.join(exe).is_file())
+}
+
+/// The default shell argv when a client doesn't specify one (Unix).
+#[cfg(unix)]
 pub fn default_shell() -> Vec<String> {
     if let Ok(sh) = std::env::var("SHELL") {
         vec![sh]

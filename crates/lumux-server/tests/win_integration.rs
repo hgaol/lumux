@@ -218,6 +218,33 @@ fn attach_creates_session_over_named_pipe() {
 }
 
 #[test]
+fn default_shell_session_spawns_a_working_windows_shell() {
+    // Regression: with no shell specified and no default_shell in config, the
+    // daemon used a Unix path (SHELL or /bin/sh) that ConPTY can't spawn on
+    // Windows — the pane died instantly, giving an empty window that exits on
+    // the first keypress. The default shell must now be a real Windows shell, so
+    // a shell:None session renders live output. (PowerShell echoes the marker;
+    // we look for the marker text rather than a specific prompt.)
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("defshell".into()),
+        shell: None, // <- exercises default_shell()
+        size: size(),
+    });
+    assert!(c.wait_attached(), "default-shell session must attach");
+    // Run a command and see it come back — proves the shell actually started.
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo LUMUX_DEFAULT_SHELL_OK\r\n".to_vec(),
+    }));
+    let (ok, vt) = c.collect_text(Duration::from_secs(12), "LUMUX_DEFAULT_SHELL_OK");
+    assert!(
+        ok,
+        "default shell must spawn and produce output (not an empty, dead pane); got:\n{vt}"
+    );
+}
+
+#[test]
 fn daemon_survives_idle_ticks_before_first_client() {
     // Regression: the periodic exit-poll Tick must NOT make a freshly-bound
     // daemon self-terminate before any client connects. Wait well past several
