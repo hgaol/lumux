@@ -130,12 +130,14 @@
   .statusbar .s-right { background: var(--bg-soft); color: var(--cyan); }
 
   /* ---- demo chrome ---- */
-  .replay {
-    margin-left: auto; background: transparent; border: 1px solid var(--border);
-    color: var(--fg-dim); width: 26px; height: 26px; border-radius: 6px;
-    cursor: pointer; font-size: 0.95rem; line-height: 1; transition: color .15s, border-color .15s;
+  .tbtn {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--fg-dim); height: 26px; min-width: 30px; padding: 0 7px; border-radius: 6px;
+    cursor: pointer; font-size: 0.78rem; line-height: 1; margin-left: 8px;
+    transition: color .15s, border-color .15s;
   }
-  .replay:hover { color: var(--green); border-color: var(--green); }
+  .tbtn:first-of-type { margin-left: auto; }
+  .tbtn:hover { color: var(--green); border-color: var(--green); }
   .demo-cap {
     text-align: center; color: var(--fg-dim); font-size: 0.95rem;
     margin: 18px auto 0; max-width: 680px; min-height: 1.4em;
@@ -284,7 +286,8 @@
       <div class="term-bar">
         <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
         <span class="term-title" id="demo-title">ssh winhost — lumux</span>
-        <button class="replay" id="replay" aria-label="replay demo" title="replay">↻</button>
+        <button class="tbtn" id="play" aria-label="pause demo" title="pause">❚❚</button>
+        <button class="tbtn" id="replay" aria-label="restart demo" title="restart">↻</button>
       </div>
       <div class="term-screen">
         <div class="scr" id="scr" aria-live="polite"></div>
@@ -303,6 +306,7 @@
   var title = document.getElementById('demo-title');
   var demo = document.getElementById('demo');
   var replay = document.getElementById('replay');
+  var playBtn = document.getElementById('play');
   if (!scr) return;
 
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -340,34 +344,42 @@
   function clearScreen(){ scr.innerHTML=''; host = scr; caret=null; }
   function reset(){ tape=[]; }
 
+  // timing (ms) — generous so it reads like a calm screencast
+  var CHAR = 78;       // per typed character
+  var T_CMD = 420;     // settle after a prompt appears, before typing
+  var T_OUT = 720;     // dwell on an output line
+  var T_KEY = 1300;    // dwell on a pressed keystroke (the "aha" beat)
+  var T_SAY = 90;      // caption swap is near-instant
+
   // type a command after a prompt, char by char, leaving a caret
   function type(cmd, cwd){
-    tape.push({t: 240, run: function(){
+    // wait = settle + the whole typing duration, so the next entry doesn't
+    // start until the command has finished typing.
+    tape.push({t: T_CMD + cmd.length * CHAR, run: function(){
       dropCaret();
       var d = line(host, PROMPT + path(cwd||'C:\\srv'));
       var cur = document.createElement('span'); cur.className='cursor'; cur.innerHTML='&nbsp;';
       d.appendChild(cur); caret = cur;
-      // schedule per-char typing
       var idx=0;
       (function tick(){
         if (idx < cmd.length){
           cur.insertAdjacentText('beforebegin', cmd[idx]);
           idx++;
-          setTimeout(tick, reduce?0:46);
+          schedule(tick, reduce?0:CHAR);
         }
       })();
     }});
   }
   // print an output line (no prompt)
   function out(html, cls){
-    tape.push({t: 360, run: function(){ dropCaret(); var d=line(host, html); if(cls) d.className=cls; }});
+    tape.push({t: T_OUT, run: function(){ dropCaret(); var d=line(host, html); if(cls) d.className=cls; }});
   }
   // show a prefix keystroke as a "pressed" hint line, then act
   function press(html, after){
-    tape.push({t: 620, run: function(){ dropCaret(); line(host, '<span class="press">'+html+'</span>'); if(after) after(); }});
+    tape.push({t: T_KEY, run: function(){ dropCaret(); line(host, '<span class="press">'+html+'</span>'); if(after) after(); }});
   }
   // bare wait + caption
-  function say(text){ tape.push({t: 60, run: function(){ cap.innerHTML = text; }}); }
+  function say(text){ tape.push({t: T_SAY, run: function(){ cap.innerHTML = text; }}); }
   function pause(ms){ tape.push({t: ms, run: function(){}}); }
   function act(fn, t){ tape.push({t: t||40, run: fn}); }
   function settitle(s){ tape.push({t:30, run:function(){ title.textContent = s; }}); }
@@ -445,30 +457,52 @@
     setBar('deploy','1:bash*');
   }
 
-  // ---- scheduler -----------------------------------------------------------
-  var timers = [];
+  // ---- scheduler (single advancing timer => real pause/resume) -------------
+  var timers = [];                         // tracked timeouts (steps + typing)
+  function schedule(fn, ms){ var id=setTimeout(fn, ms); timers.push(id); return id; }
   function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
-  function run(){
-    clearTimers();
-    if (reduce){ // static: just show the final session-switcher frame
-      build(); cap.innerHTML = 'A session, panes, windows, detach, and a session switcher — all over a single text stream.';
-      chooser(); return;
+
+  var idx = 0;                             // current tape position
+  var playing = false;
+
+  function step(){
+    if (idx >= tape.length){               // reached the end -> loop
+      schedule(function(){ idx = 0; build(); step(); }, 900);
+      return;
     }
-    build();
-    var at = 0;
-    tape.forEach(function(step){
-      timers.push(setTimeout(step.run, at));
-      at += step.t;
-    });
-    // loop
-    timers.push(setTimeout(run, at + 600));
+    var s = tape[idx++];
+    s.run();
+    schedule(step, s.t);
   }
 
-  replay && replay.addEventListener('click', function(){ run(); });
-  // pause on hover so people can read
-  var paused=false;
-  demo.addEventListener('mouseenter', function(){ paused=true; clearTimers(); });
-  demo.addEventListener('mouseleave', function(){ if(paused){ paused=false; run(); } });
+  function start(){                        // (re)start from the top
+    clearTimers(); idx = 0; build(); playing = true; setBtn();
+    if (reduce){                            // static fallback: final frame only
+      cap.innerHTML = 'A session, panes, windows, detach, and a session switcher — one continuous text stream.';
+      chooser(); playing = false; setBtn(); return;
+    }
+    step();
+  }
+  function pausePlayback(){ if(!playing) return; clearTimers(); playing = false; setBtn(); }
+  function resume(){ if(playing || reduce) return; playing = true; setBtn(); step(); }
+  function toggle(){ playing ? pausePlayback() : (idx >= tape.length || idx === 0 ? start() : resume()); }
+
+  function setBtn(){
+    if (!playBtn) return;
+    playBtn.textContent = playing ? '❚❚' : '►';
+    playBtn.setAttribute('aria-label', playing ? 'pause demo' : 'play demo');
+    playBtn.title = playing ? 'pause' : 'play';
+  }
+
+  playBtn && playBtn.addEventListener('click', toggle);
+  replay && replay.addEventListener('click', start);
+
+  // hover pauses, leaving resumes (without restarting)
+  var hoverPaused = false;
+  demo.addEventListener('mouseenter', function(){ if(playing){ hoverPaused = true; pausePlayback(); } });
+  demo.addEventListener('mouseleave', function(){ if(hoverPaused){ hoverPaused = false; resume(); } });
+
+  start();
 
   run();
 })();
