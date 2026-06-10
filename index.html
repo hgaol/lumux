@@ -94,11 +94,12 @@
   .dot { width: 12px; height: 12px; border-radius: 50%; }
   .dot.r { background: #ff5f56; } .dot.y { background: #ffbd2e; } .dot.g { background: #27c93f; }
   .term-title { margin-left: 8px; font-size: 0.85rem; color: var(--fg-dim); }
-  .term-body { padding: 26px 30px; font-size: 1.02rem; line-height: 1.85; min-height: 420px; }
-  .term-body .pane-row { display: flex; gap: 0; }
-  .term-body .pane { flex: 1; }
-  .term-body .divider { color: var(--border); padding: 0 22px; }
-  .term-body .gutter { color: var(--border); }
+  /* screen: content grows, status bar pinned to the bottom (like a real session) */
+  .term-screen { display: flex; flex-direction: column; min-height: 440px; padding: 24px 30px 16px; }
+  .scr { flex: 1 1 auto; font-size: 1.02rem; line-height: 1.85; overflow: hidden; }
+  .scr .pane-row { display: flex; gap: 0; height: 100%; }
+  .scr .pane { flex: 1; min-width: 0; }
+  .scr .divider { color: var(--border); padding: 0 22px; }
   .prompt { color: var(--green); }
   .path { color: var(--purple); }
   .comment { color: var(--fg-dim); }
@@ -106,17 +107,20 @@
   .kw { color: var(--pink); }
   .out { color: var(--fg); }
   .ann { color: var(--fg-dim); font-size: 0.92em; }
-  .term-body .key {
+  .key {
     display: inline-block; font-family: var(--mono); font-size: 0.82em;
     color: var(--cyan); background: rgba(139,233,253,0.10);
     border: 1px solid rgba(139,233,253,0.28); border-radius: 5px;
     padding: 0 6px; margin-right: 2px;
   }
+  /* a "pressed prefix key" hint line */
+  .press { display: inline-block; color: var(--cyan); animation: flash .5s ease; }
+  @keyframes flash { 0% { opacity: 0; transform: translateY(2px); } 100% { opacity: 1; transform: none; } }
   .cursor { background: var(--green); color: #0a0c10; animation: blink 1.1s step-end infinite; }
   @keyframes blink { 50% { background: transparent; color: var(--green); } }
   .statusbar {
-    margin-top: 14px; display: flex; font-size: 0.8rem; border-radius: 4px; overflow: hidden;
-    border: 1px solid var(--border);
+    flex: 0 0 auto; margin-top: 14px; display: flex; font-size: 0.8rem;
+    border-radius: 4px; overflow: hidden; border: 1px solid var(--border);
   }
   .statusbar .seg { padding: 3px 12px; }
   .statusbar .s-left { background: #7c2d2d; color: #fff; font-weight: 700; }
@@ -125,25 +129,19 @@
   .statusbar .s-win-active { color: var(--green); font-weight: 700; }
   .statusbar .s-right { background: var(--bg-soft); color: var(--cyan); }
 
-  /* ---- stepped demo ---- */
-  .steps { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; justify-content: center; }
-  .step {
-    font-family: var(--mono); font-size: 0.84rem; color: var(--fg-dim);
-    background: var(--bg-soft); border: 1px solid var(--border);
-    border-radius: 100px; padding: 7px 16px; cursor: pointer;
-    transition: color .15s, border-color .15s, background .15s;
+  /* ---- demo chrome ---- */
+  .replay {
+    margin-left: auto; background: transparent; border: 1px solid var(--border);
+    color: var(--fg-dim); width: 26px; height: 26px; border-radius: 6px;
+    cursor: pointer; font-size: 0.95rem; line-height: 1; transition: color .15s, border-color .15s;
   }
-  .step b { color: var(--fg-dim); margin-right: 6px; font-weight: 700; }
-  .step:hover { color: var(--fg); border-color: var(--fg-dim); }
-  .step.is-on { color: #07140c; background: var(--green); border-color: var(--green); }
-  .step.is-on b { color: #07140c; }
-  .term-screen { transition: opacity .18s ease; }
+  .replay:hover { color: var(--green); border-color: var(--green); }
   .demo-cap {
     text-align: center; color: var(--fg-dim); font-size: 0.95rem;
-    margin: 18px auto 0; max-width: 660px; min-height: 2.6em;
+    margin: 18px auto 0; max-width: 680px; min-height: 1.4em;
   }
   .demo-cap b { color: var(--fg); font-family: var(--mono); font-size: 0.92em; }
-  /* session switcher overlay (step 5) */
+  /* session switcher overlay */
   .chooser { padding: 6px 2px; }
   .chooser-head { color: var(--fg); margin-bottom: 12px; }
   .chooser-row { padding: 3px 8px; border-radius: 4px; color: var(--fg-dim); }
@@ -243,9 +241,10 @@
     .platforms { grid-template-columns: 1fr; }
     .keys { grid-template-columns: 1fr; }
     h1 { font-size: 2.5rem; }
-    .term-body { font-size: 0.84rem; line-height: 1.7; padding: 18px 16px; min-height: 0; }
-    .term-body .pane-row { flex-direction: column; gap: 14px; }
-    .term-body .divider { display: none; }
+    .term-screen { padding: 16px 16px 12px; min-height: 360px; }
+    .scr { font-size: 0.84rem; line-height: 1.7; }
+    .scr .pane-row { flex-direction: column; gap: 14px; height: auto; }
+    .scr .divider { display: none; }
     nav .links { display: none; }
   }
   @media (max-width: 520px) {
@@ -281,162 +280,197 @@
   </div>
 
   <div class="wrap term-wrap">
-    <div class="steps" id="steps" role="tablist" aria-label="lumux walkthrough">
-      <button class="step is-on" data-step="0"><b>1</b> new session</button>
-      <button class="step" data-step="1"><b>2</b> split a pane</button>
-      <button class="step" data-step="2"><b>3</b> new window</button>
-      <button class="step" data-step="3"><b>4</b> detach &amp; new session</button>
-      <button class="step" data-step="4"><b>5</b> switch session</button>
-    </div>
-
     <div class="term" id="demo">
       <div class="term-bar">
         <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
         <span class="term-title" id="demo-title">ssh winhost — lumux</span>
+        <button class="replay" id="replay" aria-label="replay demo" title="replay">↻</button>
       </div>
-      <div class="term-screen" id="demo-screen" aria-live="polite">
-        <!-- JS renders the active step here; this is the no-JS fallback (step 1). -->
-        <div class="term-body">
-          <div class="pane-row">
-            <div class="pane">
-              <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; lm new <span class="kw">-s</span> srv</div>
-              <div class="comment"># server auto-starts; you're attached</div>
-              <div><span class="prompt">PS</span> <span class="path">C:\srv</span>&gt; <span class="cursor">&nbsp;</span></div>
-            </div>
-          </div>
-          <div class="statusbar">
-            <span class="seg s-left">REMOTE</span>
-            <span class="seg s-sess">&nbsp;Session: srv&nbsp;</span>
-            <span class="seg s-mid">1:bash*</span>
-            <span class="seg s-right">14:32</span>
-          </div>
-        </div>
+      <div class="term-screen">
+        <div class="scr" id="scr" aria-live="polite"></div>
+        <div class="statusbar" id="sb"></div>
       </div>
     </div>
-    <p class="demo-cap" id="demo-cap">A session auto-starts the server — no daemon to launch.</p>
+    <p class="demo-cap" id="demo-cap">&nbsp;</p>
   </div>
 </header>
 
 <script>
 (function () {
-  var screen = document.getElementById('demo-screen');
+  var scr = document.getElementById('scr');
+  var sb  = document.getElementById('sb');
   var cap = document.getElementById('demo-cap');
   var title = document.getElementById('demo-title');
-  var pills = Array.prototype.slice.call(document.querySelectorAll('.step'));
-  if (!screen) return;
+  var demo = document.getElementById('demo');
+  var replay = document.getElementById('replay');
+  if (!scr) return;
 
-  var P = '<span class="prompt">PS</span> ';
-  function path(p){ return '<span class="path">' + p + '</span>&gt; '; }
-  function key(k){ return '<span class="key">' + k + '</span>'; }
-  var CUR = '<span class="cursor">&nbsp;</span>';
-
-  function bar(sess, mid){
-    return '<div class="statusbar">'
-      + '<span class="seg s-left">REMOTE</span>'
-      + '<span class="seg s-sess">&nbsp;Session: ' + sess + '&nbsp;</span>'
-      + '<span class="seg s-mid">' + mid + '</span>'
-      + '<span class="seg s-right">14:32</span></div>';
-  }
-
-  var steps = [
-    { // 1 — new session
-      title: 'ssh winhost — lumux',
-      cap: 'Step 1 — <b>lm new -s srv</b> creates a session and attaches. The server auto-starts; nothing to launch.',
-      body:
-        '<div class="pane-row"><div class="pane">'
-        + '<div>' + P + path('C:\\srv') + 'lm new <span class="kw">-s</span> srv</div>'
-        + '<div class="comment"># server auto-starts &middot; you\'re attached</div>'
-        + '<div>' + P + path('C:\\srv') + CUR + '</div>'
-        + '</div></div>'
-        + bar('srv', '1:bash*')
-    },
-    { // 2 — split a pane
-      title: 'ssh winhost — srv',
-      cap: 'Step 2 — run a command, then <b>' + 'C-b |' + '</b> splits a second pane beside it (inherits the dir).',
-      body:
-        '<div class="pane-row">'
-        + '<div class="pane">'
-        +   '<div>' + P + path('C:\\srv') + 'cargo run</div>'
-        +   '<div class="out">listening on :8080</div>'
-        +   '<div class="out">request 200 /healthz</div>'
-        +   '<div class="ann">' + key('C-b') + ' ' + key('|') + ' &nbsp;split &rarr;</div>'
-        + '</div>'
-        + '<div class="divider">│</div>'
-        + '<div class="pane">'
-        +   '<div>' + P + path('C:\\srv') + 'pwsh</div>'
-        +   '<div class="out">PowerShell 7.4</div>'
-        +   '<div>' + P + path('C:\\srv') + CUR + '</div>'
-        + '</div>'
-        + '</div>'
-        + bar('srv', '1:bash*')
-    },
-    { // 3 — new window
-      title: 'ssh winhost — srv',
-      cap: 'Step 3 — <b>' + 'C-b c' + '</b> opens a new window. The status bar lists them; the active one is marked <b>*</b>.',
-      body:
-        '<div class="pane-row"><div class="pane">'
-        + '<div class="comment"># window 2 — opened with ' + 'C-b c' + '</div>'
-        + '<div>' + P + path('C:\\srv') + 'kubectl logs -f api</div>'
-        + '<div class="out">api &middot; replica 3/3 ready</div>'
-        + '<div>' + P + path('C:\\srv') + CUR + '</div>'
-        + '</div></div>'
-        + bar('srv', '1:bash <span class="s-win-active">2:logs*</span>')
-    },
-    { // 4 — detach + new session
-      title: 'ssh winhost — lumux',
-      cap: 'Step 4 — <b>' + 'C-b d' + '</b> detaches (srv keeps running), then <b>lm new -s deploy</b> starts a second session.',
-      body:
-        '<div class="pane-row"><div class="pane">'
-        + '<div>' + P + path('C:\\srv') + key('C-b') + ' ' + key('d') + '</div>'
-        + '<div class="out" style="color:var(--yellow)">[detached] — srv still running</div>'
-        + '<div>' + P + path('C:\\srv') + 'lm new <span class="kw">-s</span> deploy</div>'
-        + '<div class="comment"># a second, independent session</div>'
-        + '<div>' + P + path('C:\\srv') + CUR + '</div>'
-        + '</div></div>'
-        + bar('deploy', '1:bash*')
-    },
-    { // 5 — switch session
-      title: 'ssh winhost — deploy',
-      cap: 'Step 5 — <b>' + 'C-b s' + '</b> opens the session switcher; pick one and you jump straight back in.',
-      body:
-        '<div class="chooser">'
-        + '<div class="chooser-head">choose a session &nbsp;<span class="ann">(' + '&uarr;&darr; or digit, Enter selects' + ')</span></div>'
-        + '<div class="chooser-row is-sel">&nbsp;0: srv &nbsp;<span class="ann">(2 windows)</span></div>'
-        + '<div class="chooser-row">&nbsp;1: deploy &nbsp;<span class="ann">(1 window)</span></div>'
-        + '<div class="chooser-foot">-- SESSIONS --</div>'
-        + '</div>'
-        + bar('deploy', '1:bash*')
-    }
-  ];
-
-  var i = 0, timer = null;
   var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  var esc = function (s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); };
 
-  function render(n){
-    i = n;
-    var s = steps[n];
-    title.textContent = s.title;
-    screen.style.opacity = '0';
-    setTimeout(function(){
-      screen.innerHTML = '<div class="term-body">' + s.body + '</div>';
-      cap.innerHTML = s.cap;
-      screen.style.opacity = '1';
-    }, reduce ? 0 : 180);
-    pills.forEach(function(p, idx){ p.classList.toggle('is-on', idx === n); });
+  // ---- status bar ----------------------------------------------------------
+  function setBar(sess, mid) {
+    sb.innerHTML =
+      '<span class="seg s-left">REMOTE</span>' +
+      '<span class="seg s-sess">&nbsp;Session: ' + sess + '&nbsp;</span>' +
+      '<span class="seg s-mid">' + mid + '</span>' +
+      '<span class="seg s-right">14:32</span>';
   }
 
-  function next(){ render((i + 1) % steps.length); }
-  function play(){ if (reduce) return; stop(); timer = setInterval(next, 3800); }
-  function stop(){ if (timer) clearInterval(timer); timer = null; }
+  // ---- low-level screen ops ------------------------------------------------
+  var caret = null;
+  function dropCaret(){ if (caret){ caret.remove(); caret = null; } }
+  // returns the line element the caret lives on
+  function line(host, html){
+    var d = document.createElement('div');
+    if (html != null) d.innerHTML = html;
+    host.appendChild(d);
+    return d;
+  }
+  // active pane host (single, or a column inside a split)
+  var host = scr;
 
-  pills.forEach(function(p){
-    p.addEventListener('click', function(){ stop(); render(+p.dataset.step); play(); });
-  });
-  document.getElementById('demo').addEventListener('mouseenter', stop);
-  document.getElementById('demo').addEventListener('mouseleave', play);
+  // ---- the timeline --------------------------------------------------------
+  // Each entry is {do: fn, t: ms-to-wait-after}. A tiny scheduler walks it.
+  var PROMPT = '<span class="prompt">PS</span> ';
+  function path(p){ return '<span class="path">' + esc(p) + '</span>&gt; '; }
+  function kbd(){ var a=[].slice.call(arguments).map(function(k){return '<span class="key">'+k+'</span>';}); return a.join(' '); }
 
-  render(0);
-  play();
+  var tape = [];
+  function clearScreen(){ scr.innerHTML=''; host = scr; caret=null; }
+  function reset(){ tape=[]; }
+
+  // type a command after a prompt, char by char, leaving a caret
+  function type(cmd, cwd){
+    tape.push({t: 240, run: function(){
+      dropCaret();
+      var d = line(host, PROMPT + path(cwd||'C:\\srv'));
+      var cur = document.createElement('span'); cur.className='cursor'; cur.innerHTML='&nbsp;';
+      d.appendChild(cur); caret = cur;
+      // schedule per-char typing
+      var idx=0;
+      (function tick(){
+        if (idx < cmd.length){
+          cur.insertAdjacentText('beforebegin', cmd[idx]);
+          idx++;
+          setTimeout(tick, reduce?0:46);
+        }
+      })();
+    }});
+  }
+  // print an output line (no prompt)
+  function out(html, cls){
+    tape.push({t: 360, run: function(){ dropCaret(); var d=line(host, html); if(cls) d.className=cls; }});
+  }
+  // show a prefix keystroke as a "pressed" hint line, then act
+  function press(html, after){
+    tape.push({t: 620, run: function(){ dropCaret(); line(host, '<span class="press">'+html+'</span>'); if(after) after(); }});
+  }
+  // bare wait + caption
+  function say(text){ tape.push({t: 60, run: function(){ cap.innerHTML = text; }}); }
+  function pause(ms){ tape.push({t: ms, run: function(){}}); }
+  function act(fn, t){ tape.push({t: t||40, run: fn}); }
+  function settitle(s){ tape.push({t:30, run:function(){ title.textContent = s; }}); }
+
+  // ---- build the one continuous story --------------------------------------
+  function build(){
+    reset();
+    // 1) new session ........................................................
+    act(function(){ clearScreen(); setBar('srv','1:bash*'); });
+    settitle('ssh winhost — lumux');
+    say('<b>lm new -s srv</b> — start a session; the server auto-spawns.');
+    type('lm new -s srv');
+    out('<span class="comment"># server auto-starts &middot; attached</span>');
+
+    // 2) run a command, then split a pane ...................................
+    say('Run something, then <b>C-b |</b> splits a pane beside it — it inherits the dir.');
+    type('cargo run');
+    out('<span class="out">listening on :8080</span>');
+    out('<span class="out">request 200 /healthz</span>');
+    press(kbd('C-b','|') + ' &nbsp;split &rarr;', function(){ splitNow(); });
+    // after split, the new (right) pane is focused
+    type('pwsh');
+    out('<span class="out">PowerShell 7.4</span>');
+
+    // 3) new window .........................................................
+    say('<b>C-b c</b> opens a new window — the status bar lists them, active marked <b>*</b>.');
+    press(kbd('C-b','c'), function(){ newWindow(); });
+    type('kubectl logs -f api');
+    out('<span class="out">api &middot; replica 3/3 ready</span>');
+
+    // 4) detach + new session ...............................................
+    say('<b>C-b d</b> detaches — srv keeps running. Then start a second session.');
+    press(kbd('C-b','d'), function(){ detach(); });
+    type('lm new -s deploy');
+    out('<span class="comment"># a second, independent session</span>');
+
+    // 5) switch session .....................................................
+    say('<b>C-b s</b> opens the session switcher — pick one and jump straight in.');
+    press(kbd('C-b','s'), function(){ chooser(); });
+    pause(2400);
+  }
+
+  // ---- the structural actions the timeline triggers ------------------------
+  function splitNow(){
+    // wrap existing content into a left pane, add a right pane, focus right
+    var left = document.createElement('div'); left.className='pane';
+    while (scr.firstChild) left.appendChild(scr.firstChild);
+    var row = document.createElement('div'); row.className='pane-row';
+    var div = document.createElement('div'); div.className='divider'; div.textContent='│';
+    var right = document.createElement('div'); right.className='pane';
+    row.appendChild(left); row.appendChild(div); row.appendChild(right);
+    scr.appendChild(row);
+    host = right;
+  }
+  function newWindow(){
+    clearScreen();
+    setBar('srv','1:bash <span class="s-win-active">2:logs*</span>');
+    line(scr, '<span class="comment"># window 2 — opened with C-b c</span>');
+  }
+  function detach(){
+    clearScreen();
+    title.textContent = 'ssh winhost — lumux';
+    line(scr, '<span class="out" style="color:var(--yellow)">[detached] — srv still running</span>');
+    setBar('deploy','1:bash*');
+  }
+  function chooser(){
+    clearScreen();
+    title.textContent = 'ssh winhost — deploy';
+    scr.innerHTML =
+      '<div class="chooser">' +
+      '<div class="chooser-head">choose a session &nbsp;<span class="ann">(&uarr;&darr; or digit, Enter selects)</span></div>' +
+      '<div class="chooser-row is-sel">&nbsp;0: srv &nbsp;<span class="ann">(2 windows)</span></div>' +
+      '<div class="chooser-row">&nbsp;1: deploy &nbsp;<span class="ann">(1 window)</span></div>' +
+      '<div class="chooser-foot">-- SESSIONS --</div></div>';
+    setBar('deploy','1:bash*');
+  }
+
+  // ---- scheduler -----------------------------------------------------------
+  var timers = [];
+  function clearTimers(){ timers.forEach(clearTimeout); timers = []; }
+  function run(){
+    clearTimers();
+    if (reduce){ // static: just show the final session-switcher frame
+      build(); cap.innerHTML = 'A session, panes, windows, detach, and a session switcher — all over a single text stream.';
+      chooser(); return;
+    }
+    build();
+    var at = 0;
+    tape.forEach(function(step){
+      timers.push(setTimeout(step.run, at));
+      at += step.t;
+    });
+    // loop
+    timers.push(setTimeout(run, at + 600));
+  }
+
+  replay && replay.addEventListener('click', function(){ run(); });
+  // pause on hover so people can read
+  var paused=false;
+  demo.addEventListener('mouseenter', function(){ paused=true; clearTimers(); });
+  demo.addEventListener('mouseleave', function(){ if(paused){ paused=false; run(); } });
+
+  run();
 })();
 </script>
 
