@@ -223,6 +223,7 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "resize-pane-up" => Action::ResizePaneUp,
         "resize-pane-down" => Action::ResizePaneDown,
         "zoom-pane" => Action::ZoomPane,
+        "next-layout" => Action::NextLayout,
         "rename-window" => Action::RenameWindow,
         "rename-session" => Action::RenameSession,
         "detach" => Action::Detach,

@@ -32,6 +32,8 @@ pub enum Action {
     ResizePaneDown,
     /// Toggle zoom on the active pane (tmux prefix z).
     ZoomPane,
+    /// Cycle to the next preset layout (tmux `next-layout`, prefix Space).
+    NextLayout,
     /// Jump to the previously-active pane (tmux `last-pane`, prefix `;`).
     LastPane,
     /// Open a prompt to rename the current window (tmux prefix ,).
@@ -72,6 +74,7 @@ impl Action {
             Action::ResizePaneUp => "resize pane up",
             Action::ResizePaneDown => "resize pane down",
             Action::ZoomPane => "zoom/unzoom the active pane",
+            Action::NextLayout => "cycle preset layouts",
             Action::LastPane => "last (previous) pane",
             Action::RenameWindow => "rename the current window",
             Action::RenameSession => "rename the current session",
@@ -129,6 +132,8 @@ impl Bindings {
         table.insert(Key::plain(KeyCode::Down), Action::SelectPaneDown);
         // Zoom the active pane (tmux prefix z).
         table.insert(Key::char('z'), Action::ZoomPane);
+        // Cycle preset layouts (tmux prefix Space / next-layout).
+        table.insert(Key::plain(KeyCode::Space), Action::NextLayout);
         // Directional resize on the vi-style capitals (tmux's repeatable
         // resize-pane bindings); arrows are taken by select-pane above.
         table.insert(Key::char('H'), Action::ResizePaneLeft);

@@ -302,6 +302,9 @@ fn map_bind_command(cmd: &[String]) -> Option<String> {
         "last-window" => "last-window",
         "last-pane" => "last-pane",
         "kill-window" => "kill-window",
+        "next-layout" => "next-layout",
+        // `select-layout` without a named arg cycles like next-layout in lumux.
+        "select-layout" => "next-layout",
         "kill-pane" => "kill-pane",
         "detach-client" => "detach",
         "copy-mode" => "copy-mode",

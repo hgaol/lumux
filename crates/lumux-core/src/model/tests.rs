@@ -403,3 +403,69 @@ fn kill_window_returns_all_its_panes() {
     assert_eq!(result, CascadeResult::WindowClosed);
     assert_eq!(panes.len(), 2, "kill-window must report both of w0's panes");
 }
+
+#[test]
+fn next_layout_cycles_and_preserves_panes() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    // Build a window with 4 panes via splits.
+    srv.split_active(sid, sh(), SplitDir::Horizontal);
+    srv.split_active(sid, sh(), SplitDir::Vertical);
+    srv.split_active(sid, sh(), SplitDir::Horizontal);
+    let wid = srv.session(sid).unwrap().active_window();
+    let before: Vec<PaneId> = srv.session(sid).unwrap().window(wid).unwrap().pane_ids();
+    assert_eq!(before.len(), 4);
+
+    // Cycle through all five presets; panes must be preserved each time (order
+    // may change as the tree is rebuilt, but the set must be identical).
+    let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+    for _ in 0..5 {
+        w.next_layout();
+        let mut got = w.pane_ids();
+        got.sort();
+        let mut expect = before.clone();
+        expect.sort();
+        assert_eq!(got, expect, "next_layout must preserve all panes");
+    }
+}
+
+#[test]
+fn next_layout_single_pane_is_noop() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let wid = srv.session(sid).unwrap().active_window();
+    let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+    let before = w.layout.clone();
+    w.next_layout();
+    assert_eq!(w.layout, before, "single-pane window: layout unchanged");
+}
+
+#[test]
+fn split_after_layout_resets_preset() {
+    // Applying a preset then splitting should clear the preset, so the next
+    // next_layout starts the cycle fresh (from even-horizontal) rather than the
+    // layout after the one we'd applied.
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    srv.split_active(sid, sh(), SplitDir::Horizontal);
+    let wid = srv.session(sid).unwrap().active_window();
+    {
+        let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+        w.apply_layout(LayoutKind::Tiled);
+    }
+    // A manual split clears the recorded preset.
+    srv.split_active(sid, sh(), SplitDir::Vertical);
+    let w = srv.session_mut(sid).unwrap().window_mut(wid).unwrap();
+    w.next_layout();
+    // After reset, next_layout applies the first cycle entry (even-horizontal):
+    // all splits are horizontal.
+    fn all_h(n: &PaneNode) -> bool {
+        match n {
+            PaneNode::Leaf(_) => true,
+            PaneNode::Split { dir, first, second, .. } => {
+                *dir == SplitDir::Horizontal && all_h(first) && all_h(second)
+            }
+        }
+    }
+    assert!(all_h(&w.layout), "preset should restart at even-horizontal after a split");
+}

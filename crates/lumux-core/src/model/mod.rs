@@ -9,7 +9,7 @@ mod id;
 mod tree;
 
 pub use id::{IdParseError, PaneId, SessionId, WindowId};
-pub use tree::{PaneNode, Removed, SplitDir};
+pub use tree::{LayoutKind, PaneNode, Removed, SplitDir};
 
 use crate::traits::PtySize;
 use std::collections::BTreeMap;
@@ -41,6 +41,9 @@ pub struct Window {
     /// The previously-active pane, for tmux's `last-pane` (prefix `;`). Updated
     /// whenever focus moves to a different pane.
     last_pane: Option<PaneId>,
+    /// The last preset layout applied via `next-layout` (prefix Space), if any.
+    /// `next_layout` cycles from here; manual splits clear it back to None.
+    layout_kind: Option<LayoutKind>,
     /// When `Some`, the active pane is zoomed: the renderer shows only this pane
     /// fullscreen (tmux prefix z). Cleared on toggle, on focus change, and when
     /// the zoomed pane goes away.
@@ -60,6 +63,7 @@ impl Window {
             panes,
             active_pane,
             last_pane: None,
+            layout_kind: None,
             zoomed: None,
         }
     }
@@ -114,6 +118,29 @@ impl Window {
         self.layout.resize_pane(self.active_pane, axis, step)
     }
 
+    /// Apply a preset layout (tmux `select-layout`), rebuilding the pane tree
+    /// over the existing panes with even ratios. Pane ids and the active pane are
+    /// preserved; unzooms. Records the layout so [`next_layout`] cycles from it.
+    pub fn apply_layout(&mut self, kind: LayoutKind) {
+        let panes = self.layout.pane_ids();
+        self.layout = PaneNode::arrange(kind, &panes);
+        self.layout_kind = Some(kind);
+        self.zoomed = None;
+    }
+
+    /// Cycle to the next preset layout (tmux `next-layout`, prefix Space). Starts
+    /// at even-horizontal if no preset is active yet. No-op for a single pane.
+    pub fn next_layout(&mut self) {
+        if self.pane_count() < 2 {
+            return;
+        }
+        let next = match self.layout_kind {
+            Some(k) => k.next(),
+            None => LayoutKind::CYCLE[0],
+        };
+        self.apply_layout(next);
+    }
+
     pub fn pane_ids(&self) -> Vec<PaneId> {
         self.layout.pane_ids()
     }
@@ -134,6 +161,8 @@ impl Window {
         if self.layout.split_leaf(target, new_id, dir) {
             self.panes.insert(new_id, new);
             self.set_active_pane(new_id);
+            // A manual split no longer matches any preset layout.
+            self.layout_kind = None;
         }
     }
 
@@ -148,6 +177,8 @@ impl Window {
         if self.last_pane == Some(id) {
             self.last_pane = None;
         }
+        // The tree changes shape on removal; it no longer matches a preset.
+        self.layout_kind = None;
         match self.layout.remove_pane(id) {
             Removed::NotFound => false,
             Removed::Gone => {

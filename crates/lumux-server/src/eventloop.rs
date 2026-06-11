@@ -476,6 +476,7 @@ where
             Action::ResizePaneUp => self.resize_pane(session, SplitDir::Vertical, -RESIZE_STEP),
             Action::ResizePaneDown => self.resize_pane(session, SplitDir::Vertical, RESIZE_STEP),
             Action::ZoomPane => self.zoom_pane(session),
+            Action::NextLayout => self.next_layout(session),
             Action::RenameWindow => {
                 self.daemon
                     .open_prompt(client_id, session, crate::daemon::PromptTarget::Window);
@@ -677,6 +678,30 @@ where
             })
             .unwrap_or(false);
         if toggled {
+            if let Some(size) = self.daemon.server.effective_size(session) {
+                self.daemon.resize_session(session, size);
+            }
+        }
+    }
+
+    /// Cycle the active window to the next preset layout (tmux next-layout,
+    /// prefix Space) and re-fit the PTYs to the new pane rectangles.
+    fn next_layout(&mut self, session: SessionId) {
+        let applied = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let wid = s.active_window();
+                if let Some(w) = s.window_mut(wid) {
+                    w.next_layout();
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if applied {
             if let Some(size) = self.daemon.server.effective_size(session) {
                 self.daemon.resize_session(session, size);
             }

@@ -781,6 +781,38 @@ fn resize_pane_keeps_session_usable() {
     assert!(ok, "session still works after resize-pane; got:\n{vt}");
 }
 
+#[test]
+fn next_layout_rearranges_and_keeps_session_usable() {
+    // prefix Space cycles preset layouts. With 3 panes, cycling to even-vertical
+    // (stacked) produces horizontal dividers; the session stays usable after.
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "layout");
+    // Two splits -> three panes (mix of borders present).
+    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.collect_text(Duration::from_secs(5), "\u{2502}");
+    c.send(&ClientMsg::Input(vec![0x02, b'-']));
+    c.drain(Duration::from_secs(1));
+
+    // prefix Space -> even-horizontal (all side by side): vertical dividers '│'.
+    c.send(&ClientMsg::Input(vec![0x02, b' ']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (h, vt1) = c.collect_text(Duration::from_secs(3), "\u{2502}");
+    assert!(h, "even-horizontal should show vertical dividers; got:\n{vt1}");
+
+    // prefix Space again -> even-vertical (all stacked): horizontal dividers '─'.
+    c.send(&ClientMsg::Input(vec![0x02, b' ']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
+    let (v, vt2) = c.collect_text(Duration::from_secs(3), "\u{2500}");
+    assert!(v, "even-vertical should show horizontal dividers; got:\n{vt2}");
+
+    // The shell is still alive and rendering after the rearrangements.
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo LAYOUT_OK\r\n".to_vec(),
+    }));
+    let (ok, vt3) = c.collect_text(Duration::from_secs(8), "LAYOUT_OK");
+    assert!(ok, "session still works after next-layout; got:\n{vt3}");
+}
+
 // ===========================================================================
 // 5. Configuration
 // ===========================================================================

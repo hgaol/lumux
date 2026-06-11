@@ -65,6 +65,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `;` | last (previously-active) pane |
 | `H` `J` `K` `L` | resize the active pane (left/down/up/right) |
 | `z` | zoom / unzoom the active pane |
+| `Space` | cycle preset layouts (even-horizontal/vertical, main, tiled) |
 | `,` | rename the current window |
 | `$` | rename the current session |
 | `x` | kill the active pane |
