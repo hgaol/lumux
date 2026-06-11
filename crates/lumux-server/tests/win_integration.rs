@@ -527,6 +527,67 @@ fn next_prev_window_navigation() {
 }
 
 #[test]
+fn last_window_toggles_back() {
+    // prefix l jumps to the previously-active window. With base_index 0 the two
+    // windows render "0:0" and "1:" (new window, blank name); the active one is
+    // marked '*'. Create window 1 (active), then prefix l -> window 0 active.
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "lastw");
+    c.send(&ClientMsg::Input(vec![0x02, b'c'])); // new window -> window 1 active
+    c.drain(Duration::from_secs(1));
+    c.send(&ClientMsg::Input(vec![0x02, b'l'])); // last-window -> back to window 0
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let vt = c.drain(Duration::from_secs(2));
+    assert!(
+        vt.contains("0:0*"),
+        "prefix l should re-activate the previous window (0); got:\n{vt}"
+    );
+}
+
+#[test]
+fn kill_window_removes_it_from_the_list() {
+    // prefix & kills the active window. Start with 3 windows (0,1,2); window 2 is
+    // active. Killing it should leave windows 0 and 1, with no "2:" entry.
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "killw");
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.drain(Duration::from_secs(1));
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.drain(Duration::from_secs(1));
+    // Confirm 3 windows first.
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let before = c.drain(Duration::from_secs(1));
+    assert!(
+        before.contains("2:"),
+        "should have window 2 before kill; got:\n{before}"
+    );
+    // Ctrl-b & kills the active window (2).
+    c.send(&ClientMsg::Input(vec![0x02, b'&']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
+    let after = c.drain(Duration::from_secs(2));
+    assert!(
+        after.contains("0:") && after.contains("1:") && !after.contains("2:"),
+        "after kill-window only windows 0 and 1 remain; got:\n{after}"
+    );
+}
+
+#[test]
+fn kill_last_window_via_command_closes_session() {
+    // The CLI `kill-window` command on a single-window session closes it (the
+    // session has no other windows), detaching the client.
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "onlywin");
+    c.send(&ClientMsg::Command(Command::KillWindow));
+    let (closed, _) = c.wait_for(Duration::from_secs(5), |m| {
+        matches!(
+            m,
+            ServerMsg::Event(Event::SessionClosed) | ServerMsg::Detached
+        )
+    });
+    assert!(closed, "killing the only window must close the session");
+}
+
+#[test]
 fn select_window_respects_base_index() {
     // Regression: with base_index = 1 the status bar numbers windows 1,2,…, but
     // pressing the digit indexed the window list directly (0-based), so "1"

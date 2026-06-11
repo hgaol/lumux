@@ -616,6 +616,28 @@ impl<S: PtySystem> Daemon<S> {
         self.server.kill_pane(session, pane)
     }
 
+    /// Kill the active window of `session` (tmux `kill-window`): drop all its
+    /// panes' live PTYs and remove the window from the model. Returns the closed
+    /// pane ids (so the event loop can drop their pane->session mappings) and the
+    /// cascade result (emptying the session closes it).
+    pub fn close_active_window(&mut self, session: SessionId) -> (Vec<PaneId>, CascadeResult) {
+        let Some(wid) = self
+            .server
+            .session(session)
+            .map(|s| s.active_window())
+        else {
+            return (Vec::new(), CascadeResult::NotFound);
+        };
+        let (panes, result) = self.server.kill_window(session, wid);
+        for pid in &panes {
+            if let Some(p) = self.panes.get_mut(pid) {
+                p.dead = true;
+            }
+            self.panes.remove(pid);
+        }
+        (panes, result)
+    }
+
     /// Render the active window of `session` for `client_id`, returning VT bytes
     /// to send (empty if nothing changed).
     pub fn render_for_client(&mut self, client_id: u64, session: SessionId) -> Option<String> {

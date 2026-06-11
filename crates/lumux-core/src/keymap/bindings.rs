@@ -16,6 +16,10 @@ pub enum Action {
     NextWindow,
     PrevWindow,
     SelectWindow(u32),
+    /// Jump to the previously-active window (tmux `last-window`, prefix `l`).
+    LastWindow,
+    /// Kill the active window and all its panes (tmux `kill-window`, prefix `&`).
+    KillWindow,
     /// Directional pane focus (tmux select-pane -L/-R/-U/-D).
     SelectPaneLeft,
     SelectPaneRight,
@@ -28,6 +32,8 @@ pub enum Action {
     ResizePaneDown,
     /// Toggle zoom on the active pane (tmux prefix z).
     ZoomPane,
+    /// Jump to the previously-active pane (tmux `last-pane`, prefix `;`).
+    LastPane,
     /// Open a prompt to rename the current window (tmux prefix ,).
     RenameWindow,
     /// Open a prompt to rename the current session (tmux prefix $).
@@ -55,6 +61,8 @@ impl Action {
             Action::NextWindow => "next window",
             Action::PrevWindow => "previous window",
             Action::SelectWindow(_) => "select window by number",
+            Action::LastWindow => "last (previous) window",
+            Action::KillWindow => "kill the active window",
             Action::SelectPaneLeft => "select pane to the left",
             Action::SelectPaneRight => "select pane to the right",
             Action::SelectPaneUp => "select pane above",
@@ -64,6 +72,7 @@ impl Action {
             Action::ResizePaneUp => "resize pane up",
             Action::ResizePaneDown => "resize pane down",
             Action::ZoomPane => "zoom/unzoom the active pane",
+            Action::LastPane => "last (previous) pane",
             Action::RenameWindow => "rename the current window",
             Action::RenameSession => "rename the current session",
             Action::Detach => "detach (session keeps running)",
@@ -104,6 +113,9 @@ impl Bindings {
         table.insert(Key::char('c'), Action::NewWindow);
         table.insert(Key::char('n'), Action::NextWindow);
         table.insert(Key::char('p'), Action::PrevWindow);
+        table.insert(Key::char('l'), Action::LastWindow);
+        table.insert(Key::char(';'), Action::LastPane);
+        table.insert(Key::char('&'), Action::KillWindow);
         table.insert(Key::char('d'), Action::Detach);
         table.insert(Key::char('['), Action::EnterCopyMode);
         table.insert(Key::char('x'), Action::KillPane);

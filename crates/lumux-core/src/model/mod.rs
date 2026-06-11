@@ -38,6 +38,9 @@ pub struct Window {
     pub layout: PaneNode,
     panes: BTreeMap<PaneId, Pane>,
     active_pane: PaneId,
+    /// The previously-active pane, for tmux's `last-pane` (prefix `;`). Updated
+    /// whenever focus moves to a different pane.
+    last_pane: Option<PaneId>,
     /// When `Some`, the active pane is zoomed: the renderer shows only this pane
     /// fullscreen (tmux prefix z). Cleared on toggle, on focus change, and when
     /// the zoomed pane goes away.
@@ -56,12 +59,36 @@ impl Window {
             layout,
             panes,
             active_pane,
+            last_pane: None,
             zoomed: None,
         }
     }
 
     pub fn active_pane(&self) -> PaneId {
         self.active_pane
+    }
+
+    /// Set the active pane, remembering the prior one for `last-pane`. Changing
+    /// focus always unzooms (tmux behavior). No-op bookkeeping if it's the same
+    /// pane. Use this for every focus change so `last_pane` stays correct.
+    fn set_active_pane(&mut self, id: PaneId) {
+        if id != self.active_pane {
+            self.last_pane = Some(self.active_pane);
+            self.active_pane = id;
+            self.zoomed = None;
+        }
+    }
+
+    /// Focus the previously-active pane (tmux `last-pane`, prefix `;`). No-op if
+    /// there is no remembered pane or it has since closed.
+    pub fn focus_last_pane(&mut self) -> bool {
+        if let Some(prev) = self.last_pane {
+            if self.panes.contains_key(&prev) {
+                self.set_active_pane(prev);
+                return true;
+            }
+        }
+        false
     }
 
     /// The zoomed pane, if any (tmux prefix z). The renderer shows only this pane.
@@ -103,10 +130,10 @@ impl Window {
     /// active (tmux behavior).
     fn split(&mut self, new: Pane, dir: SplitDir) {
         let target = self.active_pane;
-        if self.layout.split_leaf(target, new.id, dir) {
-            self.active_pane = new.id;
-            self.panes.insert(new.id, new);
-            self.zoomed = None; // a new split unzooms (tmux behavior)
+        let new_id = new.id;
+        if self.layout.split_leaf(target, new_id, dir) {
+            self.panes.insert(new_id, new);
+            self.set_active_pane(new_id);
         }
     }
 
@@ -116,6 +143,10 @@ impl Window {
         // Removing the zoomed pane (or collapsing the layout) clears zoom.
         if self.zoomed == Some(id) {
             self.zoomed = None;
+        }
+        // A removed pane can't be the "last" pane to jump back to.
+        if self.last_pane == Some(id) {
+            self.last_pane = None;
         }
         match self.layout.remove_pane(id) {
             Removed::NotFound => false,
@@ -139,8 +170,7 @@ impl Window {
     pub fn focus_next_pane(&mut self) {
         let ids = self.layout.pane_ids();
         if let Some(pos) = ids.iter().position(|&i| i == self.active_pane) {
-            self.active_pane = ids[(pos + 1) % ids.len()];
-            self.zoomed = None;
+            self.set_active_pane(ids[(pos + 1) % ids.len()]);
         }
     }
 
@@ -153,15 +183,13 @@ impl Window {
     ) {
         let rects = crate::layout::compute(&self.layout, viewport);
         if let Some(next) = crate::layout::neighbor(&rects, self.active_pane, dir) {
-            self.active_pane = next;
-            self.zoomed = None;
+            self.set_active_pane(next);
         }
     }
 
     pub fn focus_pane(&mut self, id: PaneId) -> bool {
         if self.panes.contains_key(&id) {
-            self.active_pane = id;
-            self.zoomed = None;
+            self.set_active_pane(id);
             true
         } else {
             false
@@ -184,6 +212,8 @@ pub struct Session {
     pub name: String,
     windows: Vec<Window>,
     active_window: WindowId,
+    /// The previously-active window, for tmux's `last-window` (prefix `l`).
+    last_window: Option<WindowId>,
 }
 
 impl Session {
@@ -194,11 +224,34 @@ impl Session {
             name,
             windows: vec![first_window],
             active_window,
+            last_window: None,
         }
     }
 
     pub fn active_window(&self) -> WindowId {
         self.active_window
+    }
+
+    /// Set the active window, remembering the prior one for `last-window`. No-op
+    /// bookkeeping when it's already active. All window-focus changes go through
+    /// here so `last_window` stays correct.
+    fn set_active_window(&mut self, id: WindowId) {
+        if id != self.active_window {
+            self.last_window = Some(self.active_window);
+            self.active_window = id;
+        }
+    }
+
+    /// Focus the previously-active window (tmux `last-window`, prefix `l`). No-op
+    /// if there is no remembered window or it has since closed.
+    pub fn focus_last_window(&mut self) -> bool {
+        if let Some(prev) = self.last_window {
+            if self.windows.iter().any(|w| w.id == prev) {
+                self.set_active_window(prev);
+                return true;
+            }
+        }
+        false
     }
 
     pub fn window_ids(&self) -> Vec<WindowId> {
@@ -223,8 +276,9 @@ impl Session {
     }
 
     fn add_window(&mut self, w: Window) {
-        self.active_window = w.id;
+        let id = w.id;
         self.windows.push(w);
+        self.set_active_window(id);
     }
 
     /// Remove a window. Returns true if the session is now empty (caller closes
@@ -234,33 +288,47 @@ impl Session {
             return false;
         };
         self.windows.remove(pos);
+        // A removed window can't be the "last" window to jump back to.
+        if self.last_window == Some(id) {
+            self.last_window = None;
+        }
         if self.windows.is_empty() {
             return true;
         }
         if self.active_window == id {
-            // Activate the previous window (clamp), tmux-ish.
-            let new_idx = pos.saturating_sub(1).min(self.windows.len() - 1);
-            self.active_window = self.windows[new_idx].id;
+            // Prefer jumping to the remembered last window; else the previous
+            // window in order (clamped), tmux-ish.
+            let target = self
+                .last_window
+                .filter(|lw| self.windows.iter().any(|w| w.id == *lw))
+                .unwrap_or_else(|| {
+                    let new_idx = pos.saturating_sub(1).min(self.windows.len() - 1);
+                    self.windows[new_idx].id
+                });
+            // Set directly: the window being removed shouldn't become last_window.
+            self.active_window = target;
         }
         false
     }
 
     pub fn focus_next_window(&mut self) {
         if let Some(pos) = self.windows.iter().position(|w| w.id == self.active_window) {
-            self.active_window = self.windows[(pos + 1) % self.windows.len()].id;
+            let next = self.windows[(pos + 1) % self.windows.len()].id;
+            self.set_active_window(next);
         }
     }
 
     pub fn focus_prev_window(&mut self) {
         if let Some(pos) = self.windows.iter().position(|w| w.id == self.active_window) {
             let n = self.windows.len();
-            self.active_window = self.windows[(pos + n - 1) % n].id;
+            let prev = self.windows[(pos + n - 1) % n].id;
+            self.set_active_window(prev);
         }
     }
 
     pub fn focus_window(&mut self, id: WindowId) -> bool {
         if self.windows.iter().any(|w| w.id == id) {
-            self.active_window = id;
+            self.set_active_window(id);
             true
         } else {
             false
@@ -394,6 +462,27 @@ impl Server {
         }
         self.kill_session(sid);
         CascadeResult::SessionClosed
+    }
+
+    /// Kill an entire window (tmux `kill-window` / prefix `&`): remove it and all
+    /// its panes from `sid`. Returns the panes that were in it (so the caller can
+    /// drop their PTYs) and the cascade result — emptying the session closes it.
+    /// `WindowClosed` means other windows remain; `SessionClosed` means this was
+    /// the last window.
+    pub fn kill_window(&mut self, sid: SessionId, wid: WindowId) -> (Vec<PaneId>, CascadeResult) {
+        let Some(session) = self.sessions.get_mut(&sid) else {
+            return (Vec::new(), CascadeResult::NotFound);
+        };
+        let Some(window) = session.window(wid) else {
+            return (Vec::new(), CascadeResult::NotFound);
+        };
+        let panes = window.pane_ids();
+        let session_now_empty = session.remove_window(wid);
+        if !session_now_empty {
+            return (panes, CascadeResult::WindowClosed);
+        }
+        self.kill_session(sid);
+        (panes, CascadeResult::SessionClosed)
     }
 
     // --- client registry ---

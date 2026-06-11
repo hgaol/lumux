@@ -69,6 +69,8 @@ enum Command {
     },
     /// Create a new window in the current session.
     NewWindow,
+    /// Kill the active window of the current session.
+    KillWindow,
     /// Send literal keystrokes to the active pane.
     SendKeys {
         /// The keys to send (sent verbatim, with a trailing newline added).
@@ -138,6 +140,10 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
         }
         Some(Command::NewWindow) => {
             control::send_command(Cmd::NewWindow { name: None })?;
+            Ok(())
+        }
+        Some(Command::KillWindow) => {
+            control::send_command(Cmd::KillWindow)?;
             Ok(())
         }
         Some(Command::SendKeys { keys }) => {

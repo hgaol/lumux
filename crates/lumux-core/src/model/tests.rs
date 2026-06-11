@@ -310,3 +310,96 @@ fn invariant_holds_across_op_sequence() {
     assert!(closed, "session must close once its last pane is killed");
     assert!(srv.is_empty());
 }
+
+#[test]
+fn last_window_jumps_back_to_prior() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    srv.new_window(sid, "1", sh()); // active -> w1
+    let w1 = srv.session(sid).unwrap().active_window();
+    assert_ne!(w0, w1);
+    // prefix l -> back to w0; again -> back to w1 (toggles).
+    let s = srv.session_mut(sid).unwrap();
+    assert!(s.focus_last_window());
+    assert_eq!(s.active_window(), w0);
+    assert!(s.focus_last_window());
+    assert_eq!(s.active_window(), w1);
+}
+
+#[test]
+fn last_window_none_when_never_switched() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let s = srv.session_mut(sid).unwrap();
+    // Only one window ever; no prior to jump to.
+    assert!(!s.focus_last_window());
+}
+
+#[test]
+fn last_window_cleared_when_prior_killed() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    srv.new_window(sid, "1", sh()); // active w1, last = w0
+    // Kill w0 (the remembered last window): focus_last_window must not resurrect it.
+    srv.kill_window(sid, w0);
+    let s = srv.session_mut(sid).unwrap();
+    assert!(!s.focus_last_window(), "killed window must not be jumpable");
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn last_pane_jumps_back_to_prior() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let p0 = {
+        let s = srv.session(sid).unwrap();
+        s.window(s.active_window()).unwrap().active_pane()
+    };
+    let p1 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap(); // active -> p1
+    let s = srv.session_mut(sid).unwrap();
+    let w = s.active_window_mut();
+    assert_eq!(w.active_pane(), p1);
+    assert!(w.focus_last_pane());
+    assert_eq!(w.active_pane(), p0);
+    assert!(w.focus_last_pane());
+    assert_eq!(w.active_pane(), p1);
+}
+
+#[test]
+fn kill_window_with_siblings_keeps_session() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    srv.new_window(sid, "1", sh());
+    let (panes, result) = srv.kill_window(sid, w0);
+    assert_eq!(result, CascadeResult::WindowClosed);
+    assert_eq!(panes.len(), 1, "the killed window had one pane");
+    assert_eq!(srv.session(sid).unwrap().window_count(), 1);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn kill_last_window_closes_session() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let (_panes, result) = srv.kill_window(sid, w0);
+    assert_eq!(result, CascadeResult::SessionClosed);
+    assert!(srv.session(sid).is_none());
+    assert!(srv.is_empty());
+}
+
+#[test]
+fn kill_window_returns_all_its_panes() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    // Two panes in w0, plus a second window so the session survives.
+    srv.split_active(sid, sh(), SplitDir::Vertical);
+    srv.new_window(sid, "1", sh());
+    let (panes, result) = srv.kill_window(sid, w0);
+    assert_eq!(result, CascadeResult::WindowClosed);
+    assert_eq!(panes.len(), 2, "kill-window must report both of w0's panes");
+}

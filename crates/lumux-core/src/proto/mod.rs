@@ -120,6 +120,8 @@ pub enum Command {
     SelectWindow { index: u32 },
     NextWindow,
     PrevWindow,
+    /// Kill the active window of the client's session (tmux `kill-window`).
+    KillWindow,
     SourceFile { path: String },
     SendKeys { keys: Vec<u8> },
     /// Rename the active window of the client's session.

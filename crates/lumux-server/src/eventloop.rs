@@ -333,6 +333,9 @@ where
                 self.do_new_window(session);
                 self.render_session(session);
             }
+            Command::KillWindow => {
+                self.do_kill_window(session);
+            }
             Command::NextWindow => {
                 if let Some(s) = self.daemon.server.session_mut(session) {
                     s.focus_next_window();
@@ -450,10 +453,24 @@ where
                 }
             }
             Action::SelectWindow(n) => self.select_window_by_number(session, n),
+            Action::LastWindow => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    s.focus_last_window();
+                }
+            }
+            Action::KillWindow => self.do_kill_window(session),
             Action::SelectPaneLeft => self.select_pane(session, Direction::Left),
             Action::SelectPaneRight => self.select_pane(session, Direction::Right),
             Action::SelectPaneUp => self.select_pane(session, Direction::Up),
             Action::SelectPaneDown => self.select_pane(session, Direction::Down),
+            Action::LastPane => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    let wid = s.active_window();
+                    if let Some(w) = s.window_mut(wid) {
+                        w.focus_last_pane();
+                    }
+                }
+            }
             Action::ResizePaneLeft => self.resize_pane(session, SplitDir::Horizontal, -RESIZE_STEP),
             Action::ResizePaneRight => self.resize_pane(session, SplitDir::Horizontal, RESIZE_STEP),
             Action::ResizePaneUp => self.resize_pane(session, SplitDir::Vertical, -RESIZE_STEP),
@@ -799,6 +816,22 @@ where
             spawn_pane_reader(pid, reader, self.tx.clone());
             self.daemon.resize_session(session, size);
         }
+    }
+
+    /// Kill the active window and all its panes (tmux `kill-window`). Drops the
+    /// window's PTYs, clears their pane->session mappings, and reuses the
+    /// pane-exit cascade to notify clients / close the session when it was the
+    /// last window.
+    fn do_kill_window(&mut self, session: SessionId) {
+        let (panes, result) = self.daemon.close_active_window(session);
+        for pid in &panes {
+            self.pane_session.remove(pid);
+        }
+        // Re-fit remaining panes (a closed window changes nothing layout-wise for
+        // the now-active window, but a full repaint keeps the status/window list
+        // correct). Pass a representative pane id for the exit event payload.
+        let representative = panes.first().copied().unwrap_or(PaneId(0));
+        self.on_pane_exit(session, representative, result);
     }
 
     fn on_pane_exit(&mut self, session: SessionId, pane: PaneId, result: CascadeResult) {
