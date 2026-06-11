@@ -25,22 +25,38 @@ pub struct LivePane<W: PtyWriter> {
 /// The default shell argv when a client doesn't specify one and the config sets
 /// no `default_shell`.
 ///
-/// On Windows this must be a real Windows executable: a Unix-style `SHELL` value
-/// (e.g. `/bin/bash.exe` from an MSYS/Git-bash env, or the `/bin/sh` fallback)
-/// is not a path ConPTY/CreateProcess can resolve, so the pane would die on
-/// spawn and leave an empty window. We therefore ignore `SHELL` on Windows and
-/// use PowerShell (always present on Win10 1809+ and on PATH), falling back to
-/// `%COMSPEC%` (cmd.exe) if PowerShell somehow isn't resolvable.
+/// On Windows we always use Windows PowerShell, resolved to its absolute path
+/// under `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe`. Using the
+/// absolute path (rather than a bare `powershell.exe`) means the spawn never
+/// depends on the daemon's PATH, which a detached background process can't be
+/// assumed to have. A Unix-style `SHELL` value (e.g. `/bin/bash.exe` from
+/// Git-bash) is deliberately ignored on Windows — it isn't a path ConPTY can
+/// launch, so honoring it would leave a dead pane.
 #[cfg(windows)]
 pub fn default_shell() -> Vec<String> {
-    // PowerShell is the documented default and matches the typical Windows host.
-    // COMSPEC is the guaranteed-present cmd.exe fallback.
+    vec![powershell_path()]
+}
+
+/// Absolute path to Windows PowerShell, with sensible fallbacks. PowerShell ships
+/// in System32 on every supported Windows, so the first form effectively always
+/// exists; the bare-name fallbacks only matter in unusual stripped environments.
+#[cfg(windows)]
+fn powershell_path() -> String {
+    if let Ok(root) = std::env::var("SystemRoot") {
+        let p = std::path::Path::new(&root)
+            .join("System32")
+            .join("WindowsPowerShell")
+            .join("v1.0")
+            .join("powershell.exe");
+        if p.is_file() {
+            return p.to_string_lossy().into_owned();
+        }
+    }
+    // Fall back to PATH resolution, then COMSPEC (cmd) as a last resort.
     if which_on_path("powershell.exe") {
-        vec!["powershell.exe".to_string()]
-    } else if let Ok(comspec) = std::env::var("COMSPEC") {
-        vec![comspec]
+        "powershell.exe".to_string()
     } else {
-        vec!["cmd.exe".to_string()]
+        std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".to_string())
     }
 }
 
