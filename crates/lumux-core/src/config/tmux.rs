@@ -238,20 +238,27 @@ fn apply_bind(
 ) -> Result<(), ConfigError> {
     let mut i = 0;
     let mut root = false;
-    // Flags: -n (root table), -r (repeatable, ignored), -T <table>.
-    while i < rest.len() && rest[i].starts_with('-') {
+    // Consume only *recognized* bind flags, stopping at the first token that
+    // isn't one — that token is the key. A blind "starts_with('-')" would be
+    // wrong because tmux keys can be a dash (`bind - …`). tmux's bind flags are a
+    // fixed set: -n (root table), -r (repeatable), -a, -N <note>, -T <table>.
+    while i < rest.len() {
         match rest[i].as_str() {
-            "-n" => root = true,
+            "-n" => {
+                root = true;
+                i += 1;
+            }
+            "-r" | "-a" => i += 1,
+            "-N" => i += 2, // takes a note argument
             "-T" => {
                 // -T root means the root (no-prefix) table; other tables ignored.
                 if rest.get(i + 1).map(|s| s.as_str()) == Some("root") {
                     root = true;
                 }
-                i += 1;
+                i += 2;
             }
-            _ => {} // -r, -N, etc.: ignore
+            _ => break, // not a known flag -> this is the key
         }
-        i += 1;
     }
     let Some(key) = rest.get(i) else {
         return Ok(());
@@ -312,7 +319,9 @@ fn map_bind_command(cmd: &[String]) -> Option<String> {
         "rename-window" => "rename-window",
         "rename-session" => "rename-session",
         "resize-pane" => {
-            if has("-L") {
+            if has("-Z") {
+                "zoom-pane" // tmux `resize-pane -Z` is the zoom toggle
+            } else if has("-L") {
                 "resize-pane-left"
             } else if has("-R") {
                 "resize-pane-right"
@@ -337,9 +346,6 @@ fn map_bind_command(cmd: &[String]) -> Option<String> {
                 return None;
             }
         }
-        "resize-pane-zoom" => "zoom-pane",
-        // `bind z resize-pane -Z` (zoom toggle).
-        _ if head == "resize-pane" && has("-Z") => "zoom-pane",
         _ => return None,
     };
     Some(action.to_string())
@@ -407,6 +413,35 @@ mod tests {
                 alt: true
             }),
             Some(&Action::SelectPaneLeft)
+        );
+    }
+
+    #[test]
+    fn dash_key_and_flags_parse_correctly() {
+        use crate::keymap::{Action, Key, KeyCode};
+        // Regression: a key that looks like a flag (`-`) must not be consumed as
+        // one. `bind - split-window -v` binds the literal minus key.
+        let c = Config::from_tmux("bind - split-window -v").unwrap();
+        let b = c.to_bindings().unwrap();
+        assert_eq!(b.lookup(&Key::char('-')), Some(&Action::SplitVertical));
+
+        // Real bind flags are still consumed: -r (repeat) and -N <note> before
+        // the key; -n routes to the root table. Bind zoom to a NON-default key
+        // ('g') so the assertion proves the `-Z` mapping, not the default `z`.
+        let c = Config::from_tmux(
+            "bind -r H resize-pane -L\nbind -N \"note here\" g resize-pane -Z\nbind -n M-x kill-pane",
+        )
+        .unwrap();
+        let b = c.to_bindings().unwrap();
+        assert_eq!(b.lookup(&Key::char('H')), Some(&Action::ResizePaneLeft));
+        assert_eq!(b.lookup(&Key::char('g')), Some(&Action::ZoomPane));
+        assert_eq!(
+            b.lookup_root(&Key {
+                code: KeyCode::Char('x'),
+                ctrl: false,
+                alt: true
+            }),
+            Some(&Action::KillPane)
         );
     }
 
