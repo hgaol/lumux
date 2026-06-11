@@ -88,6 +88,22 @@ impl Screen {
         self.write_str(0, y, text, &attrs);
     }
 
+    /// Like [`status_line`] but the reverse-video highlight spans only the first
+    /// `width` columns (the rest of the row is left untouched). Used to highlight
+    /// a selected row in a side-by-side list without painting over a neighboring
+    /// pane/preview column.
+    pub fn status_line_width(&mut self, y: usize, text: &str, width: usize) {
+        if y >= self.height {
+            return;
+        }
+        let mut attrs = CellAttributes::default();
+        attrs.set_reverse(true);
+        for x in 0..width.min(self.width) {
+            self.set_cell(x, y, Cell::new(' ', attrs.clone()));
+        }
+        self.write_str(0, y, text, &attrs);
+    }
+
     /// Blit a pane's visible cells into the rectangle at (ox,oy) of size
     /// (cols,rows). Rows/cols beyond the source are left blank.
     pub fn blit_cells(
@@ -114,6 +130,27 @@ impl Screen {
     pub fn vline(&mut self, x: usize, y0: usize, y1: usize, attrs: &CellAttributes) {
         for y in y0..y1 {
             self.set_cell(x, y, Cell::new('│', attrs.clone()));
+        }
+    }
+
+    /// Blit the top-left `cols` x `rows` cells of a [`Grid`] into the rectangle at
+    /// (ox,oy), clipped to that size — used to preview another session's pane in
+    /// the session switcher. Keeps grid/cell types inside the core crate so
+    /// callers (the daemon) don't need to depend on termwiz.
+    pub fn blit_grid(
+        &mut self,
+        ox: usize,
+        oy: usize,
+        cols: usize,
+        rows: usize,
+        grid: &crate::grid::Grid,
+    ) {
+        for (gy, row) in grid.rows().iter().take(rows).enumerate() {
+            let cells = row.cells();
+            for gx in 0..cols {
+                let cell = cells.get(gx).cloned().unwrap_or_else(Cell::blank);
+                self.set_cell(ox + gx, oy + gy, cell);
+            }
         }
     }
 

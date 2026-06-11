@@ -916,7 +916,9 @@ impl<S: PtySystem> Daemon<S> {
     }
 
     /// Render the session switcher overlay (tmux prefix s): a list of sessions
-    /// with the selected one highlighted, plus each session's window count.
+    /// on the left, with the highlighted one's active pane previewed live on the
+    /// right (tmux's choose-tree preview). The preview is a clipped, top-left
+    /// view of that session's active window's active pane.
     fn render_chooser(&mut self, client_id: u64, session: SessionId) -> Option<String> {
         use lumux_core::render::Screen;
         let size = self.server.effective_size(session)?;
@@ -924,14 +926,15 @@ impl<S: PtySystem> Daemon<S> {
         let rows = size.rows as usize;
         let mut screen = Screen::new(cols, rows);
         let sel = *self.choosing.get(&client_id)?;
+        let sids = self.server.session_ids();
 
-        screen.write_plain(
-            0,
-            0,
-            "choose a session  (Up/Down or digit, Enter selects, Esc cancels)",
-        );
+        // Left list column: about a third of the width, clamped to a sane range
+        // (but never wider than the screen, leaving room for a divider+preview).
+        let list_w = (cols / 3).clamp(20, 40).min(cols.saturating_sub(2));
         let max_y = rows.saturating_sub(1);
-        for (i, sid) in self.server.session_ids().iter().enumerate() {
+
+        screen.write_plain(0, 0, "choose a session");
+        for (i, sid) in sids.iter().enumerate() {
             let y = 2 + i;
             if y >= max_y {
                 break;
@@ -939,15 +942,37 @@ impl<S: PtySystem> Daemon<S> {
             let Some(s) = self.server.session(*sid) else {
                 continue;
             };
-            let line = format!("  {}: {} ({} windows)", i, s.name, s.window_count());
+            // Clip the label to the list column so it doesn't bleed into the
+            // preview region.
+            let mut line = format!("{}: {} ({}w)", i, s.name, s.window_count());
+            if line.chars().count() > list_w {
+                line = line.chars().take(list_w).collect();
+            }
             if i == sel {
-                // Highlight the selected row across the full width.
-                screen.status_line(y, &line);
+                screen.status_line_width(y, &line, list_w);
             } else {
                 screen.write_plain(0, y, &line);
             }
         }
-        screen.status_line(max_y, "-- SESSIONS --");
+
+        // Divider + live preview of the highlighted session (if there's room).
+        let div_x = list_w;
+        let preview_x = list_w + 1;
+        if preview_x < cols {
+            screen.vline(div_x, 0, max_y, &Default::default());
+
+            if let Some(&preview_sid) = sids.get(sel) {
+                if let Some(pid) = self.active_pane(preview_sid) {
+                    if let Some(p) = self.panes.get(&pid) {
+                        let pw = cols - preview_x;
+                        let ph = max_y; // leave the bottom row for the mode line
+                        screen.blit_grid(preview_x, 0, pw, ph, &p.grid);
+                    }
+                }
+            }
+        }
+
+        screen.status_line(max_y, "-- SESSIONS --  Up/Down or digit, Enter selects, Esc cancels");
         screen.set_cursor(None);
 
         let renderer = self.renderers.get_mut(&client_id)?;

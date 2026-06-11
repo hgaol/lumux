@@ -944,6 +944,30 @@ fn prefix_s_opens_session_chooser() {
 }
 
 #[test]
+fn session_chooser_previews_highlighted_session() {
+    // The chooser shows a live preview of the highlighted session's active pane
+    // (tmux choose-tree). Put a unique marker on a session's screen, then open
+    // the chooser highlighting it and confirm the marker shows in the preview,
+    // alongside the vertical divider that separates list from preview.
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "prev");
+    c.send(&ClientMsg::Input(b"echo PREVIEW_MARKER_42\r\n".to_vec()));
+    c.collect_text(Duration::from_secs(8), "PREVIEW_MARKER_42");
+    // Open the chooser (only one session; it is highlighted by default).
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (saw, vt) = c.collect_text(Duration::from_secs(3), "PREVIEW_MARKER_42");
+    assert!(
+        saw,
+        "chooser should preview the highlighted session's pane; got:\n{vt}"
+    );
+    assert!(
+        vt.contains('\u{2502}'),
+        "chooser should draw a vertical divider between list and preview; got:\n{vt}"
+    );
+}
+
+#[test]
 fn rename_window_via_prompt_updates_status() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "rn");
