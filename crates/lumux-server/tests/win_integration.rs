@@ -245,6 +245,32 @@ fn default_shell_session_spawns_a_working_windows_shell() {
 }
 
 #[test]
+fn tmux_config_default_shell_is_used() {
+    // A tmux-syntax config with `set -g default-shell` must drive the shell that
+    // a shell:None session spawns. Use cmd.exe and confirm a command runs in it.
+    let cfg = lumux_core::config::Config::from_tmux("set -g default-shell cmd.exe")
+        .expect("tmux config parses");
+    assert_eq!(
+        cfg.shell_argv(None),
+        Some(vec!["cmd.exe".to_string()]),
+        "default-shell should resolve to cmd.exe"
+    );
+    let path = start_daemon_with_config(cfg);
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("tmuxsh".into()),
+        shell: None, // use the daemon's configured default
+        size: size(),
+    });
+    assert!(c.wait_attached(), "session with configured default shell attaches");
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo TMUX_DEFAULT_SHELL_OK\r\n".to_vec(),
+    }));
+    let (ok, vt) = c.collect_text(Duration::from_secs(12), "TMUX_DEFAULT_SHELL_OK");
+    assert!(ok, "configured tmux default-shell must run the command; got:\n{vt}");
+}
+
+#[test]
 fn daemon_survives_idle_ticks_before_first_client() {
     // Regression: the periodic exit-poll Tick must NOT make a freshly-bound
     // daemon self-terminate before any client connects. Wait well past several

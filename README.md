@@ -80,13 +80,53 @@ move; `u` / `d` half-page scroll; `Space` or `v` starts a selection; `Enter` or
 
 ## Configuration
 
-TOML at `%APPDATA%\lumux\config.toml` (Windows) or
-`$XDG_CONFIG_HOME/lumux/config.toml` (Linux/macOS); override with `$LUMUX_CONFIG`.
-A complete tmux-parity example is in [`examples/config.toml`](examples/config.toml).
+lumux reads its config from the first of these that exists (override the whole
+search with `$LUMUX_CONFIG`):
 
-In TOML, all top-level keys must come **before** any `[table]` header — keep the
-scalar settings above the `[bindings]` / `[root_bindings]` / `[[shells]]`
-sections.
+| Path | Format |
+|------|--------|
+| `%APPDATA%\lumux\lumux.conf` (Windows) / `$XDG_CONFIG_HOME/lumux/lumux.conf` | **tmux syntax** |
+| `%APPDATA%\lumux\config.toml` / `$XDG_CONFIG_HOME/lumux/config.toml` | TOML (native) |
+| `~/.lumux.conf` | **tmux syntax** |
+
+The format is chosen by extension: `.toml` is parsed as TOML, anything else as
+tmux config syntax.
+
+### Bring your `~/.tmux.conf`
+
+You can drop your existing tmux config in as `~/.lumux.conf` (or
+`%APPDATA%\lumux\lumux.conf`) and it works — no translation needed:
+
+```sh
+cp ~/.tmux.conf ~/.lumux.conf
+```
+
+lumux reads the directives it supports (`prefix`, `mouse`, `history-limit`,
+`base-index`, `default-shell`/`default-command`, `status-justify`,
+`status-left`/`-right`, `status-style`, and `bind` / `bind -n` for the actions
+it has) and **ignores everything else with a warning**, so a full real-world
+tmux.conf loads cleanly. A ready example is in
+[`examples/lumux.conf`](examples/lumux.conf).
+
+### Native TOML
+
+The TOML format exposes the same settings; a complete tmux-parity example is in
+[`examples/config.toml`](examples/config.toml). In TOML, all top-level keys must
+come **before** any `[table]` header — keep the scalar settings above the
+`[bindings]` / `[root_bindings]` / `[[shells]]` sections.
+
+### Default shell
+
+Set which shell new sessions/windows spawn — in tmux syntax:
+
+```
+set -g default-shell powershell.exe
+# or with arguments:
+set -g default-command "powershell.exe -NoLogo"
+```
+
+or in TOML via a named profile (`default_shell` + `[[shells]]`, see the example).
+On Windows, with nothing configured, lumux defaults to PowerShell.
 
 ```toml
 prefix = "C-a"            # change the prefix to Ctrl-a

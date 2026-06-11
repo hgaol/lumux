@@ -379,7 +379,7 @@ where
             }
             Command::SourceFile { path } => {
                 let reply = match std::fs::read_to_string(&path) {
-                    Ok(text) => match lumux_core::config::Config::from_toml(&text) {
+                    Ok(text) => match crate::parse_config(std::path::Path::new(&path), &text) {
                         Ok(cfg) => {
                             self.daemon.set_config(cfg);
                             self.render_session(session);
@@ -667,17 +667,24 @@ where
     }
 
     /// Re-source the daemon's config file (tmux prefix r) and flash a message.
+    /// Reloads from the first existing config candidate, format chosen by
+    /// extension (so a tmux-syntax lumux.conf reloads as tmux).
     fn reload_config(&mut self, client_id: u64, session: SessionId) {
-        let path = crate::config_path();
-        let msg = match std::fs::read_to_string(&path) {
-            Ok(text) => match lumux_core::config::Config::from_toml(&text) {
-                Ok(cfg) => {
-                    self.daemon.set_config(cfg);
-                    "lumux configuration reloaded".to_string()
-                }
-                Err(e) => format!("config error: {e}"),
+        let found = crate::config_candidates()
+            .into_iter()
+            .find(|p| p.exists());
+        let msg = match found {
+            Some(path) => match std::fs::read_to_string(&path) {
+                Ok(text) => match crate::parse_config(&path, &text) {
+                    Ok(cfg) => {
+                        self.daemon.set_config(cfg);
+                        "lumux configuration reloaded".to_string()
+                    }
+                    Err(e) => format!("config error: {e}"),
+                },
+                Err(_) => format!("no config at {}", path.display()),
             },
-            Err(_) => format!("no config at {}", path.display()),
+            None => "no config file found".to_string(),
         };
         self.daemon.flash_message(client_id, msg);
         self.render_session(session);

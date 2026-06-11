@@ -1,5 +1,6 @@
 //! Configuration: prefix key, key bindings, shell profiles, status bar, and
-//! scrollback, loaded from TOML.
+//! scrollback. Loaded from TOML (the native format) or from tmux config syntax
+//! (see [`tmux`]), so an existing `~/.tmux.conf` can be used directly.
 //!
 //! The config is plain data that the daemon applies to its keymap and pane
 //! spawning. It is hot-reloadable: `lumux source-file` re-parses and the daemon
@@ -9,6 +10,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::keymap::{Action, Bindings, Key, KeyCode};
+
+pub mod tmux;
+
+pub use tmux::TmuxParse;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
