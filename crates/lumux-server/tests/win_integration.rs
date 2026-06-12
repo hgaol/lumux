@@ -85,16 +85,13 @@ impl TestClient {
         let _ = reader.read_frame().expect("read daemon hello");
 
         let (tx, rx) = channel();
-        let reader = std::thread::spawn(move || loop {
-            match reader.read_frame() {
-                Ok(Some(bytes)) => {
-                    if let Ok(msg) = lumux_core::proto::decode::<ServerMsg>(&bytes) {
-                        if tx.send(msg).is_err() {
-                            break;
-                        }
+        let reader = std::thread::spawn(move || {
+            while let Ok(Some(bytes)) = reader.read_frame() {
+                if let Ok(msg) = lumux_core::proto::decode::<ServerMsg>(&bytes) {
+                    if tx.send(msg).is_err() {
+                        break;
                     }
                 }
-                _ => break,
             }
         });
 
@@ -614,8 +611,10 @@ fn select_window_respects_base_index() {
     // pressing the digit indexed the window list directly (0-based), so "1"
     // selected the SECOND window and the first was unreachable. The selection
     // must now map the displayed number back through base_index.
-    let mut cfg = lumux_core::config::Config::default();
-    cfg.base_index = 1;
+    let cfg = lumux_core::config::Config {
+        base_index: 1,
+        ..Default::default()
+    };
     let path = start_daemon_with_config(cfg);
     let mut c = new_cmd_session(&path, "win1");
     // Create a second window (now numbered 2); it becomes active.
@@ -691,8 +690,10 @@ fn mouse_enabled_sends_reporting_and_acts_on_events() {
     // reporting (DECSET 1002/1003/1006) on attach, and (2) act on incoming SGR
     // mouse sequences. A scroll-up over a pane enters copy-mode (the only
     // mouse action with an observable, shell-independent result).
-    let mut cfg = lumux_core::config::Config::default();
-    cfg.mouse = true;
+    let cfg = lumux_core::config::Config {
+        mouse: true,
+        ..Default::default()
+    };
     let path = start_daemon_with_config(cfg);
     let mut c = new_cmd_session(&path, "mouse");
 
@@ -730,11 +731,13 @@ fn mouse_click_status_bar_switches_window() {
     // Clicking a window entry in the status bar switches to that window (tmux).
     // Use a left-justified bar with an empty left segment so the window list
     // starts at column 0 and the click column is deterministic.
-    let mut cfg = lumux_core::config::Config::default();
-    cfg.mouse = true;
-    cfg.status_justify = "left".into();
-    cfg.status_left = String::new();
-    cfg.status_format = String::new(); // left segment empty -> centre at col 0
+    let cfg = lumux_core::config::Config {
+        mouse: true,
+        status_justify: "left".into(),
+        status_left: String::new(),
+        status_format: String::new(), // left segment empty -> centre at col 0
+        ..Default::default()
+    };
     let path = start_daemon_with_config(cfg);
     let mut c = new_cmd_session(&path, "wclick");
     // Create a second window (index 1); it becomes active. Status row (default
@@ -868,8 +871,10 @@ fn status_bar_clock_shows_real_local_time() {
     // Regression: now_parts() returned zeros on Windows, so %H:%M rendered as
     // "00:00". With GetLocalTime wired, the status bar must show the real local
     // hour. Configure a clock in status_left and assert the current hour appears.
-    let mut cfg = lumux_core::config::Config::default();
-    cfg.status_left = "T%H:%M".to_string();
+    let cfg = lumux_core::config::Config {
+        status_left: "T%H:%M".to_string(),
+        ..Default::default()
+    };
     let path = start_daemon_with_config(cfg);
     let mut c = new_cmd_session(&path, "clock");
     // Force a full repaint so the whole status row is sent.
