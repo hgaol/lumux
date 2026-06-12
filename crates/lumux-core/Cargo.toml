@@ -3,6 +3,8 @@ name = "lumux-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Core session/window/pane model and server-side terminal grid for lumux."
 
 [dependencies]
 serde = { workspace = true }

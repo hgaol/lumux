@@ -3,6 +3,8 @@ name = "lumux-backend-unix"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Unix PTY + Unix-socket backend for lumux."
 
 [dependencies]
 lumux-core = { workspace = true }

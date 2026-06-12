@@ -3,6 +3,8 @@ name = "lumux-backend-win"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Windows ConPTY + named-pipe backend for lumux."
 
 [dependencies]
 lumux-core = { workspace = true }

@@ -3,6 +3,8 @@ name = "lumux-server"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+description = "Daemon for lumux: owns the PTYs and session tree and renders VT to clients."
 
 [lib]
 name = "lumux_server"

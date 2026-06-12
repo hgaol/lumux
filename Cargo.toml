@@ -12,13 +12,13 @@ members = [
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-repository = "local"
+repository = "https://github.com/hgaol/lumux"
 
 [workspace.dependencies]
-lumux-core = { path = "crates/lumux-core" }
-lumux-server = { path = "crates/lumux-server" }
-lumux-backend-unix = { path = "crates/lumux-backend-unix" }
-lumux-backend-win = { path = "crates/lumux-backend-win" }
+lumux-core = { path = "crates/lumux-core", version = "0.1.0" }
+lumux-server = { path = "crates/lumux-server", version = "0.1.0" }
+lumux-backend-unix = { path = "crates/lumux-backend-unix", version = "0.1.0" }
+lumux-backend-win = { path = "crates/lumux-backend-win", version = "0.1.0" }
 
 # async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
