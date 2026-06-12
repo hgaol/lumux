@@ -1,0 +1,111 @@
+name: release
+
+# Cut a release by pushing a version tag, e.g.:
+#   git tag v0.1.0 && git push origin v0.1.0
+# Builds prebuilt binaries for each platform, attaches them (with SHA256
+# sums) to a GitHub Release. winget / scoop / brew all point at these assets.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  BIN: lumux
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-pc-windows-msvc,   os: windows-latest }
+          - { target: aarch64-apple-darwin,     os: macos-latest }
+          - { target: x86_64-apple-darwin,      os: macos-latest }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-latest }
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: build
+        run: cargo build --release --target ${{ matrix.target }} -p lumux
+
+      - name: package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          staging="${BIN}-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir "$staging"
+          cp "target/${{ matrix.target }}/release/${BIN}" "$staging/"
+          [ -f README.md ] && cp README.md "$staging/" || true
+          [ -f LICENSE ]   && cp LICENSE   "$staging/" || true
+          tar czf "$staging.tar.gz" "$staging"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$staging.tar.gz" > "$staging.tar.gz.sha256"
+          else
+            shasum -a 256 "$staging.tar.gz" > "$staging.tar.gz.sha256"
+          fi
+          echo "ASSET=$staging.tar.gz" >> "$GITHUB_ENV"
+
+      - name: package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $staging = "$env:BIN-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/${env:BIN}.exe" $staging
+          if (Test-Path README.md) { Copy-Item README.md $staging }
+          if (Test-Path LICENSE)   { Copy-Item LICENSE   $staging }
+          Compress-Archive -Path "$staging/*" -DestinationPath "$staging.zip"
+          $hash = (Get-FileHash "$staging.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $staging.zip" | Out-File -Encoding ascii "$staging.zip.sha256"
+          "ASSET=$staging.zip" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: |
+            ${{ env.ASSET }}
+            ${{ env.ASSET }}.sha256
+          if-no-files-found: error
+
+  release:
+    name: publish release
+    needs: build
+    # Only publish on a real tag push; manual runs just build artifacts.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: list artifacts
+        run: ls -R dist
+
+      - name: create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          # Starts as a draft so you can eyeball the assets before going public.
+          # Flip to false (or publish from the Releases UI) once you trust it.
+          draft: true
