@@ -998,6 +998,11 @@ fn session_chooser_previews_all_windows() {
         vt.contains("WIN_ZERO_MARK") && vt.contains("WIN_ONE_MARK"),
         "preview should show content from both windows; got:\n{vt}"
     );
+    // A horizontal separator delimits the stacked window previews.
+    assert!(
+        vt.contains('\u{2500}'),
+        "stacked window previews should be separated by a horizontal rule; got:\n{vt}"
+    );
 }
 
 #[test]

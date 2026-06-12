@@ -1009,17 +1009,26 @@ impl<S: PtySystem> Daemon<S> {
             let top = i * slot_h;
             // Last slot soaks up any remainder.
             let this_h = if i + 1 == shown { h - top } else { slot_h };
+            let is_last = i + 1 == shown;
             let Some(win) = s.window(*wid) else {
                 continue;
             };
             let marker = if *wid == active_wid { "*" } else { "" };
             let header = format!("{}:{}{marker}", i as u32 + base_idx, win.name);
             screen.label_segment(x, top, w, &header);
-            // Content: the window's active pane, clipped under the header.
-            if this_h > 1 {
+            // Reserve the slot's bottom row for a separator between windows (not
+            // after the last one), so each preview is visually delimited.
+            let sep_rows = if is_last { 0 } else { 1 };
+            let content_h = this_h.saturating_sub(1 + sep_rows); // minus header (+sep)
+            if content_h > 0 {
                 if let Some(p) = self.panes.get(&win.active_pane()) {
-                    screen.blit_grid(x, top + 1, w, this_h - 1, &p.grid);
+                    screen.blit_grid(x, top + 1, w, content_h, &p.grid);
                 }
+            }
+            if sep_rows == 1 {
+                // Thin horizontal rule across the preview column at the slot's end.
+                let sep_y = top + this_h - 1;
+                screen.hline(sep_y, x, x + w, &Default::default());
             }
         }
         // If there are more windows than slots, note the overflow on the last row.
