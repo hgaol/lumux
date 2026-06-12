@@ -916,9 +916,10 @@ impl<S: PtySystem> Daemon<S> {
     }
 
     /// Render the session switcher overlay (tmux prefix s): a list of sessions
-    /// on the left, with the highlighted one's active pane previewed live on the
-    /// right (tmux's choose-tree preview). The preview is a clipped, top-left
-    /// view of that session's active window's active pane.
+    /// on the left, and on the right a live preview of *every window* in the
+    /// highlighted session (tmux's choose-tree). Each window gets a header
+    /// (`index:name`, the active one marked `*`) and a clipped live view of its
+    /// active pane, stacked top to bottom and sharing the preview height.
     fn render_chooser(&mut self, client_id: u64, session: SessionId) -> Option<String> {
         use lumux_core::render::Screen;
         let size = self.server.effective_size(session)?;
@@ -955,21 +956,14 @@ impl<S: PtySystem> Daemon<S> {
             }
         }
 
-        // Divider + live preview of the highlighted session (if there's room).
+        // Divider + live preview of every window in the highlighted session.
         let div_x = list_w;
         let preview_x = list_w + 1;
         if preview_x < cols {
             screen.vline(div_x, 0, max_y, &Default::default());
-
-            if let Some(&preview_sid) = sids.get(sel) {
-                if let Some(pid) = self.active_pane(preview_sid) {
-                    if let Some(p) = self.panes.get(&pid) {
-                        let pw = cols - preview_x;
-                        let ph = max_y; // leave the bottom row for the mode line
-                        screen.blit_grid(preview_x, 0, pw, ph, &p.grid);
-                    }
-                }
-            }
+            let pw = cols - preview_x;
+            let ph = max_y; // preview area height (bottom row is the mode line)
+            self.render_session_preview(&mut screen, sids.get(sel).copied(), preview_x, pw, ph);
         }
 
         screen.status_line(max_y, "-- SESSIONS --  Up/Down or digit, Enter selects, Esc cancels");
@@ -977,6 +971,62 @@ impl<S: PtySystem> Daemon<S> {
 
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
+    }
+
+    /// Paint a stacked, labeled preview of every window in `preview_sid` into the
+    /// region at column `x`, width `w`, height `h`. Each window gets a one-row
+    /// header (`index:name`, active marked `*`) and the remaining rows show a
+    /// clipped live view of that window's active pane. The height is split as
+    /// evenly as possible across the windows.
+    fn render_session_preview(
+        &self,
+        screen: &mut lumux_core::render::Screen,
+        preview_sid: Option<SessionId>,
+        x: usize,
+        w: usize,
+        h: usize,
+    ) {
+        let Some(sid) = preview_sid else {
+            return;
+        };
+        let Some(s) = self.server.session(sid) else {
+            return;
+        };
+        let wids = s.window_ids();
+        if wids.is_empty() || h == 0 {
+            return;
+        }
+        let active_wid = s.active_window();
+        // Share the height across windows; each cell needs at least a header
+        // (1 row) plus ideally some content. Cap the number shown so each gets
+        // a usable slice.
+        let max_shown = (h / 2).max(1); // >=2 rows per window when possible
+        let shown = wids.len().min(max_shown);
+        let slot_h = h / shown;
+        let base_idx = self.config.base_index;
+
+        for (i, wid) in wids.iter().take(shown).enumerate() {
+            let top = i * slot_h;
+            // Last slot soaks up any remainder.
+            let this_h = if i + 1 == shown { h - top } else { slot_h };
+            let Some(win) = s.window(*wid) else {
+                continue;
+            };
+            let marker = if *wid == active_wid { "*" } else { "" };
+            let header = format!("{}:{}{marker}", i as u32 + base_idx, win.name);
+            screen.label_segment(x, top, w, &header);
+            // Content: the window's active pane, clipped under the header.
+            if this_h > 1 {
+                if let Some(p) = self.panes.get(&win.active_pane()) {
+                    screen.blit_grid(x, top + 1, w, this_h - 1, &p.grid);
+                }
+            }
+        }
+        // If there are more windows than slots, note the overflow on the last row.
+        if wids.len() > shown {
+            let more = format!("  (+{} more windows)", wids.len() - shown);
+            screen.write_plain(x, h.saturating_sub(1), &more);
+        }
     }
 
     /// Apply a structural split to the active window of `session`, spawning the

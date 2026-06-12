@@ -104,6 +104,24 @@ impl Screen {
         self.write_str(0, y, text, &attrs);
     }
 
+    /// Write a reverse-video label spanning columns `[x, x+width)` of row `y`,
+    /// clipping the text to that width. Used for per-window header bars in the
+    /// session-switcher preview without painting the whole row.
+    pub fn label_segment(&mut self, x: usize, y: usize, width: usize, text: &str) {
+        if y >= self.height {
+            return;
+        }
+        let mut attrs = CellAttributes::default();
+        attrs.set_reverse(true);
+        let end = (x + width).min(self.width);
+        for cx in x..end {
+            self.set_cell(cx, y, Cell::new(' ', attrs.clone()));
+        }
+        // Clip text to the segment width.
+        let clipped: String = text.chars().take(width).collect();
+        self.write_str(x, y, &clipped, &attrs);
+    }
+
     /// Blit a pane's visible cells into the rectangle at (ox,oy) of size
     /// (cols,rows). Rows/cols beyond the source are left blank.
     pub fn blit_cells(

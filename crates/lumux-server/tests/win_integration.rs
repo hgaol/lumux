@@ -968,6 +968,39 @@ fn session_chooser_previews_highlighted_session() {
 }
 
 #[test]
+fn session_chooser_previews_all_windows() {
+    // tmux choose-tree previews every window of the highlighted session, each
+    // with a header. Create a session with two windows carrying distinct
+    // markers; the chooser preview should show both window headers and both
+    // markers.
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "multi");
+    c.send(&ClientMsg::Input(b"echo WIN_ZERO_MARK\r\n".to_vec()));
+    c.collect_text(Duration::from_secs(8), "WIN_ZERO_MARK");
+    // New window (index 1) with its own marker.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_text(Duration::from_secs(5), "C:\\"); // wait for the new shell prompt
+    c.send(&ClientMsg::Input(b"echo WIN_ONE_MARK\r\n".to_vec()));
+    c.collect_text(Duration::from_secs(8), "WIN_ONE_MARK");
+
+    // Open the chooser and force a full repaint.
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 100, rows: 30 }));
+    let vt = c.drain(Duration::from_secs(3));
+    // Both window headers appear (0:... and 1:...), with the active window (1)
+    // marked '*'.
+    assert!(
+        vt.contains("0:") && vt.contains("1:") && vt.contains('*'),
+        "preview should list both window headers with the active marker; got:\n{vt}"
+    );
+    // Both windows' content is previewed.
+    assert!(
+        vt.contains("WIN_ZERO_MARK") && vt.contains("WIN_ONE_MARK"),
+        "preview should show content from both windows; got:\n{vt}"
+    );
+}
+
+#[test]
 fn rename_window_via_prompt_updates_status() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "rn");
