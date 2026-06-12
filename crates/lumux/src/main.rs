@@ -118,7 +118,17 @@ fn main() -> anyhow::Result<()> {
 fn run(command: Option<Command>) -> anyhow::Result<()> {
     use lumux_core::proto::Command as Cmd;
     match command {
-        Some(Command::New { session, shell, .. }) => attach::attach(session, true, shell),
+        Some(Command::New { session, shell, .. }) => {
+            // Refuse to create a session from inside an existing lumux pane —
+            // nesting a multiplexer in itself is rarely intended and usually a
+            // mistake (mirrors tmux's $TMUX guard). Unset $LUMUX to force.
+            if std::env::var_os("LUMUX").is_some() {
+                anyhow::bail!(
+                    "sessions should be nested with care, unset $LUMUX to force"
+                );
+            }
+            attach::attach(session, true, shell)
+        }
         Some(Command::Attach { target }) => attach::attach(target, false, None),
         None => attach::attach(None, false, None),
         Some(Command::Ls) => {

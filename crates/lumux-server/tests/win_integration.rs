@@ -271,6 +271,27 @@ fn tmux_config_default_shell_is_used() {
 }
 
 #[test]
+fn pane_shell_sees_lumux_env_var() {
+    // Every spawned pane must have $LUMUX set so children know they're inside
+    // lumux (mirrors tmux's $TMUX), which is what the client's nesting guard
+    // checks. cmd.exe expands %LUMUX%. In the in-process test daemon LUMUX_PIPE
+    // isn't set, so lumux_pane_env falls back to LUMUX=1 — assert the expansion
+    // "LX<1>END" appears (not the unexpanded literal).
+    let path = start_daemon();
+    let mut c = new_cmd_session(&path, "envcheck");
+    // Avoid cmd redirection metachars (< >): wrap the expansion in plain letters.
+    // Unset -> cmd prints the literal "LXa%LUMUX%zEND"; set to 1 -> "LXa1zEND".
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"echo LXa%LUMUX%zEND\r\n".to_vec(),
+    }));
+    let vt = c.collect_text(Duration::from_secs(10), "LXa1zEND").1;
+    assert!(
+        vt.contains("LXa1zEND"),
+        "the pane shell must have $LUMUX set (expected LXa1zEND from %LUMUX%); got:\n{vt}"
+    );
+}
+
+#[test]
 fn daemon_survives_idle_ticks_before_first_client() {
     // Regression: the periodic exit-poll Tick must NOT make a freshly-bound
     // daemon self-terminate before any client connects. Wait well past several

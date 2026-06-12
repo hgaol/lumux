@@ -79,6 +79,21 @@ pub fn default_shell() -> Vec<String> {
     }
 }
 
+/// Environment to inject into every spawned pane shell so it knows it is running
+/// inside lumux (mirrors tmux's `$TMUX`). `LUMUX` carries the daemon's
+/// listener path (pipe/socket) when known — like tmux's `socket,pid,session` —
+/// falling back to `1`. `LUMUX_PANE` carries this pane's id. The client checks
+/// `LUMUX` before creating a new session to avoid accidental nesting.
+fn lumux_pane_env(pane: PaneId) -> Vec<(String, String)> {
+    let listener = std::env::var("LUMUX_PIPE")
+        .or_else(|_| std::env::var("LUMUX_SOCK"))
+        .unwrap_or_else(|_| "1".to_string());
+    vec![
+        ("LUMUX".to_string(), listener),
+        ("LUMUX_PANE".to_string(), pane.to_string()),
+    ]
+}
+
 /// Owns the object model plus the live panes. One per daemon.
 pub struct Daemon<S: PtySystem> {
     pub server: Server,
@@ -203,6 +218,7 @@ impl<S: PtySystem> Daemon<S> {
         let cmd = ShellCommand {
             argv: shell.to_vec(),
             cwd,
+            env: lumux_pane_env(id),
         };
         let pty = self.pty_system.spawn(&cmd, content)?;
         let (writer, reader) = pty.split()?;

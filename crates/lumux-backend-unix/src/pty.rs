@@ -107,6 +107,9 @@ impl PtySystem for UnixPtySystem {
         if let Some(cwd) = &cmd.cwd {
             builder.cwd(cwd);
         }
+        for (k, v) in &cmd.env {
+            builder.env(k, v);
+        }
 
         let child = pair
             .slave

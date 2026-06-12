@@ -33,6 +33,9 @@ pub struct ShellCommand {
     pub argv: Vec<String>,
     /// Working directory, or None for the daemon's default.
     pub cwd: Option<String>,
+    /// Extra environment variables to set on the child (e.g. `LUMUX`), so panes
+    /// know they're running inside lumux. Applied on top of the inherited env.
+    pub env: Vec<(String, String)>,
 }
 
 impl ShellCommand {
@@ -40,6 +43,7 @@ impl ShellCommand {
         Self {
             argv: argv.into_iter().map(Into::into).collect(),
             cwd: None,
+            env: Vec::new(),
         }
     }
 }
