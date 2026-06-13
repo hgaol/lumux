@@ -77,6 +77,16 @@ clean: ## Remove build artifacts and dist/
 	rm -rf $(DIST)
 
 # ---------------------------------------------------------------------------
+# Packaging — generate Homebrew / Scoop / winget manifests on demand.
+# Manifests are derived from the release version + the published GitHub Release
+# SHA256s, so they are generated into dist/ (gitignored) rather than checked in,
+# avoiding stale-hash drift. Copy each into its target repo by hand.
+# ---------------------------------------------------------------------------
+.PHONY: packaging
+packaging: ## Generate dist manifests for a release (VERSION=x.y.z, default: workspace version)
+	scripts/gen-packaging.sh $(VERSION)
+
+# ---------------------------------------------------------------------------
 # CI gate — what the pipeline runs. Includes the Windows cross-CHECK that
 # guards the Windows backend from bit-rot when building only on Linux.
 # ---------------------------------------------------------------------------
