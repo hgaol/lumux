@@ -61,8 +61,10 @@ SHA_WIN_UPPER="$(printf '%s' "$SHA_WIN" | tr 'a-f' 'A-F')"
 DESC="Like tmux, with native Windows support — lightweight, tmux-config-compatible multiplexer"
 
 # --- Homebrew --------------------------------------------------------------
-mkdir -p "$OUT/homebrew"
-cat > "$OUT/homebrew/lumux.rb" <<EOF
+# Layout mirrors the tap repo hgaol/homebrew-lumux: a Formula/ dir holding the
+# single formula, overwritten each release.
+mkdir -p "$OUT/homebrew/Formula"
+cat > "$OUT/homebrew/Formula/lumux.rb" <<EOF
 class Lumux < Formula
   desc "$DESC"
   homepage "https://github.com/$REPO"
@@ -98,8 +100,10 @@ end
 EOF
 
 # --- Scoop -----------------------------------------------------------------
-mkdir -p "$OUT/scoop"
-cat > "$OUT/scoop/lumux.json" <<EOF
+# Layout mirrors the bucket repo hgaol/scoop-lumux: a bucket/ dir holding the
+# single manifest, overwritten each release.
+mkdir -p "$OUT/scoop/bucket"
+cat > "$OUT/scoop/bucket/lumux.json" <<EOF
 {
     "version": "$VERSION",
     "description": "$DESC",
@@ -195,7 +199,7 @@ EOF
 echo "Wrote manifests under $OUT/:"
 find "$OUT" -type f | sort | sed "s|$ROOT/|  |"
 echo
-echo "Copy each into its target repo manually:"
-echo "  homebrew/lumux.rb        -> hgaol/homebrew-lumux"
-echo "  scoop/lumux.json         -> hgaol/scoop-lumux (bucket)"
-echo "  winget/manifests/...     -> fork of microsoft/winget-pkgs, then PR"
+echo "Copy each into its target repo manually (dirs mirror the repo layout):"
+echo "  homebrew/Formula/lumux.rb   -> hgaol/homebrew-lumux  (overwrite Formula/lumux.rb)"
+echo "  scoop/bucket/lumux.json     -> hgaol/scoop-lumux     (overwrite bucket/lumux.json)"
+echo "  winget/manifests/...        -> fork of microsoft/winget-pkgs, then PR (new version dir)"
