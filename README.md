@@ -1,8 +1,15 @@
-# lumux
+<div align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark.png">
+    <img src="assets/wordmark-light.png" alt="lumux" width="420">
+  </picture>
+</div>
 
-A tmux-like terminal multiplexer for the **Windows host** — sessions, windows,
-and panes with tmux-style keybindings, attachable as **plain text** over SSH or
-Microsoft tunnel from inside Windows Terminal, conhost, or any VT terminal.
+**Like tmux, but with native Windows support.** A **lightweight, open-source**
+multiplexer — sessions, windows, and panes with tmux-style keybindings — that
+runs **cross-platform** on Windows, Linux, and macOS. Drop in your existing
+`~/.tmux.conf` and attach as **plain text** over SSH or Microsoft tunnel from
+inside Windows Terminal, conhost, or any VT terminal.
 
 ## Why lumux
 

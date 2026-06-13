@@ -4,8 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "A tmux-like terminal multiplexer for the Windows host, attachable as plain text over SSH."
-keywords = ["tmux", "terminal", "multiplexer", "windows", "conpty"]
+description = "Like tmux, but with native Windows support — a lightweight, open-source, tmux-config-compatible multiplexer that runs cross-platform on Windows, Linux, and macOS."
+keywords = ["tmux", "multiplexer", "windows", "cross-platform", "lightweight"]
 categories = ["command-line-utilities"]
 
 [[bin]]
