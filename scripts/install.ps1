@@ -1,6 +1,6 @@
 # lumux installer — Windows (PowerShell).
 #
-#   irm https://hgaol.github.io/lumux/install.ps1 | iex
+#   irm https://hgaol.github.io/lumux/scripts/install.ps1 | iex
 #
 # Downloads the latest lumux release for Windows (x64) from GitHub, verifies
 # its SHA256 against the published .sha256 sidecar, and installs lumux.exe to

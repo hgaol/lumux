@@ -1,7 +1,7 @@
 #!/bin/sh
 # lumux installer — Linux & macOS.
 #
-#   curl -fsSL https://hgaol.github.io/lumux/install.sh | sh
+#   curl -fsSL https://hgaol.github.io/lumux/scripts/install.sh | sh
 #
 # Downloads the latest lumux release binary for your OS/arch from GitHub,
 # verifies its SHA256 against the published .sha256 sidecar, and installs it
