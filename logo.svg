@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="lumux">
+  <title>lumux</title>
+  <!-- rounded terminal frame -->
+  <rect x="20" y="20" width="216" height="216" rx="48" fill="#141821" stroke="#262d39" stroke-width="2.5"/>
+  <!-- L stem: tall left pane (light Rust orange, flat) -->
+  <rect x="48" y="48" width="56" height="98" rx="10" fill="#ee7e4a"/>
+  <!-- open focused pane (top-right) -->
+  <rect x="118" y="48" width="90" height="98" rx="10" fill="#202833"/>
+  <!-- terminal block cursor in the open pane (lightened Rust blue) -->
+  <rect x="150" y="80" width="24" height="36" rx="4" fill="#5b9ec2"/>
+  <!-- L foot: wide bottom pane -->
+  <rect x="48" y="160" width="160" height="48" rx="10" fill="#ee7e4a"/>
+</svg>

@@ -8,7 +8,7 @@
 <meta property="og:title" content="lumux — a tmux for the Windows host" />
 <meta property="og:description" content="Persistent sessions, windows, and panes with tmux keybindings — attach as plain text over SSH, no GUI. Windows-first, runs on Linux and macOS too." />
 <meta property="og:type" content="website" />
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='18' fill='%2316181d'/><text x='12' y='62' font-family='monospace' font-size='42' fill='%2350fa7b'>%3E_</text></svg>" />
+<link rel="icon" type="image/svg+xml" href="favicon.svg" />
 <style>
   :root {
     --bg: #0d0f14;
@@ -18,6 +18,7 @@
     --fg: #c9d1d9;
     --fg-dim: #8b949e;
     --green: #50fa7b;
+    --orange: #ee7e4a;
     --cyan: #8be9fd;
     --purple: #bd93f9;
     --yellow: #f1fa8c;
@@ -50,7 +51,9 @@
     border-bottom: 1px solid var(--border);
   }
   nav .wrap { display: flex; align-items: center; gap: 28px; height: 60px; }
-  .brand { font-family: var(--mono); font-weight: 700; font-size: 1.15rem; color: var(--fg); }
+  .brand { font-family: var(--mono); font-weight: 700; font-size: 1.15rem; color: var(--fg); display: inline-flex; align-items: center; gap: 9px; }
+  .brand:hover { text-decoration: none; }
+  .brand-logo { display: block; border-radius: 7px; }
   .brand .caret { color: var(--green); }
   nav .links { margin-left: auto; display: flex; gap: 24px; font-size: 0.93rem; }
   nav .links a { color: var(--fg-dim); }
@@ -59,6 +62,7 @@
   /* ---- hero ---- */
   .hero { padding: 68px 0 40px; }
   .hero-top { text-align: center; max-width: 780px; margin: 0 auto; }
+  .hero-logo { display: block; margin: 0 auto 22px; border-radius: 20px; box-shadow: 0 18px 50px -18px rgba(238,126,74,0.45); }
   .hero-top .cta { justify-content: center; }
   .hero-top .lede { margin-left: auto; margin-right: auto; }
   .badge {
@@ -222,6 +226,50 @@
 
   .note { font-size: 0.82rem; color: var(--fg-dim); font-style: italic; margin-top: 10px; }
 
+  /* ---- install grid ---- */
+  .install-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 18px; margin-bottom: 22px; }
+  .icard {
+    background: var(--bg-card); border: 1px solid var(--border);
+    border-radius: 12px; padding: 20px;
+  }
+  .icard-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+  .icard-head .picon { font-size: 1.35rem; line-height: 1; }
+  .icard-head h3 { margin: 0; font-size: 1.1rem; }
+  .icard-head .ptag {
+    margin-left: auto; font-family: var(--mono); font-size: 0.68rem;
+    text-transform: uppercase; letter-spacing: 0.07em; color: var(--orange);
+    border: 1px solid var(--border); border-radius: 100px; padding: 2px 9px;
+  }
+  .oneliner {
+    display: flex; align-items: center; gap: 8px;
+    background: #0a0c10; border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 10px 10px 13px;
+  }
+  .oneliner code {
+    flex: 1; min-width: 0; font-size: 0.8rem; color: var(--fg);
+    white-space: nowrap; overflow-x: auto; scrollbar-width: none;
+  }
+  .oneliner code::-webkit-scrollbar { display: none; }
+  .copy {
+    flex: 0 0 auto; background: transparent; border: 1px solid var(--border);
+    color: var(--fg-dim); border-radius: 6px; width: 30px; height: 28px;
+    cursor: pointer; font-size: 0.9rem; line-height: 1;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .copy:hover { color: var(--orange); border-color: var(--orange); }
+  .copy.ok { color: var(--green); border-color: var(--green); }
+  .dl { display: inline-block; margin-top: 12px; font-size: 0.82rem; color: var(--fg-dim); }
+  .dl:hover { color: var(--orange); text-decoration: none; }
+  .install-alt {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    font-size: 0.86rem; color: var(--fg-dim);
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 10px; padding: 12px 18px;
+  }
+  .install-alt code { font-size: 0.82rem; color: var(--cyan); }
+  .install-alt .ialt-label { color: var(--fg-dim); }
+  .install-alt .ialt-sep { color: var(--border); }
+
   /* ---- alias tip ---- */
   .alias-tip {
     margin: 26px 0 8px;
@@ -241,6 +289,7 @@
     .split, .codecols { grid-template-columns: 1fr; }
     .features { grid-template-columns: 1fr 1fr; }
     .platforms { grid-template-columns: 1fr; }
+    .install-grid { grid-template-columns: 1fr; }
     .keys { grid-template-columns: 1fr; }
     h1 { font-size: 2.5rem; }
     .term-screen { padding: 16px 16px 12px; min-height: 360px; }
@@ -258,7 +307,7 @@
 
 <nav>
   <div class="wrap">
-    <span class="brand"><span class="caret">&gt;_</span> lumux</span>
+    <a class="brand" href="#" aria-label="lumux home"><img class="brand-logo" src="logo.svg" alt="" width="28" height="28" /> lumux</a>
     <div class="links">
       <a href="#features">Features</a>
       <a href="#why">Why</a>
@@ -272,11 +321,12 @@
 
 <header class="hero">
   <div class="wrap hero-top">
+    <img class="hero-logo" src="logo.svg" alt="lumux logo" width="92" height="92" />
     <span class="badge">// written in Rust · ConPTY · pure-text attach · single binary</span>
     <h1><span class="accent">tmux</span>, for the Windows host.</h1>
     <p class="lede">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI. <strong style="color:var(--fg)">Runs natively on Windows, Linux, and macOS</strong> from a single binary.</p>
     <div class="cta">
-      <a class="btn btn-primary" href="#install">$ get lumux</a>
+      <a class="btn btn-primary" href="#install">$ install lumux</a>
       <a class="btn btn-ghost" href="#features">Explore features</a>
     </div>
   </div>
@@ -503,8 +553,6 @@
   demo.addEventListener('mouseleave', function(){ if(hoverPaused){ hoverPaused = false; resume(); } });
 
   start();
-
-  run();
 })();
 </script>
 
@@ -690,7 +738,48 @@
 <section id="install">
   <div class="wrap">
     <div class="section-label">// getting started</div>
-    <h2>Build &amp; run</h2>
+    <h2>Install lumux</h2>
+    <p class="section-sub">Grab a prebuilt binary for your platform — one line, no toolchain. Each command downloads the latest release and verifies its checksum.</p>
+
+    <div class="install-grid">
+      <div class="icard">
+        <div class="icard-head"><span class="picon">🍎</span><h3>macOS</h3><span class="ptag">Homebrew</span></div>
+        <div class="oneliner">
+          <code id="cmd-mac">brew install hgaol/tap/lumux</code>
+          <button class="copy" data-copy="cmd-mac" title="copy">⧉</button>
+        </div>
+        <a class="dl" href="https://github.com/hgaol/lumux/releases/latest">Apple Silicon &amp; Intel binaries →</a>
+      </div>
+
+      <div class="icard">
+        <div class="icard-head"><span class="picon">🐧</span><h3>Linux</h3><span class="ptag">curl | sh</span></div>
+        <div class="oneliner">
+          <code id="cmd-linux">curl -fsSL https://hgaol.github.io/lumux/install.sh | sh</code>
+          <button class="copy" data-copy="cmd-linux" title="copy">⧉</button>
+        </div>
+        <a class="dl" href="install.sh">view the script</a>
+      </div>
+
+      <div class="icard">
+        <div class="icard-head"><span class="picon">🪟</span><h3>Windows</h3><span class="ptag">PowerShell</span></div>
+        <div class="oneliner">
+          <code id="cmd-win">irm https://hgaol.github.io/lumux/install.ps1 | iex</code>
+          <button class="copy" data-copy="cmd-win" title="copy">⧉</button>
+        </div>
+        <a class="dl" href="install.ps1">view the script</a>
+      </div>
+    </div>
+
+    <div class="install-alt">
+      <span class="ialt-label">Also available:</span>
+      <code>cargo install lumux</code>
+      <span class="ialt-sep">·</span>
+      <code>cargo binstall lumux</code>
+      <span class="ialt-sep">·</span>
+      <a href="https://github.com/hgaol/lumux/releases/latest">direct downloads</a>
+    </div>
+
+    <h2 style="margin-top:48px;font-size:1.5rem">…or build from source</h2>
     <p class="section-sub">Requires Rust (stable). Produces a single <code>lumux</code> binary that runs as both client and server.</p>
     <div class="codecols">
 <pre><span class="c"># native build — Windows, Linux, or macOS</span>
@@ -740,6 +829,32 @@
     <span>A tmux-like terminal multiplexer — Windows-first, runs on Linux &amp; macOS · MIT licensed</span>
   </div>
 </footer>
+
+<script>
+(function () {
+  // copy-to-clipboard for the install one-liners
+  document.querySelectorAll('.copy').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var el = document.getElementById(btn.getAttribute('data-copy'));
+      if (!el) return;
+      var text = el.textContent;
+      var done = function () {
+        var old = btn.textContent;
+        btn.textContent = '✓'; btn.classList.add('ok');
+        setTimeout(function () { btn.textContent = old; btn.classList.remove('ok'); }, 1400);
+      };
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done, done);
+      } else {
+        var r = document.createRange(); r.selectNodeContents(el);
+        var s = window.getSelection(); s.removeAllRanges(); s.addRange(r);
+        try { document.execCommand('copy'); } catch (e) {}
+        s.removeAllRanges(); done();
+      }
+    });
+  });
+})();
+</script>
 
 </body>
 </html>
