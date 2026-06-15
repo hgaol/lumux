@@ -44,6 +44,12 @@ pub struct Grid {
     /// DEC text-cursor-enable (mode 25). Visible by default; apps hide it while
     /// repainting so the renderer must honor it to avoid a flickering cursor.
     cursor_visible: bool,
+    /// Bytes the terminal must send back to the shell in reply to status queries
+    /// (e.g. ESC[6n cursor-position report, ESC[5n device-status, ESC[c device
+    /// attributes). PSReadLine and other line editors query the cursor position
+    /// and stall/garble their redraw if there is no reply. The daemon drains this
+    /// after feeding output and writes it to the pane's PTY (the shell's stdin).
+    responses: Vec<u8>,
 }
 
 /// The primary-screen state stashed while the alternate screen is shown.
@@ -84,6 +90,7 @@ impl Grid {
             primary: None,
             autowrap: true,
             cursor_visible: true,
+            responses: Vec::new(),
         }
     }
 
@@ -145,6 +152,13 @@ impl Grid {
     /// Take and clear the pending-bell flag.
     pub fn take_bell(&mut self) -> bool {
         std::mem::take(&mut self.bell)
+    }
+
+    /// Take the bytes the terminal owes the shell in reply to status queries
+    /// (cursor-position / device-status / device-attributes). Empty if none are
+    /// pending. The daemon writes these to the pane's PTY after feeding output.
+    pub fn take_responses(&mut self) -> Vec<u8> {
+        std::mem::take(&mut self.responses)
     }
 
     /// Visible screen as plain strings (trailing blanks trimmed). For tests.
@@ -236,6 +250,25 @@ impl Grid {
             CSI::Edit(e) => self.edit_csi(e),
             CSI::Sgr(s) => self.sgr(s),
             CSI::Mode(m) => self.mode_csi(m),
+            CSI::Device(d) => self.device_csi(*d),
+            _ => {}
+        }
+    }
+
+    /// Reply to device queries the shell sends, so line editors (PSReadLine)
+    /// don't stall waiting for an answer. We answer device-status with "OK" and
+    /// device-attributes with a minimal VT100 identity; cursor-position reports
+    /// are produced in `cursor_csi` where the cursor is known.
+    fn device_csi(&mut self, dev: termwiz::escape::csi::Device) {
+        use termwiz::escape::csi::Device;
+        match dev {
+            // ESC[5n -> "I am OK": ESC[0n.
+            Device::StatusReport => self.responses.extend_from_slice(b"\x1b[0n"),
+            // ESC[c / ESC[0c -> primary device attributes. Report a basic VT100
+            // with no options (ESC[?1;0c), which is what most apps expect.
+            Device::RequestPrimaryDeviceAttributes => {
+                self.responses.extend_from_slice(b"\x1b[?1;0c")
+            }
             _ => {}
         }
     }
@@ -327,6 +360,15 @@ impl Grid {
                     self.cursor_x = x.min(self.width - 1);
                     self.cursor_y = y.min(self.height - 1);
                 }
+            }
+            // ESC[6n: report the cursor position as ESC[<row>;<col>R (1-based).
+            // PSReadLine and other line editors rely on this to place their
+            // redraw; without a reply they hang or garble the prompt.
+            Cursor::RequestActivePositionReport => {
+                let row = self.cursor_y + 1;
+                let col = self.cursor_x + 1;
+                self.responses
+                    .extend_from_slice(format!("\x1b[{row};{col}R").as_bytes());
             }
             _ => {}
         }

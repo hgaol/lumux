@@ -249,3 +249,35 @@ fn alt_screen_survives_resize_and_restores_primary() {
         g.screen_text()[0]
     );
 }
+
+#[test]
+fn cursor_position_report_replies_with_location() {
+    let mut g = Grid::new(80, 24, 100);
+    // Move the cursor to row 3, col 5 (0-based (4,2)) then request a report.
+    g.feed(b"\x1b[3;5H");
+    assert!(g.take_responses().is_empty(), "no reply until queried");
+    g.feed(b"\x1b[6n");
+    // Reply is ESC[<row>;<col>R, 1-based -> ESC[3;5R.
+    assert_eq!(g.take_responses(), b"\x1b[3;5R");
+    // Draining clears it.
+    assert!(g.take_responses().is_empty());
+}
+
+#[test]
+fn device_status_and_attributes_replies() {
+    let mut g = Grid::new(80, 24, 100);
+    // ESC[5n -> "OK" (ESC[0n).
+    g.feed(b"\x1b[5n");
+    assert_eq!(g.take_responses(), b"\x1b[0n");
+    // ESC[c (primary device attributes) -> ESC[?1;0c.
+    g.feed(b"\x1b[c");
+    assert_eq!(g.take_responses(), b"\x1b[?1;0c");
+}
+
+#[test]
+fn cursor_report_reflects_movement() {
+    let mut g = Grid::new(80, 24, 100);
+    g.feed(b"hello"); // cursor now at col 5 (0-based), row 0
+    g.feed(b"\x1b[6n");
+    assert_eq!(g.take_responses(), b"\x1b[1;6R");
+}

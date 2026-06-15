@@ -272,9 +272,18 @@ impl<S: PtySystem> Daemon<S> {
 
     /// Feed PTY output bytes into a pane's emulator. Returns true if the output
     /// rang the terminal bell (BEL), so the caller can notify clients.
+    ///
+    /// Also drains any terminal-query replies the emulator produced (cursor
+    /// position / device status / device attributes) and writes them straight
+    /// back to this pane's PTY — i.e. to the shell's stdin — so line editors like
+    /// PSReadLine that query the cursor get their answer.
     pub fn feed_pane(&mut self, id: PaneId, bytes: &[u8]) -> bool {
         if let Some(p) = self.panes.get_mut(&id) {
             p.grid.feed(bytes);
+            let responses = p.grid.take_responses();
+            if !responses.is_empty() {
+                let _ = p.writer.write_input(&responses);
+            }
             p.grid.take_bell()
         } else {
             false
