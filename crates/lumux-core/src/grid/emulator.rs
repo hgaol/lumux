@@ -50,6 +50,13 @@ pub struct Grid {
     /// and stall/garble their redraw if there is no reply. The daemon drains this
     /// after feeding output and writes it to the pane's PTY (the shell's stdin).
     responses: Vec<u8>,
+    /// Vertical scroll region (DECSTBM) as inclusive 0-based rows `(top, bottom)`.
+    /// Line feeds and SU/SD scroll only within this region. Defaults to the full
+    /// screen `(0, height-1)`. PSReadLine's ListView prediction sets a region (or
+    /// uses SU) to make room for the dropdown at the bottom line; without honoring
+    /// it the list draws in the wrong place and the prompt desyncs.
+    scroll_top: usize,
+    scroll_bottom: usize,
 }
 
 /// The primary-screen state stashed while the alternate screen is shown.
@@ -91,6 +98,8 @@ impl Grid {
             autowrap: true,
             cursor_visible: true,
             responses: Vec::new(),
+            scroll_top: 0,
+            scroll_bottom: height - 1,
         }
     }
 
@@ -228,19 +237,55 @@ impl Grid {
         }
     }
 
-    /// Move cursor down one line, scrolling (and feeding scrollback) at bottom.
+    /// Move cursor down one line, scrolling at the bottom of the scroll region.
     fn line_feed(&mut self) {
-        if self.cursor_y + 1 >= self.height {
-            // Scroll: top line goes to scrollback, append a fresh blank line. The
-            // alternate screen has no history, so its top line is just discarded.
-            let scrolled = std::mem::replace(&mut self.rows[0], Row::blank(self.width));
-            if self.primary.is_none() {
+        if self.cursor_y == self.scroll_bottom {
+            // At the region's bottom edge: scroll the region up by one.
+            self.scroll_up(1);
+        } else if self.cursor_y + 1 < self.height {
+            self.cursor_y += 1;
+        }
+        // If the cursor is below the region (unusual), a line feed just clamps.
+    }
+
+    /// Scroll the active region up by `n` lines: the top `n` lines leave (the
+    /// region's top line is fed to scrollback only when the region spans the full
+    /// screen and we're on the primary buffer — partial regions and the alt
+    /// screen discard, matching real terminals), and `n` blank lines appear at
+    /// the bottom. The cursor does not move.
+    fn scroll_up(&mut self, n: usize) {
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom.min(self.height - 1);
+        if top > bottom {
+            return;
+        }
+        let region_h = bottom - top + 1;
+        let n = n.min(region_h);
+        let full_screen = top == 0 && bottom == self.height - 1;
+        for _ in 0..n {
+            let scrolled = std::mem::replace(&mut self.rows[top], Row::blank(self.width));
+            if full_screen && self.primary.is_none() {
                 self.scrollback.push(scrolled);
             }
-            self.rows.remove(0);
-            self.rows.push(Row::blank(self.width));
-        } else {
-            self.cursor_y += 1;
+            self.rows.remove(top);
+            self.rows.insert(bottom, Row::blank(self.width));
+        }
+    }
+
+    /// Scroll the active region down by `n` lines: `n` blank lines appear at the
+    /// top of the region and the bottom `n` lines leave. The cursor does not move.
+    /// Reverse-index / SD; content is never fed to scrollback (it's pushed down).
+    fn scroll_down(&mut self, n: usize) {
+        let top = self.scroll_top;
+        let bottom = self.scroll_bottom.min(self.height - 1);
+        if top > bottom {
+            return;
+        }
+        let region_h = bottom - top + 1;
+        let n = n.min(region_h);
+        for _ in 0..n {
+            self.rows.remove(bottom);
+            self.rows.insert(top, Row::blank(self.width));
         }
     }
 
@@ -315,6 +360,9 @@ impl Grid {
         self.cursor_x = 0;
         self.cursor_y = 0;
         self.pen = CellAttributes::default();
+        // The alt screen starts with a full-screen scroll region.
+        self.scroll_top = 0;
+        self.scroll_bottom = self.height - 1;
     }
 
     /// Restore the primary screen saved on the last `enter_alt_screen`. A no-op
@@ -326,6 +374,9 @@ impl Grid {
             self.cursor_y = p.cursor_y.min(self.height - 1);
             self.pen = p.pen;
             self.saved_cursor = p.saved_cursor;
+            // Restore a full-screen region; the shell re-establishes its own.
+            self.scroll_top = 0;
+            self.scroll_bottom = self.height - 1;
         }
     }
 
@@ -353,6 +404,22 @@ impl Grid {
             Cursor::PrecedingLine(n) => {
                 self.cursor_x = 0;
                 self.cursor_y = self.cursor_y.saturating_sub(n as usize);
+            }
+            // DECSTBM: set the vertical scroll region (1-based inclusive) and home
+            // the cursor. An inverted/degenerate range resets to the full screen.
+            Cursor::SetTopAndBottomMargins { top, bottom } => {
+                let t = (top.as_zero_based() as usize).min(self.height - 1);
+                let b = (bottom.as_zero_based() as usize).min(self.height - 1);
+                if t < b {
+                    self.scroll_top = t;
+                    self.scroll_bottom = b;
+                } else {
+                    self.scroll_top = 0;
+                    self.scroll_bottom = self.height - 1;
+                }
+                // DECSTBM moves the cursor to the home position of the region.
+                self.cursor_x = 0;
+                self.cursor_y = self.scroll_top;
             }
             Cursor::SaveCursor => self.saved_cursor = Some((self.cursor_x, self.cursor_y)),
             Cursor::RestoreCursor => {
@@ -394,6 +461,9 @@ impl Grid {
             }
             Edit::DeleteLine(n) => self.delete_lines(n as usize),
             Edit::InsertLine(n) => self.insert_lines(n as usize),
+            // SU / SD: scroll the active region without moving the cursor.
+            Edit::ScrollUp(n) => self.scroll_up(n as usize),
+            Edit::ScrollDown(n) => self.scroll_down(n as usize),
             _ => {}
         }
     }
@@ -546,6 +616,11 @@ impl Grid {
         self.height = height;
         self.cursor_x = self.cursor_x.min(width - 1);
         self.cursor_y = self.cursor_y.min(height - 1);
+        // A resize resets the scroll region to the full screen (DECSTBM is
+        // viewport-relative; keeping a stale region after a resize corrupts
+        // scrolling). Apps re-establish their region after a SIGWINCH.
+        self.scroll_top = 0;
+        self.scroll_bottom = height - 1;
     }
 }
 

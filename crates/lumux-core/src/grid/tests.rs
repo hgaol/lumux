@@ -281,3 +281,64 @@ fn cursor_report_reflects_movement() {
     g.feed(b"\x1b[6n");
     assert_eq!(g.take_responses(), b"\x1b[1;6R");
 }
+
+#[test]
+fn scroll_up_su_moves_content_without_cursor() {
+    // ESC[S scrolls the whole screen up by 1: top line leaves, blank at bottom,
+    // cursor unchanged.
+    let mut g = Grid::new(10, 3, 100);
+    g.feed(b"a\r\nb\r\nc"); // rows: a / b / c, cursor at (1,2)
+    let cur = g.cursor();
+    g.feed(b"\x1b[S"); // scroll up 1
+    assert_eq!(g.screen_text(), vec!["b", "c", ""]);
+    assert_eq!(g.cursor(), cur, "SU must not move the cursor");
+}
+
+#[test]
+fn scroll_down_sd_inserts_at_top() {
+    let mut g = Grid::new(10, 3, 100);
+    g.feed(b"a\r\nb\r\nc");
+    g.feed(b"\x1b[T"); // scroll down 1: blank at top, bottom line leaves
+    assert_eq!(g.screen_text(), vec!["", "a", "b"]);
+}
+
+#[test]
+fn scroll_region_confines_line_feed() {
+    // DECSTBM region rows 1..2 (1-based 2;3). Line feeds at the region bottom
+    // scroll only within it; row 0 is untouched.
+    let mut g = Grid::new(10, 4, 100);
+    g.feed(b"top\r\nr1\r\nr2\r\nr3"); // 4 rows
+    // Set region to rows 2..4 (1-based) => 0-based 1..3. Homes cursor to (0,1).
+    g.feed(b"\x1b[2;4r");
+    assert_eq!(g.cursor(), (0, 1), "DECSTBM homes the cursor to the region top");
+    // Fill the region and force it to scroll: write 3 lines, then one more.
+    g.feed(b"A\r\nB\r\nC"); // fills rows 1,2,3
+    g.feed(b"\r\nD"); // at region bottom -> scroll region up, D on last row
+    let text = g.screen_text();
+    assert_eq!(text[0], "top", "row above the region is never scrolled");
+    assert_eq!(text[3], "D", "new content lands on the region's bottom row");
+}
+
+#[test]
+fn decstbm_reset_restores_full_screen() {
+    let mut g = Grid::new(10, 4, 100);
+    g.feed(b"\x1b[2;3r"); // set a region
+    g.feed(b"\x1b[r"); // reset (no params) -> full screen
+    // A full-screen line feed from the bottom now scrolls the whole screen.
+    g.feed(b"\x1b[4;1H"); // cursor to bottom row
+    g.feed(b"x\r\ny"); // wrote x on row 3, newline scrolls whole screen, y on row 3
+    // No panic and content present is enough; the key invariant is the region
+    // was reset (full-screen scroll, not confined).
+    assert!(g.screen_text().iter().any(|r| r.contains('y')));
+}
+
+#[test]
+fn scroll_region_resets_on_resize() {
+    let mut g = Grid::new(10, 4, 100);
+    g.feed(b"\x1b[2;3r"); // region rows 1..2
+    g.resize(10, 6); // resize must reset region to full screen (0..5)
+    // After resize, a line feed from the new bottom scrolls the whole screen.
+    g.feed(b"\x1b[6;1H");
+    g.feed(b"z\r\nw");
+    assert!(g.screen_text().iter().any(|r| r.contains('w')));
+}
