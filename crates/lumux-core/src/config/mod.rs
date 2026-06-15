@@ -66,11 +66,14 @@ impl Default for Config {
             status_format: "[#S] #W".to_string(),
             base_index: 0,
             mouse: false,
-            status_left: String::new(),
-            status_right: String::new(),
-            status_justify: "left".to_string(),
-            status_bg: "default".to_string(),
-            status_fg: "default".to_string(),
+            // A tmux-like default look out of the box (green bar, session name on
+            // the left, window list centred, a clock on the right) so a fresh
+            // install without a config file still looks good.
+            status_left: "#[bg=green,fg=black,bold] #S #[bg=colour236,fg=green] ".to_string(),
+            status_right: "#[bg=colour236,fg=cyan] %H:%M #[bg=green,fg=black,bold] %d-%b ".to_string(),
+            status_justify: "centre".to_string(),
+            status_bg: "colour236".to_string(),
+            status_fg: "white".to_string(),
         }
     }
 }
@@ -246,6 +249,37 @@ mod tests {
         let c = Config::from_toml("").unwrap();
         assert_eq!(c.prefix, "C-b");
         assert_eq!(c.scrollback, 2000);
+    }
+
+    #[test]
+    fn default_status_is_styled_out_of_the_box() {
+        use crate::status::{self, StatusContext};
+        use termwiz::color::ColorAttribute;
+        let c = Config::default();
+        // A fresh install should have a non-empty, styled status bar (not blank).
+        assert!(!c.status_left.is_empty(), "default status-left should be set");
+        assert!(!c.status_right.is_empty(), "default status-right should be set");
+        assert_eq!(c.status_justify, "centre");
+
+        // The left segment formats to spans containing the session name on a
+        // green background (the tmux-like look).
+        let ctx = StatusContext {
+            session: "work".into(),
+            ..Default::default()
+        };
+        let spans = status::format(&c.status_left, &ctx);
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        assert!(text.contains("work"), "left segment shows the session name");
+        let green = ColorAttribute::PaletteIndex(2);
+        assert!(
+            spans.iter().any(|s| s.attrs.background() == green),
+            "default status should use a green background span"
+        );
+
+        // The right segment carries a clock token that formats to digits.
+        let clock = status::format(&c.status_right, &ctx);
+        let ctext: String = clock.iter().map(|s| s.text.as_str()).collect();
+        assert!(ctext.contains(':'), "right segment has a HH:MM clock; got {ctext:?}");
     }
 
     #[test]
