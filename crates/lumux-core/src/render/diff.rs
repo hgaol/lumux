@@ -45,7 +45,17 @@ pub fn diff(prev: &Screen, next: &Screen) -> String {
                             pen = Some(b.attrs().clone());
                         }
                         out.push_str(b.str());
-                        x += 1;
+                        // A wide glyph (width 2) already advanced the terminal
+                        // cursor by 2; the grid stores a blank spacer in the next
+                        // cell which must NOT be emitted, or every following
+                        // column shifts right. Skip it.
+                        let advance = b.width().max(1);
+                        x += advance;
+                        if advance == 2 {
+                            // Treat the spacer as already handled for the diff
+                            // (it is blank in `next` by construction).
+                            continue;
+                        }
                     }
                     _ => break,
                 }
@@ -74,13 +84,18 @@ pub fn full_repaint(next: &Screen) -> String {
             .find(|&x| next.cell(x, y).map(|c| c.str() != " ").unwrap_or(false));
         let _ = write!(out, "\x1b[{};1H", y + 1);
         if let Some(last) = last {
-            for x in 0..=last {
+            let mut x = 0;
+            while x <= last {
                 if let Some(c) = next.cell(x, y) {
                     if pen.as_ref() != Some(c.attrs()) {
                         out.push_str(&sgr_for(c.attrs()));
                         pen = Some(c.attrs().clone());
                     }
                     out.push_str(c.str());
+                    // Skip the spacer cell after a wide glyph (see diff()).
+                    x += c.width().max(1);
+                } else {
+                    x += 1;
                 }
             }
         }
