@@ -37,6 +37,12 @@ pub struct Config {
     pub base_index: u32,
     /// Whether the mouse is enabled (click/scroll/drag).
     pub mouse: bool,
+    /// Whether the client polls its terminal size and tells the daemon when it
+    /// changes. On by default. Needed especially over SSH, where the size at
+    /// attach is often stale (sshd's ConPTY negotiates it asynchronously) and a
+    /// later window resize would otherwise leave the grid at the wrong width,
+    /// shifting columns. Disable only if the size polling is unwanted.
+    pub auto_resize: bool,
     /// status-left format (left segment of the status bar).
     pub status_left: String,
     /// status-right format (right segment).
@@ -66,6 +72,7 @@ impl Default for Config {
             status_format: "[#S] #W".to_string(),
             base_index: 0,
             mouse: false,
+            auto_resize: true,
             // A tmux-like default look out of the box (green bar, session name on
             // the left, window list centred, a clock on the right) so a fresh
             // install without a config file still looks good.
@@ -359,5 +366,15 @@ prefix = "C-a"
         assert_eq!(c.base_index, 1);
         assert!(c.mouse);
         assert_eq!(c.scrollback, 10000);
+    }
+
+    #[test]
+    fn auto_resize_defaults_on_and_can_be_disabled() {
+        // Default (empty config) must enable auto-resize.
+        assert!(Config::from_toml("").unwrap().auto_resize);
+        assert!(Config::default().auto_resize);
+        // Explicit opt-out via TOML.
+        let c = Config::from_toml("auto_resize = false\n").unwrap();
+        assert!(!c.auto_resize);
     }
 }

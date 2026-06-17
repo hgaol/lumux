@@ -167,6 +167,11 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
     match option.as_str() {
         "prefix" => cfg.prefix = value.to_string(),
         "mouse" => cfg.mouse = on_off(value),
+        // lumux extension: whether the client tracks terminal-size changes and
+        // tells the daemon. On by default; matters most over SSH. (Distinct from
+        // tmux's `aggressive-resize`, which is about multi-client sizing policy
+        // and stays ignored below.)
+        "auto-resize" => cfg.auto_resize = on_off(value),
         "history-limit" => {
             if let Ok(n) = value.parse() {
                 cfg.scrollback = n;
@@ -387,6 +392,27 @@ mod tests {
     fn default_shell_becomes_a_profile() {
         let c = Config::from_tmux("set -g default-shell powershell.exe").unwrap();
         assert_eq!(c.shell_argv(None), Some(vec!["powershell.exe".to_string()]));
+    }
+
+    #[test]
+    fn auto_resize_option_parses_and_defaults_on() {
+        // Default (no directive) stays on.
+        assert!(Config::from_tmux("set -g mouse on").unwrap().auto_resize);
+        // Explicit off.
+        let c = Config::from_tmux("set -g auto-resize off").unwrap();
+        assert!(!c.auto_resize);
+        // Explicit on.
+        let c = Config::from_tmux("set -g auto-resize on").unwrap();
+        assert!(c.auto_resize);
+        // tmux's aggressive-resize is a different concept and must NOT toggle it
+        // (and must not warn).
+        let p = Config::from_tmux_verbose("set -g aggressive-resize on").unwrap();
+        assert!(p.config.auto_resize, "aggressive-resize must not affect auto_resize");
+        assert!(
+            p.warnings.is_empty(),
+            "aggressive-resize is a known-ignored option; got {:?}",
+            p.warnings
+        );
     }
 
     #[test]

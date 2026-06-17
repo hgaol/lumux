@@ -64,6 +64,11 @@ where
     W: FrameWriter,
 {
     let size = RawTerminal::size();
+    // Whether to track terminal-size changes after attach (config `auto_resize`,
+    // on by default). Loaded here in the client because resize is a client-side
+    // concern; same binary/machine as the daemon, so we can read the config
+    // directly rather than plumbing it through the handshake.
+    let auto_resize = lumux_server::load_config().auto_resize;
     // Protocol handshake before any session message.
     handshake(&mut reader, &mut writer)?;
     let first = if new_session {
@@ -134,9 +139,28 @@ where
     // detach delivered while the user is idle still ends the client promptly.
     let mut stdin = io::stdin();
     let mut buf = [0u8; 4096];
+    // Last size we told the daemon, so we only send Resize on an actual change.
+    let mut last_size = size;
     loop {
         if done.load(std::sync::atomic::Ordering::SeqCst) {
             break;
+        }
+        // On every wakeup (keypress or the 100ms idle tick), check whether the
+        // terminal was resized and, if so, tell the daemon. This is what keeps
+        // the grid width in sync — crucial over SSH, where the size at attach is
+        // often stale until the SSH window-change negotiation settles.
+        if auto_resize {
+            let now = RawTerminal::size();
+            if now != last_size {
+                last_size = now;
+                let resize = ClientMsg::Resize(WireSize {
+                    cols: now.cols,
+                    rows: now.rows,
+                });
+                if writer.write_frame(&encode(&resize)?).is_err() {
+                    break;
+                }
+            }
         }
         // Wait briefly for stdin input; if nothing arrives, loop to re-check the
         // detach flag rather than blocking forever in read().
