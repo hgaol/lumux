@@ -87,6 +87,16 @@ packaging: ## Generate dist manifests for a release (VERSION=x.y.z, default: wor
 	scripts/gen-packaging.sh $(VERSION)
 
 # ---------------------------------------------------------------------------
+# Release version bump. Delegates to scripts/bump-version.sh, which rewrites the
+# workspace version + the four internal dependency pins in Cargo.toml, refreshes
+# Cargo.lock via a build, verifies `lumux --version`, then commits and tags.
+# Pushing the tag (which triggers release CI) is left to you.
+# ---------------------------------------------------------------------------
+.PHONY: bump
+bump: ## Bump version, refresh lockfile, commit & tag (VERSION=x.y.z required)
+	scripts/bump-version.sh $(VERSION)
+
+# ---------------------------------------------------------------------------
 # CI gate — what the pipeline runs. Includes the Windows cross-CHECK that
 # guards the Windows backend from bit-rot when building only on Linux.
 # ---------------------------------------------------------------------------
