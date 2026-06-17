@@ -57,6 +57,8 @@ pub struct Grid {
     /// it the list draws in the wrong place and the prompt desyncs.
     scroll_top: usize,
     scroll_bottom: usize,
+    /// The last grapheme printed, for REP (CSI Ps b) which repeats it.
+    last_print: Option<char>,
 }
 
 /// The primary-screen state stashed while the alternate screen is shown.
@@ -100,6 +102,7 @@ impl Grid {
             responses: Vec::new(),
             scroll_top: 0,
             scroll_bottom: height - 1,
+            last_print: None,
         }
     }
 
@@ -216,6 +219,7 @@ impl Grid {
         let cell = Cell::new(c, self.pen.clone());
         let advanced = self.rows[self.cursor_y].set_cell(self.cursor_x, cell);
         self.cursor_x += advanced;
+        self.last_print = Some(c);
     }
 
     fn control(&mut self, code: ControlCode) {
@@ -461,10 +465,29 @@ impl Grid {
             }
             Edit::DeleteLine(n) => self.delete_lines(n as usize),
             Edit::InsertLine(n) => self.insert_lines(n as usize),
+            // ICH — insert blanks at the cursor, shifting the rest of the line
+            // right. DCH — delete cells at the cursor, shifting the rest left.
+            // Line editors (PSReadLine) use these to redraw mid-line edits; if we
+            // drop them the grid's columns drift out of sync with the shell.
+            Edit::InsertCharacter(n) => {
+                let pen = self.pen.clone();
+                self.rows[self.cursor_y].insert_blanks(self.cursor_x, n as usize, &pen);
+            }
+            Edit::DeleteCharacter(n) => {
+                let pen = self.pen.clone();
+                self.rows[self.cursor_y].delete_chars(self.cursor_x, n as usize, &pen);
+            }
+            // REP — repeat the last printed grapheme n times.
+            Edit::Repeat(n) => {
+                if let Some(c) = self.last_print {
+                    for _ in 0..n {
+                        self.print_char(c);
+                    }
+                }
+            }
             // SU / SD: scroll the active region without moving the cursor.
             Edit::ScrollUp(n) => self.scroll_up(n as usize),
             Edit::ScrollDown(n) => self.scroll_down(n as usize),
-            _ => {}
         }
     }
 

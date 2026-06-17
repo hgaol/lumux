@@ -5,6 +5,7 @@ fn grid() -> Grid {
 }
 
 #[test]
+
 fn prints_plain_text() {
     let mut g = grid();
     g.feed(b"hello");
@@ -13,6 +14,7 @@ fn prints_plain_text() {
 }
 
 #[test]
+
 fn carriage_return_and_line_feed() {
     let mut g = grid();
     g.feed(b"ab\r\ncd");
@@ -22,6 +24,7 @@ fn carriage_return_and_line_feed() {
 }
 
 #[test]
+
 fn backspace_moves_cursor_left() {
     let mut g = grid();
     g.feed(b"abc");
@@ -30,6 +33,7 @@ fn backspace_moves_cursor_left() {
 }
 
 #[test]
+
 fn autowrap_at_width() {
     let mut g = Grid::new(4, 3, 100);
     g.feed(b"abcdef"); // 6 chars into width-4
@@ -39,6 +43,7 @@ fn autowrap_at_width() {
 }
 
 #[test]
+
 fn cursor_position_absolute() {
     let mut g = grid();
     // CSI 2;3 H -> row 2 col 3 (1-based) => (col2,row1) zero-based.
@@ -49,6 +54,7 @@ fn cursor_position_absolute() {
 }
 
 #[test]
+
 fn cursor_movement_relative() {
     let mut g = grid();
     g.feed(b"\x1b[2;2H"); // (1,1)
@@ -59,6 +65,7 @@ fn cursor_movement_relative() {
 }
 
 #[test]
+
 fn erase_to_end_of_line() {
     let mut g = grid();
     g.feed(b"abcdef");
@@ -69,6 +76,7 @@ fn erase_to_end_of_line() {
 }
 
 #[test]
+
 fn erase_whole_display() {
     let mut g = grid();
     g.feed(b"line1\r\nline2");
@@ -77,6 +85,7 @@ fn erase_whole_display() {
 }
 
 #[test]
+
 fn sgr_attributes_are_recorded() {
     let mut g = grid();
     // Bold red 'A', then reset, then plain 'B'.
@@ -91,6 +100,7 @@ fn sgr_attributes_are_recorded() {
 }
 
 #[test]
+
 fn partial_escape_sequence_across_feeds() {
     let mut g = grid();
     // Split "CSI 2;3 H" across three feeds; parser must retain state.
@@ -102,6 +112,7 @@ fn partial_escape_sequence_across_feeds() {
 }
 
 #[test]
+
 fn partial_utf8_handled_by_parser() {
     let mut g = grid();
     // '€' = E2 82 AC, split across feeds.
@@ -111,6 +122,7 @@ fn partial_utf8_handled_by_parser() {
 }
 
 #[test]
+
 fn scroll_feeds_scrollback() {
     let mut g = Grid::new(10, 2, 100); // 2 rows tall
     g.feed(b"a\r\nb\r\nc"); // 'a' scrolls off
@@ -120,6 +132,7 @@ fn scroll_feeds_scrollback() {
 }
 
 #[test]
+
 fn scrollback_is_bounded() {
     let mut g = Grid::new(4, 1, 3); // 1 visible row, scrollback cap 3
     for i in 0..10 {
@@ -129,6 +142,7 @@ fn scrollback_is_bounded() {
 }
 
 #[test]
+
 fn resize_grow_and_shrink() {
     let mut g = Grid::new(10, 3, 100);
     g.feed(b"r0\r\nr1\r\nr2");
@@ -142,6 +156,7 @@ fn resize_grow_and_shrink() {
 }
 
 #[test]
+
 fn bell_flag_sets_and_clears() {
     let mut g = grid();
     assert!(!g.take_bell());
@@ -151,6 +166,7 @@ fn bell_flag_sets_and_clears() {
 }
 
 #[test]
+
 fn save_and_restore_cursor() {
     let mut g = grid();
     g.feed(b"\x1b[2;4H"); // (3,1)
@@ -161,6 +177,7 @@ fn save_and_restore_cursor() {
 }
 
 #[test]
+
 fn tab_advances_to_stops() {
     let mut g = Grid::new(20, 1, 10);
     g.feed(b"\t");
@@ -170,6 +187,7 @@ fn tab_advances_to_stops() {
 }
 
 #[test]
+
 fn alt_screen_starts_blank_and_restores_primary() {
     let mut g = grid();
     g.feed(b"primary");
@@ -190,6 +208,7 @@ fn alt_screen_starts_blank_and_restores_primary() {
 }
 
 #[test]
+
 fn alt_screen_scroll_does_not_touch_scrollback() {
     let mut g = Grid::new(10, 2, 100);
     // Fill primary with scrollback so we can prove the alt screen doesn't add.
@@ -210,6 +229,7 @@ fn alt_screen_scroll_does_not_touch_scrollback() {
 }
 
 #[test]
+
 fn show_cursor_mode_toggles_visibility() {
     let mut g = grid();
     assert!(g.cursor_visible(), "cursor visible by default");
@@ -220,6 +240,7 @@ fn show_cursor_mode_toggles_visibility() {
 }
 
 #[test]
+
 fn autowrap_off_overprints_last_column() {
     let mut g = Grid::new(4, 2, 10);
     g.feed(b"\x1b[?7l"); // DECAWM off
@@ -231,6 +252,7 @@ fn autowrap_off_overprints_last_column() {
 }
 
 #[test]
+
 fn alt_screen_survives_resize_and_restores_primary() {
     let mut g = Grid::new(10, 3, 100);
     g.feed(b"keepme");
@@ -251,6 +273,7 @@ fn alt_screen_survives_resize_and_restores_primary() {
 }
 
 #[test]
+
 fn cursor_position_report_replies_with_location() {
     let mut g = Grid::new(80, 24, 100);
     // Move the cursor to row 3, col 5 (0-based (4,2)) then request a report.
@@ -264,6 +287,7 @@ fn cursor_position_report_replies_with_location() {
 }
 
 #[test]
+
 fn device_status_and_attributes_replies() {
     let mut g = Grid::new(80, 24, 100);
     // ESC[5n -> "OK" (ESC[0n).
@@ -275,6 +299,7 @@ fn device_status_and_attributes_replies() {
 }
 
 #[test]
+
 fn cursor_report_reflects_movement() {
     let mut g = Grid::new(80, 24, 100);
     g.feed(b"hello"); // cursor now at col 5 (0-based), row 0
@@ -283,6 +308,7 @@ fn cursor_report_reflects_movement() {
 }
 
 #[test]
+
 fn scroll_up_su_moves_content_without_cursor() {
     // ESC[S scrolls the whole screen up by 1: top line leaves, blank at bottom,
     // cursor unchanged.
@@ -295,6 +321,7 @@ fn scroll_up_su_moves_content_without_cursor() {
 }
 
 #[test]
+
 fn scroll_down_sd_inserts_at_top() {
     let mut g = Grid::new(10, 3, 100);
     g.feed(b"a\r\nb\r\nc");
@@ -303,6 +330,7 @@ fn scroll_down_sd_inserts_at_top() {
 }
 
 #[test]
+
 fn scroll_region_confines_line_feed() {
     // DECSTBM region rows 1..2 (1-based 2;3). Line feeds at the region bottom
     // scroll only within it; row 0 is untouched.
@@ -320,6 +348,7 @@ fn scroll_region_confines_line_feed() {
 }
 
 #[test]
+
 fn decstbm_reset_restores_full_screen() {
     let mut g = Grid::new(10, 4, 100);
     g.feed(b"\x1b[2;3r"); // set a region
@@ -333,6 +362,7 @@ fn decstbm_reset_restores_full_screen() {
 }
 
 #[test]
+
 fn scroll_region_resets_on_resize() {
     let mut g = Grid::new(10, 4, 100);
     g.feed(b"\x1b[2;3r"); // region rows 1..2
@@ -342,3 +372,35 @@ fn scroll_region_resets_on_resize() {
     g.feed(b"z\r\nw");
     assert!(g.screen_text().iter().any(|r| r.contains('w')));
 }
+
+#[test]
+fn insert_character_shifts_line_right() {
+    // ICH (CSI Ps @): type "abcd", move to col 1, insert 2 blanks. The "bcd"
+    // shifts right by 2 and the row width stays fixed (trailing cell dropped).
+    let mut g = Grid::new(8, 1, 10);
+    g.feed(b"abcd");
+    g.feed(b"\x1b[1;2H"); // cursor to row 1, col 2 (0-based col 1, the 'b')
+    g.feed(b"\x1b[2@"); // insert 2 blanks
+    assert_eq!(g.screen_text()[0], "a  bcd");
+}
+
+#[test]
+fn delete_character_shifts_line_left() {
+    // DCH (CSI Ps P): type "abcdef", move to col 1, delete 2. "cdef" shifts left
+    // to close the gap; blanks fill at the right edge.
+    let mut g = Grid::new(8, 1, 10);
+    g.feed(b"abcdef");
+    g.feed(b"\x1b[1;2H"); // cursor to the 'b'
+    g.feed(b"\x1b[2P"); // delete 2 chars
+    assert_eq!(g.screen_text()[0], "adef");
+}
+
+#[test]
+fn repeat_replays_last_grapheme() {
+    // REP (CSI Ps b): print 'x' then repeat it 4 times -> 5 total.
+    let mut g = Grid::new(10, 1, 10);
+    g.feed(b"x\x1b[4b");
+    assert_eq!(g.screen_text()[0], "xxxxx");
+    assert_eq!(g.cursor(), (5, 0));
+}
+

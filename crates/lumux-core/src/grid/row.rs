@@ -55,6 +55,43 @@ impl Row {
         }
     }
 
+    /// ICH — insert `n` blank cells at column `x`, shifting the cells from `x`
+    /// onward to the right. Cells pushed past the right edge are dropped; the row
+    /// width is unchanged. New blanks take `attrs`.
+    pub fn insert_blanks(&mut self, x: usize, n: usize, attrs: &CellAttributes) {
+        let w = self.cells.len();
+        if x >= w || n == 0 {
+            return;
+        }
+        let n = n.min(w - x);
+        // Shift right: move [x .. w-n) to [x+n .. w).
+        for dst in (x + n..w).rev() {
+            self.cells[dst] = self.cells[dst - n].clone();
+        }
+        let blank = Cell::new(' ', attrs.clone());
+        for cell in self.cells[x..x + n].iter_mut() {
+            *cell = blank.clone();
+        }
+    }
+
+    /// DCH — delete `n` cells at column `x`, shifting the cells after them left to
+    /// close the gap and filling `n` blanks at the right edge. Row width unchanged.
+    pub fn delete_chars(&mut self, x: usize, n: usize, attrs: &CellAttributes) {
+        let w = self.cells.len();
+        if x >= w || n == 0 {
+            return;
+        }
+        let n = n.min(w - x);
+        // Shift left: move [x+n .. w) to [x .. w-n).
+        for dst in x..w - n {
+            self.cells[dst] = self.cells[dst + n].clone();
+        }
+        let blank = Cell::new(' ', attrs.clone());
+        for cell in self.cells[w - n..w].iter_mut() {
+            *cell = blank.clone();
+        }
+    }
+
     /// The row as a plain string (trailing blanks trimmed), for tests/snapshots.
     pub fn to_trimmed_string(&self) -> String {
         let s: String = self.cells.iter().map(|c| c.str()).collect();
