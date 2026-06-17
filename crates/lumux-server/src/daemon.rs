@@ -279,6 +279,15 @@ impl<S: PtySystem> Daemon<S> {
     /// PSReadLine that query the cursor get their answer.
     pub fn feed_pane(&mut self, id: PaneId, bytes: &[u8]) -> bool {
         if let Some(p) = self.panes.get_mut(&id) {
+            // Debug aid: append raw PTY bytes to a capture file so we can inspect
+            // exactly what ConPTY emits (e.g. PSReadLine ListView redraws). The
+            // target is a FIXED path checked live every feed — not an env var —
+            // so an already-running (detached) daemon starts capturing the moment
+            // the file's directory marker exists, with no restart needed. Capture
+            // is active whenever the sentinel `<config-dir>/lumux-capture.on`
+            // exists; bytes go to `<config-dir>/lumux-capture.bin`. Off (zero cost
+            // beyond one stat) when the sentinel is absent.
+            Self::maybe_capture(bytes);
             p.grid.feed(bytes);
             let responses = p.grid.take_responses();
             if !responses.is_empty() {
@@ -287,6 +296,35 @@ impl<S: PtySystem> Daemon<S> {
             p.grid.take_bell()
         } else {
             false
+        }
+    }
+
+    /// Append `bytes` to the capture file when capture is enabled. Enabled by the
+    /// presence of `LUMUX_CAPTURE` (env, names the output file) OR a sentinel file
+    /// `%USERPROFILE%\lumux-capture.on` (Windows) / `$HOME/lumux-capture.on`, in
+    /// which case bytes go to `lumux-capture.bin` beside it. The sentinel path
+    /// works even for a daemon that was already running before capture was asked
+    /// for, sidestepping detached-process env inheritance.
+    fn maybe_capture(bytes: &[u8]) {
+        use std::io::Write as _;
+        let out: Option<std::path::PathBuf> = if let Some(p) = std::env::var_os("LUMUX_CAPTURE") {
+            Some(std::path::PathBuf::from(p))
+        } else {
+            let home = std::env::var_os("USERPROFILE")
+                .or_else(|| std::env::var_os("HOME"))
+                .map(std::path::PathBuf::from);
+            home.and_then(|h| {
+                if h.join("lumux-capture.on").exists() {
+                    Some(h.join("lumux-capture.bin"))
+                } else {
+                    None
+                }
+            })
+        };
+        if let Some(path) = out {
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(&path) {
+                let _ = f.write_all(bytes);
+            }
         }
     }
 
