@@ -97,6 +97,20 @@ bump: ## Bump version, refresh lockfile, commit & tag (VERSION=x.y.z required)
 	scripts/bump-version.sh $(VERSION)
 
 # ---------------------------------------------------------------------------
+# Publish all crates to crates.io via scripts/publish-cargo.sh. Uses
+# `cargo publish --workspace` (handles dependency order). Publishing is
+# irreversible, so it dry-runs and prompts for confirmation first; `publish-dry`
+# verifies without uploading. Requires a crates.io token (cargo login).
+# ---------------------------------------------------------------------------
+.PHONY: publish
+publish: ## Publish all crates to crates.io (dry-run + confirm prompt)
+	scripts/publish-cargo.sh
+
+.PHONY: publish-dry
+publish-dry: ## Dry-run the crates.io publish (build + package, no upload)
+	scripts/publish-cargo.sh --dry-run
+
+# ---------------------------------------------------------------------------
 # CI gate — what the pipeline runs. Includes the Windows cross-CHECK that
 # guards the Windows backend from bit-rot when building only on Linux.
 # ---------------------------------------------------------------------------
