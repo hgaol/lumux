@@ -55,9 +55,16 @@
   .brand:hover { text-decoration: none; }
   .brand-logo { display: block; border-radius: 7px; }
   .brand .caret { color: var(--green); }
-  nav .links { margin-left: auto; display: flex; gap: 24px; font-size: 0.93rem; }
+  nav .links { margin-left: auto; display: flex; align-items: center; gap: 24px; font-size: 0.93rem; }
   nav .links a { color: var(--fg-dim); }
   nav .links a:hover { color: var(--fg); text-decoration: none; }
+  .lang-toggle {
+    font-family: var(--mono); font-size: 0.82rem; color: var(--fg-dim);
+    background: var(--bg-soft); border: 1px solid var(--border);
+    border-radius: 100px; padding: 3px 12px; cursor: pointer;
+    transition: color .15s, border-color .15s;
+  }
+  .lang-toggle:hover { color: var(--orange); border-color: var(--orange); }
 
   /* ---- hero ---- */
   .hero { padding: 68px 0 40px; }
@@ -309,12 +316,13 @@
   <div class="wrap">
     <a class="brand" href="#" aria-label="lumux home"><img class="brand-logo" src="logo.svg" alt="" width="28" height="28" /> lumux</a>
     <div class="links">
-      <a href="#features">Features</a>
-      <a href="#why">Why</a>
-      <a href="#platforms">Platforms</a>
-      <a href="#keys">Keys</a>
-      <a href="#config">Config</a>
-      <a href="#install">Install</a>
+      <a href="#features" data-zh="特性">Features</a>
+      <a href="#why" data-zh="为什么">Why</a>
+      <a href="#platforms" data-zh="平台">Platforms</a>
+      <a href="#keys" data-zh="快捷键">Keys</a>
+      <a href="#config" data-zh="配置">Config</a>
+      <a href="#install" data-zh="安装">Install</a>
+      <button class="lang-toggle" id="lang-toggle" type="button" aria-label="switch language">中文</button>
     </div>
   </div>
 </nav>
@@ -322,12 +330,12 @@
 <header class="hero">
   <div class="wrap hero-top">
     <img class="hero-logo" src="logo.svg" alt="lumux logo" width="92" height="92" />
-    <span class="badge">// written in Rust · ConPTY · pure-text attach · single binary</span>
-    <h1><span class="accent">tmux</span>, for the Windows host.</h1>
-    <p class="lede">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI. <strong style="color:var(--fg)">Runs natively on Windows, Linux, and macOS</strong> from a single binary.</p>
+    <span class="badge" data-zh="// 用 Rust 编写 · ConPTY · 纯文本连接 · 单一二进制">// written in Rust · ConPTY · pure-text attach · single binary</span>
+    <h1 data-zh="<span class=&quot;accent&quot;>tmux</span>，为 Windows 主机而生。"><span class="accent">tmux</span>, for the Windows host.</h1>
+    <p class="lede" data-zh="持久的会话、窗口和窗格，配合 tmux 快捷键——以<strong style=&quot;color:var(--fg)&quot;>纯文本</strong>形式通过 SSH，从 Windows Terminal、conhost 或任意 VT 终端中连接。无需 GPU，无需图形界面。<strong style=&quot;color:var(--fg)&quot;>在 Windows、Linux 和 macOS 上原生运行</strong>，只需单一二进制文件。">Persistent sessions, windows, and panes with tmux keybindings — attach as <strong style="color:var(--fg)">plain text</strong> over SSH from inside Windows Terminal, conhost, or any VT terminal. No GPU, no GUI. <strong style="color:var(--fg)">Runs natively on Windows, Linux, and macOS</strong> from a single binary.</p>
     <div class="cta">
-      <a class="btn btn-primary" href="#install">$ install lumux</a>
-      <a class="btn btn-ghost" href="#features">Explore features</a>
+      <a class="btn btn-primary" href="#install" data-zh="$ 安装 lumux">$ install lumux</a>
+      <a class="btn btn-ghost" href="#features" data-zh="浏览特性">Explore features</a>
     </div>
   </div>
 
@@ -429,7 +437,16 @@
     tape.push({t: T_KEY, run: function(){ dropCaret(); line(host, '<span class="press">'+html+'</span>'); if(after) after(); }});
   }
   // bare wait + caption
-  function say(text){ tape.push({t: T_SAY, run: function(){ cap.innerHTML = text; }}); }
+  // bare wait + caption. Captions are bilingual: say(en, zh). The active
+  // caption is remembered so a live language switch re-renders it (see the
+  // 'lumux:lang' listener at the bottom of this IIFE).
+  var curCap = null;                       // {en, zh} of the caption on screen
+  function renderCap(){
+    if (!curCap) return;
+    var zh = document.documentElement.lang === 'zh';
+    cap.innerHTML = (zh && curCap.zh) ? curCap.zh : curCap.en;
+  }
+  function say(en, zh){ tape.push({t: T_SAY, run: function(){ curCap = {en: en, zh: zh}; renderCap(); }}); }
   function pause(ms){ tape.push({t: ms, run: function(){}}); }
   function act(fn, t){ tape.push({t: t||40, run: fn}); }
   function settitle(s){ tape.push({t:30, run:function(){ title.textContent = s; }}); }
@@ -440,12 +457,12 @@
     // 1) new session ........................................................
     act(function(){ clearScreen(); setBar('srv','1:bash*'); });
     settitle('ssh winhost — lumux');
-    say('<b>lm new -s srv</b> — start a session; the server auto-spawns.');
+    say('<b>lm new -s srv</b> — start a session; the server auto-spawns.', '<b>lm new -s srv</b> —— 启动一个会话；服务端自动生成。');
     type('lm new -s srv');
     out('<span class="comment"># server auto-starts &middot; attached</span>');
 
     // 2) run a command, then split a pane ...................................
-    say('Run something, then <b>C-b |</b> splits a pane beside it — it inherits the dir.');
+    say('Run something, then <b>C-b |</b> splits a pane beside it — it inherits the dir.', '运行点什么，然后 <b>C-b |</b> 在旁边分出一个窗格 —— 它继承当前目录。');
     type('cargo run');
     out('<span class="out">listening on :8080</span>');
     out('<span class="out">request 200 /healthz</span>');
@@ -455,19 +472,19 @@
     out('<span class="out">PowerShell 7.4</span>');
 
     // 3) new window .........................................................
-    say('<b>C-b c</b> opens a new window — the status bar lists them, active marked <b>*</b>.');
+    say('<b>C-b c</b> opens a new window — the status bar lists them, active marked <b>*</b>.', '<b>C-b c</b> 打开一个新窗口 —— 状态栏列出它们，活动窗口标记为 <b>*</b>。');
     press(kbd('C-b','c'), function(){ newWindow(); });
     type('kubectl logs -f api');
     out('<span class="out">api &middot; replica 3/3 ready</span>');
 
     // 4) detach + new session ...............................................
-    say('<b>C-b d</b> detaches — srv keeps running. Then start a second session.');
+    say('<b>C-b d</b> detaches — srv keeps running. Then start a second session.', '<b>C-b d</b> 分离 —— srv 继续运行。然后启动第二个会话。');
     press(kbd('C-b','d'), function(){ detach(); });
     type('lm new -s deploy');
     out('<span class="comment"># a second, independent session</span>');
 
     // 5) switch session .....................................................
-    say('<b>C-b s</b> opens the session switcher — pick one and jump straight in.');
+    say('<b>C-b s</b> opens the session switcher — pick one and jump straight in.', '<b>C-b s</b> 打开会话切换器 —— 选一个直接跳进去。');
     press(kbd('C-b','s'), function(){ chooser(); });
     pause(2400);
   }
@@ -528,7 +545,11 @@
   function start(){                        // (re)start from the top
     clearTimers(); idx = 0; build(); playing = true; setBtn();
     if (reduce){                            // static fallback: final frame only
-      cap.innerHTML = 'A session, panes, windows, detach, and a session switcher — one continuous text stream.';
+      curCap = {
+        en: 'A session, panes, windows, detach, and a session switcher — one continuous text stream.',
+        zh: '一个会话、窗格、窗口、分离，以及会话切换器 —— 一条连续的文本流。'
+      };
+      renderCap();
       chooser(); playing = false; setBtn(); return;
     }
     step();
@@ -552,60 +573,63 @@
   demo.addEventListener('mouseenter', function(){ if(playing){ hoverPaused = true; pausePlayback(); } });
   demo.addEventListener('mouseleave', function(){ if(hoverPaused){ hoverPaused = false; resume(); } });
 
+  // Re-render the live demo caption when the page language is switched.
+  document.addEventListener('lumux:lang', renderCap);
+
   start();
 })();
 </script>
 
 <section id="features">
   <div class="wrap">
-    <div class="section-label">// capabilities</div>
-    <h2>Everything you reach for in tmux</h2>
-    <p class="section-sub">Server-side terminal emulation parses each pane into a cell grid and streams damage-tracked VT to every client — so any dumb terminal can render a full multiplexer.</p>
+    <div class="section-label" data-zh="// 能力">// capabilities</div>
+    <h2 data-zh="tmux 里你常用的一切">Everything you reach for in tmux</h2>
+    <p class="section-sub" data-zh="服务端终端仿真把每个窗格解析为单元格网格，并向每个客户端流式传输带损伤跟踪的 VT——于是任何简单终端都能渲染一个完整的多路复用器。">Server-side terminal emulation parses each pane into a cell grid and streams damage-tracked VT to every client — so any dumb terminal can render a full multiplexer.</p>
     <div class="features">
       <div class="card">
-        <div class="ico">◰ session</div>
-        <h3>Persistent sessions</h3>
-        <p>Detach, drop the SSH, reconnect — your shells and their processes are still running. Switch between sessions with <kbd>prefix</kbd> <kbd>s</kbd>.</p>
+        <div class="ico" data-zh="◰ 会话">◰ session</div>
+        <h3 data-zh="持久会话">Persistent sessions</h3>
+        <p data-zh="分离、断开 SSH、再重连——你的 shell 及其进程仍在运行。用 <kbd>prefix</kbd> <kbd>s</kbd> 在会话间切换。">Detach, drop the SSH, reconnect — your shells and their processes are still running. Switch between sessions with <kbd>prefix</kbd> <kbd>s</kbd>.</p>
       </div>
       <div class="card">
-        <div class="ico">▤ windows</div>
-        <h3>Windows &amp; tabs</h3>
-        <p>Create, cycle, rename, and jump to windows by index. A styled status bar shows the live window list with the active one marked <code>*</code>.</p>
+        <div class="ico" data-zh="▤ 窗口">▤ windows</div>
+        <h3 data-zh="窗口与标签">Windows &amp; tabs</h3>
+        <p data-zh="按编号创建、循环、重命名并跳转到窗口。带样式的状态栏显示实时窗口列表，活动窗口标记为 <code>*</code>。">Create, cycle, rename, and jump to windows by index. A styled status bar shows the live window list with the active one marked <code>*</code>.</p>
       </div>
       <div class="card">
-        <div class="ico">▦ panes</div>
-        <h3>Split, resize &amp; zoom</h3>
-        <p>Split horizontally or vertically (new panes inherit the dir), move focus by direction, resize with <kbd>H J K L</kbd>, zoom one pane fullscreen with <kbd>z</kbd>, and cycle preset layouts.</p>
+        <div class="ico" data-zh="▦ 窗格">▦ panes</div>
+        <h3 data-zh="分割、调整与缩放">Split, resize &amp; zoom</h3>
+        <p data-zh="水平或垂直分割（新窗格继承目录），按方向移动焦点，用 <kbd>H J K L</kbd> 调整大小，用 <kbd>z</kbd> 将单个窗格全屏缩放，并循环切换预设布局。">Split horizontally or vertically (new panes inherit the dir), move focus by direction, resize with <kbd>H J K L</kbd>, zoom one pane fullscreen with <kbd>z</kbd>, and cycle preset layouts.</p>
       </div>
       <div class="card">
-        <div class="ico">▥ vt</div>
-        <h3>Alternate screen</h3>
-        <p>vim, less, and htop render and restore correctly — full DEC alt-screen, cursor-visibility, and autowrap support.</p>
+        <div class="ico" data-zh="▥ vt">▥ vt</div>
+        <h3 data-zh="备用屏幕">Alternate screen</h3>
+        <p data-zh="vim、less 和 htop 都能正确渲染与还原——完整支持 DEC 备用屏幕、光标可见性和自动换行。">vim, less, and htop render and restore correctly — full DEC alt-screen, cursor-visibility, and autowrap support.</p>
       </div>
       <div class="card">
-        <div class="ico">⎘ copy</div>
-        <h3>Copy-mode</h3>
-        <p>Scroll history with arrows or vi keys, select, and yank straight to your local clipboard via OSC-52.</p>
+        <div class="ico" data-zh="⎘ 复制">⎘ copy</div>
+        <h3 data-zh="复制模式">Copy-mode</h3>
+        <p data-zh="用方向键或 vi 键滚动历史、选择，并通过 OSC-52 直接复制到本地剪贴板。">Scroll history with arrows or vi keys, select, and yank straight to your local clipboard via OSC-52.</p>
       </div>
       <div class="card">
-        <div class="ico">⚙ config</div>
-        <h3>Live config</h3>
-        <p>TOML config with a tmux-parity surface — prefix, bindings, shells, status bar. Reload without restarting.</p>
+        <div class="ico" data-zh="⚙ 配置">⚙ config</div>
+        <h3 data-zh="实时配置">Live config</h3>
+        <p data-zh="TOML 配置，具备 tmux 对等的能力面——前缀键、绑定、shell、状态栏。无需重启即可重载。">TOML config with a tmux-parity surface — prefix, bindings, shells, status bar. Reload without restarting.</p>
       </div>
       <div class="card">
-        <div class="ico">🖱 mouse</div>
-        <h3>Mouse support</h3>
-        <p>Click to select a pane, scroll the wheel into history, and drag a divider to resize. Optional, off by default.</p>
+        <div class="ico" data-zh="🖱 鼠标">🖱 mouse</div>
+        <h3 data-zh="鼠标支持">Mouse support</h3>
+        <p data-zh="点击选择窗格，滚轮滚入历史，拖动分隔线调整大小。可选，默认关闭。">Click to select a pane, scroll the wheel into history, and drag a divider to resize. Optional, off by default.</p>
       </div>
       <div class="card">
-        <div class="ico">⮂ switch</div>
-        <h3>Session switcher</h3>
-        <p>Press <kbd>prefix</kbd> <kbd>s</kbd> for an interactive list of every session, or <kbd>prefix</kbd> <kbd>?</kbd> for a help overlay generated from your live keymap.</p>
+        <div class="ico" data-zh="⮂ 切换">⮂ switch</div>
+        <h3 data-zh="会话切换器">Session switcher</h3>
+        <p data-zh="按 <kbd>prefix</kbd> <kbd>s</kbd> 打开所有会话的交互式列表，或按 <kbd>prefix</kbd> <kbd>?</kbd> 打开由实时键位图生成的帮助浮层。">Press <kbd>prefix</kbd> <kbd>s</kbd> for an interactive list of every session, or <kbd>prefix</kbd> <kbd>?</kbd> for a help overlay generated from your live keymap.</p>
       </div>
       <div class="card">
-        <div class="ico">$ shell</div>
-        <h3>Shell-agnostic</h3>
-        <p>PowerShell 5.x, pwsh, cmd, or anything else — ConPTY translates legacy console output to VT for free.</p>
+        <div class="ico" data-zh="$ shell">$ shell</div>
+        <h3 data-zh="与 shell 无关">Shell-agnostic</h3>
+        <p data-zh="PowerShell 5.x、pwsh、cmd 或其他任何 shell——ConPTY 免费把传统控制台输出翻译为 VT。">PowerShell 5.x, pwsh, cmd, or anything else — ConPTY translates legacy console output to VT for free.</p>
       </div>
     </div>
   </div>
@@ -614,11 +638,11 @@
 <section id="why">
   <div class="wrap split">
     <div class="prose">
-      <div class="section-label">// the one thing</div>
-      <h2>Pure-text, in-terminal attach</h2>
-      <p>WezTerm already offers persistence and panes on Windows — but it reattaches only through its own GPU GUI. lumux exists for the one thing that needs: <strong>plain-text attach from inside a terminal</strong>.</p>
-      <p>SSH into a Windows host, run <code style="color:var(--green)">lumux attach</code>, and you get your running session back as text — exactly like <code>tmux attach</code> on Linux. The session, and its processes, survive a dropped connection.</p>
-      <p>It's a <strong>single binary</strong> written in <strong>Rust</strong> that plays two roles, like tmux: a background <strong>server</strong> that owns the pseudo-terminals and the session tree, and a thin <strong>client</strong> that shuttles bytes over a named pipe. The client auto-starts the server, so you only ever run <code>lumux</code>.</p>
+      <div class="section-label" data-zh="// 唯一关键">// the one thing</div>
+      <h2 data-zh="纯文本、终端内连接">Pure-text, in-terminal attach</h2>
+      <p data-zh="WezTerm 已经能在 Windows 上提供持久化和窗格——但它只能通过自己的 GPU 图形界面重新连接。lumux 专为它做不到的那件事而生：<strong>从终端内进行纯文本连接</strong>。">WezTerm already offers persistence and panes on Windows — but it reattaches only through its own GPU GUI. lumux exists for the one thing that needs: <strong>plain-text attach from inside a terminal</strong>.</p>
+      <p data-zh="SSH 登录到 Windows 主机，运行 <code style=&quot;color:var(--green)&quot;>lumux attach</code>，你的运行中会话就会以文本形式回到眼前——和 Linux 上的 <code>tmux attach</code> 完全一样。会话及其进程在连接断开后依然存活。">SSH into a Windows host, run <code style="color:var(--green)">lumux attach</code>, and you get your running session back as text — exactly like <code>tmux attach</code> on Linux. The session, and its processes, survive a dropped connection.</p>
+      <p data-zh="它是一个用 <strong>Rust</strong> 编写的<strong>单一二进制文件</strong>，像 tmux 一样身兼两职：一个拥有伪终端和会话树的后台<strong>服务端</strong>，以及一个通过命名管道传送字节的轻量<strong>客户端</strong>。客户端会自动启动服务端，所以你始终只需运行 <code>lumux</code>。">It's a <strong>single binary</strong> written in <strong>Rust</strong> that plays two roles, like tmux: a background <strong>server</strong> that owns the pseudo-terminals and the session tree, and a thin <strong>client</strong> that shuttles bytes over a named pipe. The client auto-starts the server, so you only ever run <code>lumux</code>.</p>
     </div>
     <div>
       <div class="arch">┌─────────────  <b>lumux</b> (one binary)  ─────────────┐
@@ -635,34 +659,34 @@
   Terminal emulation is <b>server-side</b>: each pane's
   output is parsed into a cell grid and re-rendered
   as <b>damage-tracked VT</b> to every attached client.</div>
-      <p class="note">Because the whole multiplexer is platform-independent and talks to the OS through two small traits (PTY + transport), the same daemon and client run on Windows (ConPTY + named pipe) and Unix (PTY + socket) alike.</p>
+      <p class="note" data-zh="由于整个多路复用器与平台无关，并通过两个小 trait（PTY + 传输）与操作系统交互，同一套守护进程和客户端在 Windows（ConPTY + 命名管道）和 Unix（PTY + 套接字）上同样运行。">Because the whole multiplexer is platform-independent and talks to the OS through two small traits (PTY + transport), the same daemon and client run on Windows (ConPTY + named pipe) and Unix (PTY + socket) alike.</p>
     </div>
   </div>
 </section>
 
 <section id="platforms">
   <div class="wrap">
-    <div class="section-label">// runs everywhere</div>
-    <h2>Windows-first, not Windows-only</h2>
-    <p class="section-sub">lumux exists because Windows had no tmux. But it's built cross-platform from the ground up — one codebase, one binary, native on each OS. No WSL, no emulation.</p>
+    <div class="section-label" data-zh="// 处处运行">// runs everywhere</div>
+    <h2 data-zh="Windows 优先，但不只 Windows">Windows-first, not Windows-only</h2>
+    <p class="section-sub" data-zh="lumux 之所以存在，是因为 Windows 没有 tmux。但它从一开始就按跨平台构建——一套代码、一个二进制、在每个操作系统上原生运行。无需 WSL，无需模拟。">lumux exists because Windows had no tmux. But it's built cross-platform from the ground up — one codebase, one binary, native on each OS. No WSL, no emulation.</p>
     <div class="platforms">
       <div class="pcard">
         <div class="picon">🪟</div>
-        <h3>Windows</h3>
-        <p class="ptag">the target</p>
-        <p>ConPTY drives any shell — PowerShell 5.x, pwsh, cmd. Connects over a named pipe. Tested over real ConPTY on Windows CI. Requires Windows 10 1809+.</p>
+        <h3 data-zh="Windows">Windows</h3>
+        <p class="ptag" data-zh="主要目标">the target</p>
+        <p data-zh="ConPTY 驱动任意 shell——PowerShell 5.x、pwsh、cmd。通过命名管道连接。在 Windows CI 上经真实 ConPTY 测试。需要 Windows 10 1809+。">ConPTY drives any shell — PowerShell 5.x, pwsh, cmd. Connects over a named pipe. Tested over real ConPTY on Windows CI. Requires Windows 10 1809+.</p>
       </div>
       <div class="pcard">
         <div class="picon">🐧</div>
-        <h3>Linux</h3>
-        <p class="ptag">primary dev / CI</p>
-        <p>Native Unix-PTY backend over a Unix socket. The full test suite runs here every commit — attach, detach/reattach, splits, copy-mode, the lot.</p>
+        <h3 data-zh="Linux">Linux</h3>
+        <p class="ptag" data-zh="主要开发 / CI">primary dev / CI</p>
+        <p data-zh="基于 Unix 套接字的原生 Unix-PTY 后端。完整测试套件每次提交都在这里运行——连接、分离/重连、分割、复制模式，一应俱全。">Native Unix-PTY backend over a Unix socket. The full test suite runs here every commit — attach, detach/reattach, splits, copy-mode, the lot.</p>
       </div>
       <div class="pcard">
         <div class="picon">🍎</div>
-        <h3>macOS</h3>
-        <p class="ptag">universal binary</p>
-        <p>Same Unix backend as Linux. Ships as a universal2 binary — one file, native on both Apple Silicon and Intel.</p>
+        <h3 data-zh="macOS">macOS</h3>
+        <p class="ptag" data-zh="通用二进制">universal binary</p>
+        <p data-zh="与 Linux 相同的 Unix 后端。以 universal2 二进制发布——单个文件，在 Apple Silicon 和 Intel 上都原生运行。">Same Unix backend as Linux. Ships as a universal2 binary — one file, native on both Apple Silicon and Intel.</p>
       </div>
     </div>
   </div>
@@ -670,41 +694,41 @@
 
 <section id="keys">
   <div class="wrap">
-    <div class="section-label">// keybindings</div>
-    <h2>Muscle memory included</h2>
-    <p class="prefix-note">Prefix is <kbd>Ctrl-b</kbd> (rebindable). After the prefix:</p>
+    <div class="section-label" data-zh="// 快捷键">// keybindings</div>
+    <h2 data-zh="自带肌肉记忆">Muscle memory included</h2>
+    <p class="prefix-note" data-zh="前缀键是 <kbd>Ctrl-b</kbd>（可重新绑定）。按下前缀键之后：">Prefix is <kbd>Ctrl-b</kbd> (rebindable). After the prefix:</p>
     <div class="keys">
-      <div class="keyrow"><kbd>|</kbd><span>split left / right</span></div>
-      <div class="keyrow"><kbd>- &nbsp;"</kbd><span>split top / bottom</span></div>
-      <div class="keyrow"><kbd>c</kbd><span>new window</span></div>
-      <div class="keyrow"><kbd>n &nbsp;p</kbd><span>next / previous window</span></div>
-      <div class="keyrow"><kbd>l</kbd><span>last (previous) window</span></div>
-      <div class="keyrow"><kbd>0–9</kbd><span>select window by index</span></div>
-      <div class="keyrow"><kbd>&amp;</kbd><span>kill the current window</span></div>
-      <div class="keyrow"><kbd>↑↓←→</kbd><span>select pane in that direction</span></div>
-      <div class="keyrow"><kbd>;</kbd><span>last (previously focused) pane</span></div>
-      <div class="keyrow"><kbd>H J K L</kbd><span>resize the active pane</span></div>
-      <div class="keyrow"><kbd>z</kbd><span>zoom / unzoom the active pane</span></div>
-      <div class="keyrow"><kbd>Space</kbd><span>cycle preset layouts</span></div>
-      <div class="keyrow"><kbd>x</kbd><span>kill the active pane</span></div>
-      <div class="keyrow"><kbd>,</kbd><span>rename the current window</span></div>
-      <div class="keyrow"><kbd>$</kbd><span>rename the session</span></div>
-      <div class="keyrow"><kbd>[</kbd><span>enter copy-mode</span></div>
-      <div class="keyrow"><kbd>s</kbd><span>choose / switch session</span></div>
-      <div class="keyrow"><kbd>d</kbd><span>detach (session keeps running)</span></div>
-      <div class="keyrow"><kbd>r</kbd><span>reload the config file</span></div>
-      <div class="keyrow"><kbd>?</kbd><span>show the key-binding help</span></div>
-      <div class="keyrow"><kbd>Ctrl-b</kbd><span>send a literal Ctrl-b to the shell</span></div>
+      <div class="keyrow"><kbd>|</kbd><span data-zh="左右分割">split left / right</span></div>
+      <div class="keyrow"><kbd>- &nbsp;"</kbd><span data-zh="上下分割">split top / bottom</span></div>
+      <div class="keyrow"><kbd>c</kbd><span data-zh="新建窗口">new window</span></div>
+      <div class="keyrow"><kbd>n &nbsp;p</kbd><span data-zh="下一个 / 上一个窗口">next / previous window</span></div>
+      <div class="keyrow"><kbd>l</kbd><span data-zh="上一个（最近）窗口">last (previous) window</span></div>
+      <div class="keyrow"><kbd>0–9</kbd><span data-zh="按编号选择窗口">select window by index</span></div>
+      <div class="keyrow"><kbd>&amp;</kbd><span data-zh="关闭当前窗口">kill the current window</span></div>
+      <div class="keyrow"><kbd>↑↓←→</kbd><span data-zh="向该方向选择窗格">select pane in that direction</span></div>
+      <div class="keyrow"><kbd>;</kbd><span data-zh="上一个（最近聚焦的）窗格">last (previously focused) pane</span></div>
+      <div class="keyrow"><kbd>H J K L</kbd><span data-zh="调整当前窗格大小">resize the active pane</span></div>
+      <div class="keyrow"><kbd>z</kbd><span data-zh="缩放 / 取消缩放当前窗格">zoom / unzoom the active pane</span></div>
+      <div class="keyrow"><kbd>Space</kbd><span data-zh="循环切换预设布局">cycle preset layouts</span></div>
+      <div class="keyrow"><kbd>x</kbd><span data-zh="关闭当前窗格">kill the active pane</span></div>
+      <div class="keyrow"><kbd>,</kbd><span data-zh="重命名当前窗口">rename the current window</span></div>
+      <div class="keyrow"><kbd>$</kbd><span data-zh="重命名会话">rename the session</span></div>
+      <div class="keyrow"><kbd>[</kbd><span data-zh="进入复制模式">enter copy-mode</span></div>
+      <div class="keyrow"><kbd>s</kbd><span data-zh="选择 / 切换会话">choose / switch session</span></div>
+      <div class="keyrow"><kbd>d</kbd><span data-zh="分离（会话继续运行）">detach (session keeps running)</span></div>
+      <div class="keyrow"><kbd>r</kbd><span data-zh="重载配置文件">reload the config file</span></div>
+      <div class="keyrow"><kbd>?</kbd><span data-zh="显示快捷键帮助">show the key-binding help</span></div>
+      <div class="keyrow"><kbd>Ctrl-b</kbd><span data-zh="向 shell 发送字面量 Ctrl-b">send a literal Ctrl-b to the shell</span></div>
     </div>
-    <p class="prefix-note" style="margin-top:22px">Without the prefix (configurable root bindings) — e.g. <kbd>Alt</kbd>+<kbd>↑↓←→</kbd> jumps panes instantly. With <code>mouse = true</code>: click selects a pane, the wheel scrolls history, and dragging a divider resizes.</p>
+    <p class="prefix-note" style="margin-top:22px" data-zh="无需前缀键（可配置的根绑定）——例如 <kbd>Alt</kbd>+<kbd>↑↓←→</kbd> 可即时跳转窗格。当 <code>mouse = true</code> 时：点击选择窗格，滚轮滚动历史，拖动分隔线调整大小。">Without the prefix (configurable root bindings) — e.g. <kbd>Alt</kbd>+<kbd>↑↓←→</kbd> jumps panes instantly. With <code>mouse = true</code>: click selects a pane, the wheel scrolls history, and dragging a divider resizes.</p>
   </div>
 </section>
 
 <section id="config">
   <div class="wrap">
-    <div class="section-label">// configuration</div>
-    <h2>A familiar <code>.toml</code></h2>
-    <p class="section-sub">Lives at <code>%APPDATA%\lumux\config.toml</code>. Reload live with <code>lumux source-file &lt;path&gt;</code> or prefix + <kbd style="font-size:.78rem">r</kbd>.</p>
+    <div class="section-label" data-zh="// 配置">// configuration</div>
+    <h2 data-zh="熟悉的 <code>.toml</code>">A familiar <code>.toml</code></h2>
+    <p class="section-sub" data-zh="位于 <code>%APPDATA%\lumux\config.toml</code>。用 <code>lumux source-file &lt;path&gt;</code> 或前缀键 + <kbd style=&quot;font-size:.78rem&quot;>r</kbd> 实时重载。">Lives at <code>%APPDATA%\lumux\config.toml</code>. Reload live with <code>lumux source-file &lt;path&gt;</code> or prefix + <kbd style="font-size:.78rem">r</kbd>.</p>
     <div class="codecols">
 <pre><span class="c"># prefix &amp; behavior</span>
 <span class="n">prefix</span> = <span class="s">"C-a"</span>          <span class="c"># Ctrl-a</span>
@@ -737,9 +761,9 @@
 
 <section id="install">
   <div class="wrap">
-    <div class="section-label">// getting started</div>
-    <h2>Install lumux</h2>
-    <p class="section-sub">Grab a prebuilt binary for your platform — one line, no toolchain. Each command downloads the latest release and verifies its checksum.</p>
+    <div class="section-label" data-zh="// 开始使用">// getting started</div>
+    <h2 data-zh="安装 lumux">Install lumux</h2>
+    <p class="section-sub" data-zh="为你的平台获取预编译二进制——一行命令，无需工具链。每条命令都会下载最新版本并校验其校验和。">Grab a prebuilt binary for your platform — one line, no toolchain. Each command downloads the latest release and verifies its checksum.</p>
 
     <div class="install-grid">
       <div class="icard">
@@ -748,7 +772,7 @@
           <code id="cmd-mac">brew install hgaol/tap/lumux</code>
           <button class="copy" data-copy="cmd-mac" title="copy">⧉</button>
         </div>
-        <a class="dl" href="https://github.com/hgaol/lumux/releases/latest">Apple Silicon &amp; Intel binaries →</a>
+        <a class="dl" href="https://github.com/hgaol/lumux/releases/latest" data-zh="Apple Silicon 与 Intel 二进制 →">Apple Silicon &amp; Intel binaries →</a>
       </div>
 
       <div class="icard">
@@ -757,7 +781,7 @@
           <code id="cmd-linux">curl -fsSL https://hgaol.github.io/lumux/scripts/install.sh | sh</code>
           <button class="copy" data-copy="cmd-linux" title="copy">⧉</button>
         </div>
-        <a class="dl" href="scripts/install.sh">view the script</a>
+        <a class="dl" href="scripts/install.sh" data-zh="查看脚本">view the script</a>
       </div>
 
       <div class="icard">
@@ -766,21 +790,21 @@
           <code id="cmd-win">irm https://hgaol.github.io/lumux/scripts/install.ps1 | iex</code>
           <button class="copy" data-copy="cmd-win" title="copy">⧉</button>
         </div>
-        <a class="dl" href="scripts/install.ps1">view the script</a>
+        <a class="dl" href="scripts/install.ps1" data-zh="查看脚本">view the script</a>
       </div>
     </div>
 
     <div class="install-alt">
-      <span class="ialt-label">Also available:</span>
+      <span class="ialt-label" data-zh="也可以使用：">Also available:</span>
       <code>cargo install lumux</code>
       <span class="ialt-sep">·</span>
       <code>cargo binstall lumux</code>
       <span class="ialt-sep">·</span>
-      <a href="https://github.com/hgaol/lumux/releases/latest">direct downloads</a>
+      <a href="https://github.com/hgaol/lumux/releases/latest" data-zh="直接下载">direct downloads</a>
     </div>
 
-    <h2 style="margin-top:48px;font-size:1.5rem">…or build from source</h2>
-    <p class="section-sub">Requires Rust (stable). Produces a single <code>lumux</code> binary that runs as both client and server.</p>
+    <h2 style="margin-top:48px;font-size:1.5rem" data-zh="……或从源码构建">…or build from source</h2>
+    <p class="section-sub" data-zh="需要 Rust（stable）。产出单一的 <code>lumux</code> 二进制文件，同时作为客户端和服务端运行。">Requires Rust (stable). Produces a single <code>lumux</code> binary that runs as both client and server.</p>
     <div class="codecols">
 <pre><span class="c"># native build — Windows, Linux, or macOS</span>
 <span class="g">$</span> cargo build <span class="k">--release</span>
@@ -804,8 +828,8 @@
     </div>
 
     <div class="alias-tip">
-      <div class="alias-head"><span class="alias-ico">⌨</span> Tip — alias it to <code>lm</code></div>
-      <p>Like <code>tmux</code>, you live <em>inside</em> lumux once attached, so you only type the name to start or reattach. Drop it to two characters:</p>
+      <div class="alias-head"><span class="alias-ico">⌨</span> <span data-zh="提示 —— 把它别名为 <code>lm</code>">Tip — alias it to <code>lm</code></span></div>
+      <p data-zh="和 <code>tmux</code> 一样，连接后你就生活在 lumux <em>里面</em>，所以只需输入名字来启动或重连。把它缩到两个字符：">Like <code>tmux</code>, you live <em>inside</em> lumux once attached, so you only type the name to start or reattach. Drop it to two characters:</p>
       <div class="codecols">
 <pre><span class="c"># PowerShell  ($PROFILE)</span>
 <span class="g">&gt;</span> Set-Alias lm lumux
@@ -819,14 +843,14 @@
       </div>
     </div>
 
-    <p class="note">Sessions survive client/connection loss, but not a full OS logout or reboot — a Windows Service for cross-logout survival is a future idea.</p>
+    <p class="note" data-zh="会话在客户端/连接丢失后存活，但无法在完整的操作系统注销或重启后存活——跨注销存活的 Windows 服务是未来的设想。">Sessions survive client/connection loss, but not a full OS logout or reboot — a Windows Service for cross-logout survival is a future idea.</p>
   </div>
 </section>
 
 <footer>
   <div class="wrap">
     <span class="brand"><span class="caret" style="color:var(--green)">&gt;_</span> lumux</span>
-    <span>A tmux-like terminal multiplexer — Windows-first, runs on Linux &amp; macOS · MIT licensed</span>
+    <span data-zh="一个 tmux 风格的终端多路复用器 —— Windows 优先，同时运行于 Linux 和 macOS · MIT 许可">A tmux-like terminal multiplexer — Windows-first, runs on Linux &amp; macOS · MIT licensed</span>
   </div>
 </footer>
 
@@ -853,6 +877,58 @@
       }
     });
   });
+})();
+</script>
+
+<script>
+(function () {
+  // ---- bilingual toggle (English <-> 简体中文) -----------------------------
+  // English is authored inline (so the page works with no JS and defaults to
+  // English). Each translatable element carries a data-zh attribute with its
+  // Chinese innerHTML; on the first switch we snapshot the English innerHTML
+  // into data-en so we can swap back. Choice persists in localStorage and is
+  // auto-detected from the browser on first visit.
+  var KEY = 'lumux-lang';
+  var toggle = document.getElementById('lang-toggle');
+  var nodes = document.querySelectorAll('[data-zh]');
+
+  function apply(lang) {
+    var zh = lang === 'zh';
+    nodes.forEach(function (el) {
+      if (el.getAttribute('data-en') === null) {
+        el.setAttribute('data-en', el.innerHTML); // snapshot original English
+      }
+      el.innerHTML = zh ? el.getAttribute('data-zh') : el.getAttribute('data-en');
+    });
+    document.documentElement.lang = zh ? 'zh' : 'en';
+    if (toggle) {
+      // The button shows the language you'd switch TO.
+      toggle.textContent = zh ? 'EN' : '中文';
+      toggle.setAttribute('aria-label', zh ? 'switch to English' : '切换到中文');
+    }
+    // Let other scripts (the demo captions) re-render in the new language.
+    document.dispatchEvent(new CustomEvent('lumux:lang', { detail: lang }));
+  }
+
+  function current() {
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) {}
+    if (saved === 'zh' || saved === 'en') return saved;
+    // First visit: follow the browser, default English otherwise.
+    var nav = (navigator.language || '').toLowerCase();
+    return nav.indexOf('zh') === 0 ? 'zh' : 'en';
+  }
+
+  var lang = current();
+  apply(lang);
+
+  if (toggle) {
+    toggle.addEventListener('click', function () {
+      lang = (document.documentElement.lang === 'zh') ? 'en' : 'zh';
+      try { localStorage.setItem(KEY, lang); } catch (e) {}
+      apply(lang);
+    });
+  }
 })();
 </script>
 
