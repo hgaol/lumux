@@ -273,6 +273,55 @@ fn exiting_only_shell_closes_session() {
 }
 
 #[test]
+fn exiting_one_window_keeps_session_alive() {
+    // Regression: exiting a shell in a multi-window session must close only that
+    // window, not end the session. The daemon must signal this with PaneExited
+    // (a survivable event) and NOT SessionClosed — the client uses exactly that
+    // distinction to decide whether to stay attached.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("multi".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Open a second window (Ctrl-b c); the session now has two.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Exit the shell in the active (second) window. Its pane is the last in that
+    // window, so the window closes — but window 0 remains, so the session lives.
+    c.send(&ClientMsg::Input(b"exit\n".to_vec()));
+    let (saw_pane_exit, _) = c.collect_until(Duration::from_secs(3), |m| {
+        matches!(m, ServerMsg::Event(lumux_core::proto::Event::PaneExited { .. }))
+    });
+    assert!(
+        saw_pane_exit,
+        "exiting a window in a multi-window session should emit PaneExited"
+    );
+    // The session must still be alive: a resize forces a fresh repaint, and the
+    // status bar still lists the surviving window. A closed session would instead
+    // have sent SessionClosed/Detached and stopped rendering.
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (closed, vt) = c.collect_until(Duration::from_secs(2), |m| {
+        matches!(
+            m,
+            ServerMsg::Event(lumux_core::proto::Event::SessionClosed) | ServerMsg::Detached
+        )
+    });
+    assert!(
+        !closed,
+        "session must stay alive after one window of several exits"
+    );
+    assert!(
+        vt.contains("0:"),
+        "the surviving window should still render in the status bar; got:\n{vt}"
+    );
+}
+
+#[test]
 fn copy_mode_shows_mode_line() {
     let path = start_daemon();
     let mut c = TestClient::connect(&path);

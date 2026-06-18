@@ -7,13 +7,46 @@
 
 use std::io::{self, Read, Write};
 
-use lumux_core::proto::{encode, ClientMsg, Hello, ServerMsg, WireSize};
+use lumux_core::proto::{encode, ClientMsg, Event, Hello, ServerMsg, WireSize};
 use lumux_core::traits::{FrameReader, FrameWriter};
 
 #[cfg(unix)]
 use crate::term_unix::RawTerminal;
 #[cfg(windows)]
 use crate::term_win::RawTerminal;
+
+/// What the reader thread should do with one decoded message from the daemon.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ReaderAction {
+    /// Write these bytes to stdout (a VT frame, a reply, or the bell).
+    Write(Vec<u8>),
+    /// Nothing to do — e.g. a pane/window closed but the session survives and a
+    /// fresh frame follows to repaint.
+    Ignore,
+    /// End the attach: the session is gone or the daemon detached us.
+    Stop,
+}
+
+/// Decide what one daemon message means for the attach loop. Pure (no I/O) so
+/// the session-lifecycle rules are unit-testable.
+///
+/// The load-bearing rule: only a *session-ending* signal stops the attach.
+/// `Event::PaneExited` fires whenever a pane or window closes while the session
+/// is still alive (the daemon sends a frame right after to repaint), so it must
+/// NOT tear the client down — otherwise exiting one window kills the whole
+/// session for the user.
+pub fn reader_action(msg: ServerMsg) -> ReaderAction {
+    match msg {
+        ServerMsg::Frame(vt) => ReaderAction::Write(vt),
+        ServerMsg::Reply(text) => ReaderAction::Write(text.into_bytes()),
+        ServerMsg::Detached => ReaderAction::Stop,
+        ServerMsg::Event(Event::SessionClosed) => ReaderAction::Stop,
+        ServerMsg::Event(Event::Bell) => ReaderAction::Write(vec![0x07]),
+        // LayoutChanged / PaneExited: the session lives; a frame follows.
+        ServerMsg::Event(_) => ReaderAction::Ignore,
+        _ => ReaderAction::Ignore,
+    }
+}
 
 /// Perform the protocol handshake: send our Hello, read the daemon's, and check
 /// versions. Shared by attach and the control client.
@@ -105,28 +138,16 @@ where
         loop {
             match reader.read_frame() {
                 Ok(Some(bytes)) => match lumux_core::proto::decode::<ServerMsg>(&bytes) {
-                    Ok(ServerMsg::Frame(vt)) => {
-                        if stdout.write_all(&vt).is_err() {
-                            break;
-                        }
-                        let _ = stdout.flush();
-                    }
-                    Ok(ServerMsg::Detached) => break,
-                    // A bell flashes the user's own terminal; keep the session up.
-                    // Any other event (e.g. SessionClosed) ends the attach.
-                    Ok(ServerMsg::Event(ev)) => {
-                        if matches!(ev, lumux_core::proto::Event::Bell) {
-                            let _ = stdout.write_all(b"\x07");
+                    Ok(msg) => match reader_action(msg) {
+                        ReaderAction::Write(bytes) => {
+                            if stdout.write_all(&bytes).is_err() {
+                                break;
+                            }
                             let _ = stdout.flush();
-                        } else {
-                            break;
                         }
-                    }
-                    Ok(ServerMsg::Reply(text)) => {
-                        let _ = stdout.write_all(text.as_bytes());
-                        let _ = stdout.flush();
-                    }
-                    Ok(_) => {}
+                        ReaderAction::Ignore => {}
+                        ReaderAction::Stop => break,
+                    },
                     Err(_) => break,
                 },
                 _ => break,
@@ -327,4 +348,61 @@ fn spawn_daemon_process() -> anyhow::Result<()> {
     }
     cmd.spawn()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{reader_action, ReaderAction};
+    use lumux_core::proto::{Event, ServerMsg};
+
+    #[test]
+    fn pane_exit_does_not_end_the_attach() {
+        // The bug: exiting a shell in one window of a multi-window session tore
+        // down the whole client. The daemon signals that case with PaneExited
+        // (the session is still alive), so it must be ignored, not Stop.
+        assert_eq!(
+            reader_action(ServerMsg::Event(Event::PaneExited {
+                pane: "1".into(),
+                status: 0,
+            })),
+            ReaderAction::Ignore,
+        );
+    }
+
+    #[test]
+    fn layout_change_does_not_end_the_attach() {
+        assert_eq!(
+            reader_action(ServerMsg::Event(Event::LayoutChanged)),
+            ReaderAction::Ignore,
+        );
+    }
+
+    #[test]
+    fn session_closed_ends_the_attach() {
+        assert_eq!(
+            reader_action(ServerMsg::Event(Event::SessionClosed)),
+            ReaderAction::Stop,
+        );
+    }
+
+    #[test]
+    fn detached_ends_the_attach() {
+        assert_eq!(reader_action(ServerMsg::Detached), ReaderAction::Stop);
+    }
+
+    #[test]
+    fn bell_writes_the_bel_byte_and_stays_attached() {
+        assert_eq!(
+            reader_action(ServerMsg::Event(Event::Bell)),
+            ReaderAction::Write(vec![0x07]),
+        );
+    }
+
+    #[test]
+    fn frame_is_written_to_stdout() {
+        assert_eq!(
+            reader_action(ServerMsg::Frame(vec![b'h', b'i'])),
+            ReaderAction::Write(vec![b'h', b'i']),
+        );
+    }
 }
