@@ -547,8 +547,9 @@ fn next_prev_window_navigation() {
 #[test]
 fn last_window_toggles_back() {
     // prefix l jumps to the previously-active window. With base_index 0 the two
-    // windows render "0:0" and "1:" (new window, blank name); the active one is
-    // marked '*'. Create window 1 (active), then prefix l -> window 0 active.
+    // windows render "0:cmd" (the cmd.exe session) and "1:powershell" (new window
+    // via prefix c, default shell); the active one is marked '*'. Create window 1
+    // (active), then prefix l -> window 0 active.
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "lastw");
     c.send(&ClientMsg::Input(vec![0x02, b'c'])); // new window -> window 1 active
@@ -557,7 +558,7 @@ fn last_window_toggles_back() {
     c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
     let vt = c.drain(Duration::from_secs(2));
     assert!(
-        vt.contains("0:0*"),
+        vt.contains("0:cmd*"),
         "prefix l should re-activate the previous window (0); got:\n{vt}"
     );
 }
@@ -621,22 +622,23 @@ fn select_window_respects_base_index() {
     c.send(&ClientMsg::Input(vec![0x02, b'c']));
     c.drain(Duration::from_secs(1));
 
-    // Press prefix + 1: must focus the FIRST window. Its name is "0" (from the
-    // session's initial window), so the active marker lands on "1:0*".
+    // Press prefix + 1: must focus the FIRST window. It's the cmd.exe session, so
+    // its name is "cmd" and the active marker lands on "1:cmd*".
     c.send(&ClientMsg::Input(vec![0x02, b'1']));
     c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
     let vt = c.drain(Duration::from_secs(2));
     assert!(
-        vt.contains("1:0*"),
+        vt.contains("1:cmd*"),
         "prefix 1 should select window #1 under base_index=1; got:\n{vt}"
     );
 
-    // And prefix + 2 selects the second window (numbered 2, blank name): "2:*".
+    // And prefix + 2 selects the second window (numbered 2, the prefix-c window
+    // running the default shell, powershell): "2:powershell*".
     c.send(&ClientMsg::Input(vec![0x02, b'2']));
     c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
     let vt2 = c.drain(Duration::from_secs(2));
     assert!(
-        vt2.contains("2:*") && !vt2.contains("1:0*"),
+        vt2.contains("2:powershell*") && !vt2.contains("1:cmd*"),
         "prefix 2 should move the active marker to window #2; got:\n{vt2}"
     );
 }
@@ -741,7 +743,7 @@ fn mouse_click_status_bar_switches_window() {
     let path = start_daemon_with_config(cfg);
     let mut c = new_cmd_session(&path, "wclick");
     // Create a second window (index 1); it becomes active. Status row (default
-    // 24 rows -> row index 23) now reads "0:0 1:" at the far left.
+    // 24 rows -> row index 23) now reads "0:cmd 1:powershell" at the far left.
     c.send(&ClientMsg::Input(vec![0x02, b'c']));
     c.drain(Duration::from_secs(1));
     c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
@@ -752,13 +754,13 @@ fn mouse_click_status_bar_switches_window() {
     );
 
     // SGR left-click (button 0) on the status row at column 1 (1-based) = the
-    // "0" of entry "0:0" (window 0). Row is 24 (1-based) = bottom row.
+    // "0" of entry "0:cmd" (window 0). Row is 24 (1-based) = bottom row.
     c.send(&ClientMsg::Input(b"\x1b[<0;1;24M".to_vec()));
     c.send(&ClientMsg::Resize(WireSize { cols: 81, rows: 24 }));
     let after = c.drain(Duration::from_secs(2));
-    // Window 0 ("0:0") must now carry the active marker.
+    // Window 0 ("0:cmd") must now carry the active marker.
     assert!(
-        after.contains("0:0*"),
+        after.contains("0:cmd*"),
         "clicking the first window entry should activate window 0; got:\n{after}"
     );
 }

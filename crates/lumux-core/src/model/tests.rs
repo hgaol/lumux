@@ -489,3 +489,39 @@ fn split_after_layout_resets_preset() {
     }
     assert!(all_h(&w.layout), "preset should restart at even-horizontal after a split");
 }
+
+#[test]
+fn window_name_defaults_to_shell_basename() {
+    // Windows-style absolute path with .exe stripped.
+    assert_eq!(
+        resolve_window_name(String::new(), &[r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".to_string()]),
+        "powershell"
+    );
+    // Unix path.
+    assert_eq!(resolve_window_name(String::new(), &["/bin/zsh".to_string()]), "zsh");
+    assert_eq!(resolve_window_name(String::new(), &["/usr/bin/bash".to_string()]), "bash");
+    // Bare name, no extension.
+    assert_eq!(resolve_window_name(String::new(), &["pwsh".to_string()]), "pwsh");
+    // Explicit name always wins.
+    assert_eq!(
+        resolve_window_name("editor".to_string(), &["/bin/zsh".to_string()]),
+        "editor"
+    );
+    // Degenerate inputs fall back to "shell".
+    assert_eq!(resolve_window_name(String::new(), &[]), "shell");
+}
+
+#[test]
+fn new_session_and_window_get_shell_derived_names() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", vec!["/bin/bash".to_string()]);
+    // First window of a new session is named after the shell, not "0".
+    let s = srv.session(sid).unwrap();
+    let w0 = s.window(s.active_window()).unwrap();
+    assert_eq!(w0.name, "bash");
+    // A new window with an empty name also derives from its shell.
+    let wid = srv
+        .new_window(sid, "", vec!["powershell.exe".to_string()])
+        .unwrap();
+    assert_eq!(srv.session(sid).unwrap().window(wid).unwrap().name, "powershell");
+}

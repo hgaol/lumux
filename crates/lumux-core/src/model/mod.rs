@@ -421,8 +421,9 @@ impl Server {
         let sid = SessionId::alloc();
         let wid = WindowId::alloc();
         let pid = PaneId::alloc();
+        let win_name = resolve_window_name(String::new(), &shell);
         let pane = Pane::new(pid, shell);
-        let window = Window::new(wid, "0".to_string(), pane);
+        let window = Window::new(wid, win_name, pane);
         let session = Session::new(sid, name.into(), window);
         self.sessions.insert(sid, session);
         sid
@@ -437,7 +438,8 @@ impl Server {
         removed
     }
 
-    /// Add a window to a session. Returns the new window id.
+    /// Add a window to a session. Returns the new window id. An empty `name`
+    /// defaults to the shell's basename (tmux-style: "powershell", "zsh", …).
     pub fn new_window(
         &mut self,
         sid: SessionId,
@@ -447,8 +449,9 @@ impl Server {
         let session = self.sessions.get_mut(&sid)?;
         let wid = WindowId::alloc();
         let pid = PaneId::alloc();
+        let name = resolve_window_name(name.into(), &shell);
         let pane = Pane::new(pid, shell);
-        let window = Window::new(wid, name.into(), pane);
+        let window = Window::new(wid, name, pane);
         session.add_window(window);
         Some(wid)
     }
@@ -593,6 +596,39 @@ pub enum CascadeResult {
     WindowClosed,
     SessionClosed,
     NotFound,
+}
+
+/// Pick a window name: use `name` if non-empty, otherwise derive a tmux-style
+/// default from the shell argv's basename — e.g. `C:\…\powershell.exe` →
+/// "powershell", `/bin/zsh` → "zsh", `pwsh` → "pwsh". Falls back to "shell" if
+/// the argv is empty or yields nothing useful.
+pub fn resolve_window_name(name: String, shell: &[String]) -> String {
+    if !name.is_empty() {
+        return name;
+    }
+    shell
+        .first()
+        .map(|argv0| {
+            // Split on both separators so Windows paths work regardless of host.
+            let base = argv0
+                .rsplit(['/', '\\'])
+                .next()
+                .unwrap_or(argv0.as_str());
+            // Strip a trailing .exe/.com/.bat/.cmd extension (case-insensitive).
+            let stem = base
+                .rsplit_once('.')
+                .filter(|(_, ext)| {
+                    matches!(ext.to_ascii_lowercase().as_str(), "exe" | "com" | "bat" | "cmd")
+                })
+                .map(|(stem, _)| stem)
+                .unwrap_or(base);
+            if stem.is_empty() {
+                "shell".to_string()
+            } else {
+                stem.to_string()
+            }
+        })
+        .unwrap_or_else(|| "shell".to_string())
 }
 
 #[cfg(test)]
