@@ -275,3 +275,116 @@ fn diff_wide_char_does_not_shift_columns() {
         "the blank spacer after a wide glyph must NOT be emitted; got VT {vt:?}"
     );
 }
+
+/// Build a one-span segment of plain text for status-bar layout tests.
+fn span(text: &str) -> Vec<crate::status::Span> {
+    vec![crate::status::Span {
+        text: text.to_string(),
+        attrs: termwiz::cell::CellAttributes::default(),
+    }]
+}
+
+/// The status row must occupy exactly one line and never overflow the width,
+/// at every terminal width — including widths far too small to fit all three
+/// segments. This is the regression guard for the clock wrapping to a second
+/// line on resize.
+#[test]
+fn styled_status_is_always_one_line_at_any_width() {
+    let base = StyledStatus::base_attrs("colour236", "white");
+    let make = || StyledStatus {
+        left: span(" work "),
+        centre: span("1:zsh 2:vim* 3:top"),
+        right: span(" 07:20 18-Jun "),
+        base: base.clone(),
+        justify: Justify::Centre,
+    };
+    // Sweep from comfortably wide down to absurdly narrow.
+    for w in (1..=80).rev() {
+        let h = 2;
+        let mut screen = Screen::new(w, h);
+        make().render(&mut screen);
+        // Row above the status row must be untouched (all blank) — i.e. nothing
+        // wrapped upward.
+        let above = screen.row_string(0);
+        assert!(
+            above.trim().is_empty(),
+            "width {w}: status content leaked onto the row above: {above:?}"
+        );
+        // The status row itself must contain no cell past column w-1. row_string
+        // returns exactly the row's cells; assert its display width never exceeds
+        // w (chars().count(), since the test text is all single-width).
+        let row = screen.row_string(h - 1);
+        assert!(
+            row.chars().count() <= w,
+            "width {w}: status row is wider than the terminal: {} > {w} ({row:?})",
+            row.chars().count()
+        );
+    }
+}
+
+/// Segments must not overwrite each other: when everything fits, left, centre,
+/// and right are all present and in order; when the centre can't fit it is
+/// dropped rather than colliding with its neighbours.
+#[test]
+fn styled_status_segments_do_not_overlap() {
+    let base = StyledStatus::base_attrs("colour236", "white");
+    let s = StyledStatus {
+        left: span("L"),
+        centre: span("CC"),
+        right: span("R"),
+        base: base.clone(),
+        justify: Justify::Centre,
+    };
+    // Wide enough for all three.
+    let mut screen = Screen::new(20, 1);
+    s.render(&mut screen);
+    let row = screen.row_string(0);
+    assert!(row.starts_with('L'), "left segment at column 0: {row:?}");
+    assert!(row.contains("CC"), "centre present: {row:?}");
+    assert!(row.ends_with('R'), "right segment right-aligned: {row:?}");
+
+    // Too narrow for the centre: left + right only, no overlap, still one line.
+    let mut tiny = Screen::new(2, 1);
+    s.render(&mut tiny);
+    let row = tiny.row_string(0);
+    assert_eq!(row.chars().count(), 2, "row exactly fills width 2: {row:?}");
+    assert!(!row.contains("CC"), "centre dropped when it can't fit: {row:?}");
+}
+
+/// `centre_start` (used for click hit-testing) must equal the column where
+/// `render` actually paints the centre, at every width — otherwise mouse clicks
+/// on the window list land on the wrong window.
+#[test]
+fn centre_start_matches_rendered_centre() {
+    let base = StyledStatus::base_attrs("colour236", "white");
+    let s = StyledStatus {
+        left: span("[work] "),
+        centre: span("1:a 2:b"),
+        right: span(" 12:00 "),
+        base,
+        justify: Justify::Centre,
+    };
+    for w in 1..=60 {
+        let mut screen = Screen::new(w, 1);
+        s.render(&mut screen);
+        let cx = s.centre_start(w);
+        // centre_start must be within the row.
+        assert!(cx <= w, "width {w}: centre_start {cx} exceeds width");
+        // If the centre was drawn, its first char must appear at cx.
+        let row = screen.row_string(0);
+        let chars: Vec<char> = row.chars().collect();
+        if cx < w && cx < chars.len() && !s.centre.is_empty() {
+            let first = s.centre[0].text.chars().next().unwrap();
+            // Only assert when there was room for the centre (gap non-empty).
+            let left_w = s.left[0].text.chars().count().min(w);
+            let right_w = s.right[0].text.chars().count();
+            let right_start = w.saturating_sub(right_w).max(left_w);
+            if right_start > left_w {
+                assert_eq!(
+                    chars[cx], first,
+                    "width {w}: centre_start {cx} doesn't point at the centre's first char in {row:?}"
+                );
+            }
+        }
+    }
+}

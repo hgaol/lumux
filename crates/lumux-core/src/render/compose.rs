@@ -79,20 +79,26 @@ impl StyledStatus {
         spans.iter().map(|s| s.text.chars().count()).sum()
     }
 
+    /// Paint `spans` starting at column `x`, clipping at `limit` (exclusive) as
+    /// well as the screen edge. Returns the column just past the last cell
+    /// written. `limit` lets the caller stop a segment before it collides with a
+    /// following one, so the status row is always exactly one line.
     fn paint(
         screen: &mut Screen,
         y: usize,
         mut x: usize,
         spans: &[crate::status::Span],
         base: &CellAttributes,
-    ) {
+        limit: usize,
+    ) -> usize {
         let (w, _) = screen.dimensions();
+        let stop = limit.min(w);
         for span in spans {
             // Span attrs override the base, but inherit the base background when
             // the span doesn't set one (so the bar color fills behind text).
             for ch in span.text.chars() {
-                if x >= w {
-                    return;
+                if x >= stop {
+                    return x;
                 }
                 let mut a = span.attrs.clone();
                 if a.background() == termwiz::color::ColorAttribute::Default {
@@ -102,9 +108,41 @@ impl StyledStatus {
                 x += 1;
             }
         }
+        x
     }
 
-    /// Render into the bottom row of `screen`.
+    /// Compute the three segment columns for width `w`: where the left segment
+    /// ends, where the right segment starts, and where the centre is painted.
+    /// Shared by [`render`] and [`centre_start`] so click hit-testing matches the
+    /// drawn layout exactly. Guarantees `left_end <= centre_x <= right_start <= w`,
+    /// which is what keeps the row a single non-overlapping line.
+    fn layout_columns(&self, w: usize) -> StatusColumns {
+        let lw = Self::span_width(&self.left);
+        let rw = Self::span_width(&self.right);
+        let cw = Self::span_width(&self.centre);
+        let left_end = lw.min(w);
+        let right_start = w.saturating_sub(rw).max(left_end);
+        let centre_x = if right_start > left_end {
+            let ideal = match self.justify {
+                Justify::Left => left_end,
+                Justify::Right => right_start.saturating_sub(cw),
+                Justify::Centre => w.saturating_sub(cw) / 2,
+            };
+            ideal.clamp(left_end, right_start)
+        } else {
+            left_end
+        };
+        StatusColumns {
+            left_end,
+            centre_x,
+            right_start,
+        }
+    }
+
+    /// Render into the bottom row of `screen`. The three segments are laid out so
+    /// the row is ALWAYS a single line, even when their combined width exceeds the
+    /// terminal: left is clipped before right, right is clipped to the space after
+    /// left, and centre fills only the gap between them. Nothing ever wraps.
     pub fn render(&self, screen: &mut Screen) {
         let (w, h) = screen.dimensions();
         if h == 0 {
@@ -115,33 +153,39 @@ impl StyledStatus {
         for x in 0..w {
             screen.set_cell(x, y, Cell::new(' ', self.base.clone()));
         }
-        // Left segment at column 0.
-        Self::paint(screen, y, 0, &self.left, &self.base);
-        // Right segment right-aligned.
-        let rw = Self::span_width(&self.right);
-        Self::paint(screen, y, w.saturating_sub(rw), &self.right, &self.base);
-        // Centre segment per justification.
-        let cw = Self::span_width(&self.centre);
-        let cx = match self.justify {
-            Justify::Left => Self::span_width(&self.left),
-            Justify::Right => w.saturating_sub(rw + cw),
-            Justify::Centre => w.saturating_sub(cw) / 2,
-        };
-        Self::paint(screen, y, cx, &self.centre, &self.base);
+
+        let cols = self.layout_columns(w);
+        // Left at column 0, clipped where the right segment begins.
+        Self::paint(screen, y, 0, &self.left, &self.base, cols.right_start);
+        // Right, right-aligned, never before the left segment's end.
+        Self::paint(screen, y, cols.right_start, &self.right, &self.base, w);
+        // Centre fills only the gap [left_end, right_start); dropped if empty.
+        if cols.right_start > cols.left_end {
+            Self::paint(
+                screen,
+                y,
+                cols.centre_x,
+                &self.centre,
+                &self.base,
+                cols.right_start,
+            );
+        }
     }
 
     /// Starting column where the centre segment (the window list) is painted,
     /// for a status bar of width `w`. Mirrors the justification math in `render`
     /// so click hit-testing lines up exactly with what was drawn.
     pub fn centre_start(&self, w: usize) -> usize {
-        let rw = Self::span_width(&self.right);
-        let cw = Self::span_width(&self.centre);
-        match self.justify {
-            Justify::Left => Self::span_width(&self.left),
-            Justify::Right => w.saturating_sub(rw + cw),
-            Justify::Centre => w.saturating_sub(cw) / 2,
-        }
+        self.layout_columns(w).centre_x
     }
+}
+
+/// The three computed column boundaries of a styled status row (see
+/// [`StyledStatus::layout_columns`]).
+struct StatusColumns {
+    left_end: usize,
+    centre_x: usize,
+    right_start: usize,
 }
 
 /// Compose `view` into a Screen of `size`. The bottom row is reserved for the
