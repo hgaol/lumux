@@ -689,9 +689,9 @@ fn kill_pane_removes_split() {
 #[test]
 fn mouse_enabled_sends_reporting_and_acts_on_events() {
     // With mouse = true the daemon must (1) tell the client terminal to start
-    // reporting (DECSET 1002/1003/1006) on attach, and (2) act on incoming SGR
-    // mouse sequences. A scroll-up over a pane enters copy-mode (the only
-    // mouse action with an observable, shell-independent result).
+    // reporting (DECSET 1002 + 1006; NOT 1003 — see below) on attach, and (2) act
+    // on incoming SGR mouse sequences. A scroll-up over a pane enters copy-mode
+    // (the only mouse action with an observable, shell-independent result).
     let cfg = lumux_core::config::Config {
         mouse: true,
         ..Default::default()

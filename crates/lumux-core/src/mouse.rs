@@ -103,10 +103,17 @@ fn decode_button(b: u32, is_press: bool) -> Option<MouseKind> {
     })
 }
 
-/// VT sequence the client sends to enable SGR mouse reporting (button events +
-/// any-motion + SGR extended coordinates).
-pub const ENABLE: &str = "\x1b[?1002h\x1b[?1003h\x1b[?1006h";
-/// VT sequence to disable mouse reporting on detach.
+/// VT sequence the client sends to enable SGR mouse reporting: button-event
+/// tracking (DECSET 1002) + SGR extended coordinates (1006). 1002 reports
+/// presses, releases, scroll, and motion *while a button is held* (drag) — all
+/// lumux acts on. We deliberately do NOT enable any-motion tracking (1003):
+/// it floods a flurry of bare move events (button code 35) on terminals that
+/// honor it (e.g. Windows Terminal over RDP), which lumux ignores anyway but
+/// which can leak as visible `[<35;…M` text and disturb overlays. tmux likewise
+/// uses 1002, not 1003.
+pub const ENABLE: &str = "\x1b[?1002h\x1b[?1006h";
+/// VT sequence to disable mouse reporting on detach. Also clears 1003 in case an
+/// older build (or another program) left any-motion tracking on.
 pub const DISABLE: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l";
 
 #[cfg(test)]
@@ -173,5 +180,23 @@ mod tests {
         // col 128, row 40.
         let (ev, _) = parse(b"\x1b[<0;128;40M").unwrap();
         assert_eq!((ev.col, ev.row), (127, 39));
+    }
+
+    #[test]
+    fn enable_does_not_turn_on_any_motion_tracking() {
+        // Regression: enabling 1003 (any-motion) floods bare move events (code 35)
+        // on terminals that honor it (Windows Terminal over RDP), which leak as
+        // "[<35;…M" text and disturb overlays. We must enable button-event
+        // tracking (1002) and SGR coords (1006) but NOT any-motion (1003).
+        assert!(ENABLE.contains("1002h"), "must enable button-event tracking");
+        assert!(ENABLE.contains("1006h"), "must enable SGR extended coordinates");
+        assert!(
+            !ENABLE.contains("1003"),
+            "must NOT enable any-motion tracking (1003); got {ENABLE:?}"
+        );
+        // DISABLE should still clear all three, including 1003, to undo any older
+        // build that left it on.
+        assert!(DISABLE.contains("1002l") && DISABLE.contains("1006l"));
+        assert!(DISABLE.contains("1003l"), "disable must clear 1003 too");
     }
 }
