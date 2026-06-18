@@ -536,6 +536,9 @@ where
                     MouseKind::ScrollDown => self.mouse_scroll(client_id, session, false),
                     MouseKind::Drag(_) => self.mouse_drag(session, ev.col, ev.row),
                     MouseKind::Up(_) => self.mouse_drag_end(),
+                    // Bare pointer motion: consumed (so it can't leak as text) but
+                    // otherwise ignored — it must not dismiss overlays like help.
+                    MouseKind::Move => {}
                 }
                 i += used;
             } else {

@@ -22,6 +22,11 @@ pub enum MouseKind {
     Up(MouseButton),
     /// Motion with a button held (drag).
     Drag(MouseButton),
+    /// Pointer motion with NO button held (button code 3 + motion bit). Reported
+    /// because any-motion tracking (DECSET 1003) is on; the daemon ignores it,
+    /// but it MUST be parsed and consumed so the raw bytes don't leak through to
+    /// the keymap/shell as text like `[<35;54;21M`.
+    Move,
     /// Wheel scrolled up / down.
     ScrollUp,
     ScrollDown,
@@ -82,7 +87,12 @@ fn decode_button(b: u32, is_press: bool) -> Option<MouseKind> {
         0 => MouseButton::Left,
         1 => MouseButton::Middle,
         2 => MouseButton::Right,
-        _ => return None, // 3 = release-in-legacy; not used in SGR
+        // 3 = "no button". With the motion bit set this is a bare pointer move
+        // (DECSET 1003 any-motion tracking); consume it as Move. Without motion
+        // it's a legacy release, which SGR mode reports via 'm' instead — ignore.
+        _ => {
+            return if motion { Some(MouseKind::Move) } else { None };
+        }
     };
     Some(if motion {
         MouseKind::Drag(button)
@@ -132,6 +142,17 @@ mod tests {
         let (ev, _) = parse(b"\x1b[<32;10;7M").unwrap();
         assert_eq!(ev.kind, MouseKind::Drag(MouseButton::Left));
         assert_eq!((ev.col, ev.row), (9, 6));
+    }
+
+    #[test]
+    fn parses_bare_motion_as_move() {
+        // ESC[<35;54;21M — motion bit (0x20) + no button (low=3) = 35. This is
+        // the any-motion report (DECSET 1003) that previously failed to parse and
+        // leaked through as the literal text "[<35;54;21M", dismissing overlays.
+        let (ev, n) = parse(b"\x1b[<35;54;21M").unwrap();
+        assert_eq!(ev.kind, MouseKind::Move);
+        assert_eq!((ev.col, ev.row), (53, 20));
+        assert_eq!(n, 12);
     }
 
     #[test]
