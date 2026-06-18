@@ -547,6 +547,20 @@ impl Server {
         }
     }
 
+    /// Update an attached client's terminal size (on a client resize). Returns
+    /// false if the client is unknown. The session's [`effective_size`] is the
+    /// min over clients, so this is what makes a resize actually change the
+    /// rendered width (panes *and* the status bar).
+    pub fn set_client_size(&mut self, id: u64, size: PtySize) -> bool {
+        match self.clients.get_mut(&id) {
+            Some(c) => {
+                c.size = size;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub fn clients_of(&self, session: SessionId) -> Vec<&Client> {
         self.clients
             .values()

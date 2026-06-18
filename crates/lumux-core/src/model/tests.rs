@@ -254,6 +254,26 @@ fn smallest_client_wins_sizing() {
 }
 
 #[test]
+fn set_client_size_updates_effective_size() {
+    // Regression: a client resize must change the rendered width. Without
+    // updating the stored client size, effective_size stayed at the attach-time
+    // value, so the status bar kept right-aligning against the old (wider) width
+    // and wrapped onto a second line on the real terminal.
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let cid = srv.attach_client(sid, PtySize::new(120, 40)).unwrap();
+    assert_eq!(srv.effective_size(sid), Some(PtySize::new(120, 40)));
+    // Shrink (zoom out): effective size must follow.
+    assert!(srv.set_client_size(cid, PtySize::new(80, 24)));
+    assert_eq!(srv.effective_size(sid), Some(PtySize::new(80, 24)));
+    // Grow (zoom in): likewise.
+    assert!(srv.set_client_size(cid, PtySize::new(200, 50)));
+    assert_eq!(srv.effective_size(sid), Some(PtySize::new(200, 50)));
+    // Unknown client id is a no-op returning false.
+    assert!(!srv.set_client_size(9999, PtySize::new(10, 10)));
+}
+
+#[test]
 fn killing_session_drops_its_clients() {
     let mut srv = Server::new();
     let sid = srv.new_session("s", sh());

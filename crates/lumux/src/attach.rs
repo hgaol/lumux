@@ -94,7 +94,7 @@ fn run_attach<R, W>(
 ) -> anyhow::Result<()>
 where
     R: FrameReader + 'static,
-    W: FrameWriter,
+    W: FrameWriter + 'static,
 {
     let size = RawTerminal::size();
     // Whether to track terminal-size changes after attach (config `auto_resize`,
@@ -156,32 +156,53 @@ where
         reader_done.store(true, std::sync::atomic::Ordering::SeqCst);
     });
 
+    // Wrap the writer so both the stdin loop and the resize-watcher thread can
+    // send frames over the single transport.
+    let writer = std::sync::Arc::new(std::sync::Mutex::new(writer));
+
+    // Resize-watcher thread: sample the terminal size on its own timer and send a
+    // Resize whenever it changes. This MUST be its own thread: the stdin loop
+    // below blocks in read() — on Windows ReadConsoleW simply ignores
+    // window-resize events, so a size poll placed there only runs after the next
+    // keypress, and the UI would not re-fit until you typed. Polling on an
+    // independent timer keeps resize responsive regardless of keyboard activity.
+    let resize_handle = if auto_resize {
+        let writer = writer.clone();
+        let done = done.clone();
+        Some(std::thread::spawn(move || {
+            let mut last_size = size;
+            while !done.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(100));
+                let now = RawTerminal::size();
+                if now == last_size {
+                    continue;
+                }
+                last_size = now;
+                let msg = ClientMsg::Resize(WireSize {
+                    cols: now.cols,
+                    rows: now.rows,
+                });
+                let bytes = match encode(&msg) {
+                    Ok(b) => b,
+                    Err(_) => continue,
+                };
+                let Ok(mut w) = writer.lock() else { break };
+                if w.write_frame(&bytes).is_err() {
+                    break;
+                }
+            }
+        }))
+    } else {
+        None
+    };
+
     // Main thread: stdin -> daemon as Input frames. Reads are time-bounded so a
     // detach delivered while the user is idle still ends the client promptly.
     let mut stdin = io::stdin();
     let mut buf = [0u8; 4096];
-    // Last size we told the daemon, so we only send Resize on an actual change.
-    let mut last_size = size;
     loop {
         if done.load(std::sync::atomic::Ordering::SeqCst) {
             break;
-        }
-        // On every wakeup (keypress or the 100ms idle tick), check whether the
-        // terminal was resized and, if so, tell the daemon. This is what keeps
-        // the grid width in sync — crucial over SSH, where the size at attach is
-        // often stale until the SSH window-change negotiation settles.
-        if auto_resize {
-            let now = RawTerminal::size();
-            if now != last_size {
-                last_size = now;
-                let resize = ClientMsg::Resize(WireSize {
-                    cols: now.cols,
-                    rows: now.rows,
-                });
-                if writer.write_frame(&encode(&resize)?).is_err() {
-                    break;
-                }
-            }
         }
         // Wait briefly for stdin input; if nothing arrives, loop to re-check the
         // detach flag rather than blocking forever in read().
@@ -195,14 +216,16 @@ where
             Ok(n) => n,
             Err(_) => break,
         };
-        if writer
-            .write_frame(&encode(&ClientMsg::Input(buf[..n].to_vec()))?)
-            .is_err()
-        {
+        let frame = encode(&ClientMsg::Input(buf[..n].to_vec()))?;
+        let Ok(mut w) = writer.lock() else { break };
+        if w.write_frame(&frame).is_err() {
             break;
         }
     }
     let _ = reader_handle.join();
+    if let Some(h) = resize_handle {
+        let _ = h.join();
+    }
     // Disable mouse reporting before the terminal is restored (harmless if it
     // was never enabled).
     {

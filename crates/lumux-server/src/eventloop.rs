@@ -305,6 +305,11 @@ where
                 self.render_session(session);
             }
             ClientMsg::Resize(size) => {
+                // Update this client's stored size first so effective_size (the
+                // min over clients) reflects the new dimensions — otherwise the
+                // composed screen, and the right-aligned status segment, stay at
+                // the attach-time width and overflow/wrap on the real terminal.
+                self.daemon.server.set_client_size(client_id, size.into());
                 self.daemon.resize_session(session, size.into());
                 self.render_session(session);
             }
