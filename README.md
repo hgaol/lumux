@@ -3,6 +3,8 @@
     <source media="(prefers-color-scheme: dark)" srcset="assets/wordmark.png">
     <img src="assets/wordmark-light.png" alt="lumux" width="420">
   </picture>
+
+  <p><strong>English</strong> · <a href="README.zh-CN.md">简体中文</a></p>
 </div>
 
 **Like tmux, but with native Windows support.** A **lightweight, open-source**
