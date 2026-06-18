@@ -78,10 +78,17 @@ pub fn full_repaint(next: &Screen) -> String {
     let mut pen: Option<CellAttributes> = None;
 
     for y in 0..h {
-        // Find the last non-blank cell so we don't emit trailing blanks.
-        let last = (0..w)
-            .rev()
-            .find(|&x| next.cell(x, y).map(|c| c.str() != " ").unwrap_or(false));
+        // Find the last cell that needs painting. A cell is "blank" (skippable
+        // as trailing padding) only if it's a space with DEFAULT attributes — a
+        // space carrying a non-default background (e.g. the status bar filling
+        // its width with a colored background) must still be emitted, or the
+        // bar's color won't reach the right edge after a resize repaint.
+        let default_attrs = CellAttributes::default();
+        let last = (0..w).rev().find(|&x| {
+            next.cell(x, y)
+                .map(|c| c.str() != " " || c.attrs() != &default_attrs)
+                .unwrap_or(false)
+        });
         let _ = write!(out, "\x1b[{};1H", y + 1);
         if let Some(last) = last {
             let mut x = 0;
@@ -172,6 +179,38 @@ mod tests {
         assert!(out.contains("short"));
         // No long run of spaces padding to width 20.
         assert!(!out.contains("short               "));
+    }
+
+    #[test]
+    fn full_repaint_keeps_colored_trailing_spaces() {
+        // Regression: the status bar fills its width with spaces over a colored
+        // background. full_repaint must NOT trim those as "trailing blanks" — if
+        // it does, the bar's background stops short of the right edge after a
+        // resize repaint and the status line looks corrupted.
+        let mut s = Screen::new(8, 1);
+        let mut bg = CellAttributes::default();
+        bg.set_background(termwiz::color::ColorAttribute::PaletteIndex(24));
+        // "ab" followed by colored-background spaces to the edge.
+        s.set_cell(0, 0, Cell::new('a', bg.clone()));
+        s.set_cell(1, 0, Cell::new('b', bg.clone()));
+        for x in 2..8 {
+            s.set_cell(x, 0, Cell::new(' ', bg.clone()));
+        }
+        let out = full_repaint(&s);
+        // The colored background must be set, and all 8 columns painted: 'a','b'
+        // plus six spaces (the trailing colored spaces must survive trimming).
+        assert!(out.contains("\x1b[48;5;24m"), "colored bg SGR must be emitted: {out:?}");
+        assert!(out.contains("ab      "), "all 8 colored cells must be painted: {out:?}");
+    }
+
+    #[test]
+    fn full_repaint_still_trims_default_trailing_spaces() {
+        // The complement: genuinely-default trailing spaces (pane padding) are
+        // still trimmed, so we don't waste bytes padding every row to full width.
+        let s = screen_with(20, 1, &["hi"]);
+        let out = full_repaint(&s);
+        assert!(out.contains("hi"));
+        assert!(!out.contains("hi                "));
     }
 
     #[test]
