@@ -661,8 +661,8 @@ fn split_horizontal_draws_vertical_border() {
 fn split_vertical_draws_horizontal_border() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "splitv");
-    // Ctrl-b - -> stacked split; a horizontal border glyph appears.
-    c.send(&ClientMsg::Input(vec![0x02, b'-']));
+    // Ctrl-b " -> stacked split; a horizontal border glyph appears.
+    c.send(&ClientMsg::Input(vec![0x02, b'"']));
     let (saw, vt) = c.collect_text(Duration::from_secs(5), "\u{2500}");
     assert!(saw, "vertical split should draw a ─ border; got:\n{vt}");
 }
@@ -816,7 +816,7 @@ fn next_layout_rearranges_and_keeps_session_usable() {
     // Two splits -> three panes (mix of borders present).
     c.send(&ClientMsg::Input(vec![0x02, b'%']));
     c.collect_text(Duration::from_secs(5), "\u{2502}");
-    c.send(&ClientMsg::Input(vec![0x02, b'-']));
+    c.send(&ClientMsg::Input(vec![0x02, b'"']));
     c.drain(Duration::from_secs(1));
 
     // prefix Space -> even-horizontal (all side by side): vertical dividers '│'.
