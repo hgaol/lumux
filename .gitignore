@@ -3,3 +3,6 @@
 Cargo.lock
 /dist
 .intentionally-empty-file.o
+
+# local-only release helper (bumps sibling tap/bucket repos)
+/bump-packages.sh
