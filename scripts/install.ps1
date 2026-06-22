@@ -7,6 +7,15 @@
 # %LOCALAPPDATA%\lumux\bin (override with $env:LUMUX_INSTALL_DIR), adding that
 # directory to your user PATH. Re-run it to upgrade — it replaces a running
 # lumux.exe safely (see the rename-aside note below).
+#
+# The whole body runs inside a `& { ... }` child scope. This matters for the
+# `irm ... | iex` install path: Invoke-Expression runs the piped text in the
+# CALLER's session scope, so without this wrapper our variables, helper
+# functions, and especially `$ErrorActionPreference = 'Stop'` would leak into
+# the user's interactive session — and a leaked 'Stop' breaks PSReadLine and the
+# prompt, leaving a mangled "PSPS>" prompt. The child scope keeps everything
+# contained (and is a harmless no-op when run as a saved .ps1).
+& {
 $ErrorActionPreference = 'Stop'
 
 $repo   = 'hgaol/lumux'
@@ -123,3 +132,4 @@ Write-Host '   then start fresh.'
 Write-Host 'Start a session:  ' -NoNewline
 Write-Host 'lumux new -s work' -ForegroundColor Green -NoNewline
 Write-Host '   (tip: Set-Alias lm lumux)'
+}
