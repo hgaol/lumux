@@ -110,53 +110,110 @@ pub fn pane_at(layout: &BTreeMap<PaneId, Rect>, x: u16, y: u16) -> Option<PaneId
         .map(|(id, _)| *id)
 }
 
-/// Adjust the ratio of the split being dragged toward (col,row). For v1 this
-/// targets the *outermost* split on the axis the cursor is moving along: a
-/// horizontal drag adjusts the nearest vertical divider, a vertical drag the
-/// nearest horizontal one. The ratio is taken from the cursor's position within
-/// that split's area. Good enough for grabbing a divider and moving it; precise
-/// per-divider drag tracking is a follow-up.
-pub fn set_ratio_at(node: &mut PaneNode, col: u16, row: u16, area: Rect) {
-    if let PaneNode::Split {
+/// Identify which split divider the point (col,row) is on, if any, returning a
+/// path to that Split node: a sequence of `false`(first)/`true`(second) choices
+/// from the root. Used on mouse-press to decide whether a divider was grabbed —
+/// only then does a subsequent drag resize. Returns None when the point is in
+/// open pane area (not on a divider line), so a plain click-drag does nothing.
+pub fn divider_at(node: &PaneNode, col: u16, row: u16, area: Rect) -> Option<Vec<bool>> {
+    let PaneNode::Split {
         dir,
         ratio,
         first,
         second,
     } = node
-    {
-        let (a, b) = split_rect(area, *dir, *ratio);
-        match dir {
-            SplitDir::Horizontal => {
-                // If the cursor is within this split's rows, treat this divider
-                // as the drag target and set the ratio from the cursor column.
-                if row >= area.y && row < area.y + area.rows {
+    else {
+        return None;
+    };
+    let (a, b) = split_rect(area, *dir, *ratio);
+    // Is the cursor on THIS split's divider line?
+    let on_this = match dir {
+        SplitDir::Horizontal => {
+            let divider_col = a.x + a.cols;
+            row >= area.y && row < area.y + area.rows && near(col, divider_col)
+        }
+        SplitDir::Vertical => {
+            let divider_row = a.y + a.rows;
+            col >= area.x && col < area.x + area.cols && near(row, divider_row)
+        }
+    };
+    if on_this {
+        return Some(Vec::new());
+    }
+    // Otherwise descend into whichever child contains the cursor; prefix the
+    // path with the branch taken. This is what makes an inner divider reachable
+    // even when it shares an axis with an outer split.
+    if a.contains_point(col, row) {
+        let mut path = divider_at(first, col, row, a)?;
+        path.insert(0, false);
+        Some(path)
+    } else if b.contains_point(col, row) {
+        let mut path = divider_at(second, col, row, b)?;
+        path.insert(0, true);
+        Some(path)
+    } else {
+        None
+    }
+}
+
+/// Move the divider named by `path` (from [`divider_at`]) so its line follows
+/// the cursor at (col,row). Unlike grabbing, this does NOT require the cursor to
+/// still be near the divider — that's the whole point of remembering the grabbed
+/// divider for the duration of a drag, so the divider tracks the pointer even as
+/// it moves far away. Returns true if the path resolved to a split.
+pub fn set_ratio_by_path(
+    node: &mut PaneNode,
+    path: &[bool],
+    col: u16,
+    row: u16,
+    area: Rect,
+) -> bool {
+    let PaneNode::Split {
+        dir,
+        ratio,
+        first,
+        second,
+    } = node
+    else {
+        return false;
+    };
+    match path.split_first() {
+        // End of path: this is the grabbed divider — set its ratio from the
+        // cursor position within this area.
+        None => {
+            match dir {
+                SplitDir::Horizontal => {
                     let usable = area.cols.saturating_sub(DIVIDER).max(1) as f32;
-                    let rel = col.saturating_sub(area.x) as f32;
+                    let rel = col.saturating_sub(area.x).min(area.cols.saturating_sub(1)) as f32;
                     *ratio = (rel / usable).clamp(0.05, 0.95);
-                    return;
                 }
-                // Otherwise descend to the child that contains the point.
-                if col < a.x + a.cols {
-                    set_ratio_at(first, col, row, a);
-                } else {
-                    set_ratio_at(second, col, row, b);
+                SplitDir::Vertical => {
+                    let usable = area.rows.saturating_sub(DIVIDER).max(1) as f32;
+                    let rel = row.saturating_sub(area.y).min(area.rows.saturating_sub(1)) as f32;
+                    *ratio = (rel / usable).clamp(0.05, 0.95);
                 }
             }
-            SplitDir::Vertical => {
-                if col >= area.x && col < area.x + area.cols {
-                    let usable = area.rows.saturating_sub(DIVIDER).max(1) as f32;
-                    let rel = row.saturating_sub(area.y) as f32;
-                    *ratio = (rel / usable).clamp(0.05, 0.95);
-                    return;
-                }
-                if row < a.y + a.rows {
-                    set_ratio_at(first, col, row, a);
-                } else {
-                    set_ratio_at(second, col, row, b);
-                }
+            true
+        }
+        // Descend into the recorded branch with that child's sub-rectangle.
+        Some((&branch, tail)) => {
+            let (a, b) = split_rect(area, *dir, *ratio);
+            if branch {
+                set_ratio_by_path(second, tail, col, row, b)
+            } else {
+                set_ratio_by_path(first, tail, col, row, a)
             }
         }
     }
+}
+
+/// How many cells away from a divider line still counts as grabbing it. One
+/// cell of slack on each side makes the thin divider easy to catch with a mouse.
+const GRAB: u16 = 1;
+
+/// True if `pos` is within [`GRAB`] cells of `target`.
+fn near(pos: u16, target: u16) -> bool {
+    pos.abs_diff(target) <= GRAB
 }
 
 /// A geographic direction for pane navigation (tmux `select-pane -L/-R/-U/-D`).
@@ -416,30 +473,88 @@ mod tests {
 
     #[test]
     fn drag_resizes_horizontal_split() {
-        // [1 | 2] in 80x24, divider near x=40. Drag it to x=20.
+        // [1 | 2] in 80x24. Press on the divider to grab it, then drag far left
+        // to ~col 20 — the divider must track the cursor even though it's now far
+        // from where it started.
         let mut t = PaneNode::leaf(p(1));
         t.split_leaf(p(1), p(2), SplitDir::Horizontal);
         let vp80 = vp(80, 24);
-        // Drag the divider (initially ~col 40) to column 20.
-        set_ratio_at(&mut t, 40, 12, vp80);
+        let divider = compute(&t, vp80)[&p(1)].cols; // divider column
         let before = compute(&t, vp80)[&p(1)].cols;
-        set_ratio_at(&mut t, 20, 12, vp80);
+        let path = divider_at(&t, divider, 12, vp80).expect("press should grab the divider");
+        assert!(set_ratio_by_path(&mut t, &path, 20, 12, vp80));
         let after = compute(&t, vp80)[&p(1)].cols;
-        assert!(
-            after < before,
-            "left pane should shrink after dragging left"
-        );
-        // ~20 cols wide now.
+        assert!(after < before, "left pane should shrink after dragging left");
         assert!((after as i32 - 20).abs() <= 2);
     }
 
     #[test]
     fn drag_resizes_vertical_split() {
+        // [1 / 2] stacked. Grab the horizontal divider on its row, drag up to 6.
         let mut t = PaneNode::leaf(p(1));
         t.split_leaf(p(1), p(2), SplitDir::Vertical);
         let vp80 = vp(80, 24);
-        set_ratio_at(&mut t, 40, 6, vp80); // drag divider up to row 6
+        let divider_row = compute(&t, vp80)[&p(1)].rows;
+        let path = divider_at(&t, 40, divider_row, vp80).expect("press should grab the divider");
+        assert!(set_ratio_by_path(&mut t, &path, 40, 6, vp80));
         let top = compute(&t, vp80)[&p(1)].rows;
         assert!((top as i32 - 6).abs() <= 2);
+    }
+
+    #[test]
+    fn press_off_divider_grabs_nothing() {
+        // Regression: pressing in the open area of a pane (not on a divider) must
+        // grab no divider, so a subsequent drag does not resize. Previously any
+        // drag inside a split resized it.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        let vp80 = vp(80, 24);
+        // Cursor deep inside the left pane (col 10), far from the ~col-40 divider.
+        assert!(
+            divider_at(&t, 10, 12, vp80).is_none(),
+            "an off-divider press must not grab a divider"
+        );
+    }
+
+    #[test]
+    fn drag_tracks_divider_across_repeated_events() {
+        // Regression: a real drag sends many motion events. Once grabbed, the
+        // divider must keep following the cursor even as it moves well past the
+        // divider's current position (the old code re-tested proximity each event
+        // and lost the divider after the first move).
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        let vp80 = vp(80, 24);
+        let divider = compute(&t, vp80)[&p(1)].cols;
+        let path = divider_at(&t, divider, 12, vp80).expect("grab");
+        for target in [50u16, 30, 60, 15] {
+            assert!(set_ratio_by_path(&mut t, &path, target, 12, vp80));
+            let cols = compute(&t, vp80)[&p(1)].cols;
+            assert!((cols as i32 - target as i32).abs() <= 2, "divider should follow to {target}, got {cols}");
+        }
+    }
+
+    #[test]
+    fn drag_resizes_inner_horizontal_divider() {
+        // Regression: a horizontal (side-by-side) divider nested inside an outer
+        // vertical split must be grabbable and draggable. Layout: top pane (1),
+        // bottom is a left|right split (2 | 3).
+        //   +----------------+
+        //   |       1        |
+        //   +-------+--------+
+        //   |   2   |    3   |
+        //   +-------+--------+
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Vertical); // 1 over 2
+        t.split_leaf(p(2), p(3), SplitDir::Horizontal); // split 2 into 2|3
+        let vp80 = vp(80, 24);
+        let inner_divider_col = compute(&t, vp80)[&p(2)].cols; // x of the inner | divider
+        let bottom_row = compute(&t, vp80)[&p(2)].y + 1; // a row inside the bottom band
+        let before = compute(&t, vp80)[&p(2)].cols;
+        let path = divider_at(&t, inner_divider_col, bottom_row, vp80)
+            .expect("should grab the inner horizontal-split divider");
+        assert!(set_ratio_by_path(&mut t, &path, inner_divider_col + 15, bottom_row, vp80));
+        let after = compute(&t, vp80)[&p(2)].cols;
+        assert!(after > before, "inner-left pane should grow after dragging the inner divider right");
     }
 }

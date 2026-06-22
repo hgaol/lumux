@@ -114,6 +114,9 @@ pub struct Daemon<S: PtySystem> {
     /// Clients with an open text prompt (rename-window/-session): the target and
     /// the buffer typed so far.
     prompt: BTreeMap<u64, Prompt>,
+    /// Clients mid-divider-drag: the path to the divider grabbed on mouse-press,
+    /// so subsequent drag motion moves that same divider (even off its line).
+    dragging: BTreeMap<u64, Vec<bool>>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -149,6 +152,7 @@ impl<S: PtySystem> Daemon<S> {
             help: std::collections::BTreeSet::new(),
             choosing: BTreeMap::new(),
             prompt: BTreeMap::new(),
+            dragging: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -354,6 +358,7 @@ impl<S: PtySystem> Daemon<S> {
         self.help.remove(&client_id);
         self.choosing.remove(&client_id);
         self.prompt.remove(&client_id);
+        self.dragging.remove(&client_id);
         self.server.detach_client(client_id);
     }
 
@@ -699,6 +704,64 @@ impl<S: PtySystem> Daemon<S> {
             self.panes.remove(pid);
         }
         (panes, result)
+    }
+
+    /// Content viewport for `session` (full effective size minus the status row).
+    fn content_viewport(&self, session: SessionId) -> Option<lumux_core::layout::Rect> {
+        let size = self.server.effective_size(session)?;
+        Some(lumux_core::layout::Rect::new(
+            0,
+            0,
+            size.cols,
+            size.rows.saturating_sub(1),
+        ))
+    }
+
+    /// Mouse-press: if (col,row) is on a split divider, remember it as the
+    /// grabbed divider for `client_id` so a following drag resizes it. A press in
+    /// open pane area records nothing, so plain click-drags don't resize.
+    pub fn begin_drag(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) {
+        self.dragging.remove(&client_id);
+        let Some(vp) = self.content_viewport(session) else {
+            return;
+        };
+        let path = self
+            .server
+            .session(session)
+            .and_then(|s| s.window(s.active_window()).and_then(|w| w.divider_at(col, row, vp)));
+        if let Some(path) = path {
+            self.dragging.insert(client_id, path);
+        }
+    }
+
+    /// Mouse-drag: move the divider grabbed on press to follow the cursor, and
+    /// re-fit the PTYs. No-op (returns false) if this client didn't grab one.
+    pub fn drag_divider(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) -> bool {
+        let Some(path) = self.dragging.get(&client_id).cloned() else {
+            return false;
+        };
+        let Some(vp) = self.content_viewport(session) else {
+            return false;
+        };
+        let moved = self
+            .server
+            .session_mut(session)
+            .and_then(|s| {
+                let wid = s.active_window();
+                s.window_mut(wid).map(|w| w.drag_divider(&path, col, row, vp))
+            })
+            .unwrap_or(false);
+        if moved {
+            if let Some(size) = self.server.effective_size(session) {
+                self.resize_session(session, size);
+            }
+        }
+        moved
+    }
+
+    /// Mouse-release: end any divider drag for this client.
+    pub fn end_drag(&mut self, client_id: u64) {
+        self.dragging.remove(&client_id);
     }
 
     /// Render the active window of `session` for `client_id`, returning VT bytes

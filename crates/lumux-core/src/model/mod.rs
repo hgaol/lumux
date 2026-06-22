@@ -227,11 +227,24 @@ impl Window {
         }
     }
 
-    /// Adjust the split divider nearest to (col,row) by dragging it to that
-    /// position (mouse resize). Walks the layout tree, and for the split whose
-    /// divider line the point is on, recomputes its ratio from the cursor.
-    pub fn resize_split_at(&mut self, col: u16, row: u16, viewport: crate::layout::Rect) {
-        crate::layout::set_ratio_at(&mut self.layout, col, row, viewport);
+    /// Which divider line (if any) the point (col,row) sits on, as a path for
+    /// [`Self::drag_divider`]. Called on mouse-press to decide whether a divider
+    /// was grabbed. None when the point is in open pane area.
+    pub fn divider_at(&self, col: u16, row: u16, viewport: crate::layout::Rect) -> Option<Vec<bool>> {
+        crate::layout::divider_at(&self.layout, col, row, viewport)
+    }
+
+    /// Drag the previously-grabbed divider (by `path`) to follow the cursor at
+    /// (col,row). Returns true if it resolved to a split. The path is captured on
+    /// press so the divider tracks the pointer even once it moves off the line.
+    pub fn drag_divider(
+        &mut self,
+        path: &[bool],
+        col: u16,
+        row: u16,
+        viewport: crate::layout::Rect,
+    ) -> bool {
+        crate::layout::set_ratio_by_path(&mut self.layout, path, col, row, viewport)
     }
 }
 

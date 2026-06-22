@@ -531,11 +531,16 @@ where
         while i < bytes.len() {
             if let Some((ev, used)) = mouse::parse(&bytes[i..]) {
                 match ev.kind {
-                    MouseKind::Down(_) => self.mouse_select_pane(session, ev.col, ev.row),
+                    MouseKind::Down(_) => {
+                        // A press both focuses the pane under the cursor and, if
+                        // it landed on a divider, arms a drag-resize for it.
+                        self.mouse_select_pane(session, ev.col, ev.row);
+                        self.daemon.begin_drag(client_id, session, ev.col, ev.row);
+                    }
                     MouseKind::ScrollUp => self.mouse_scroll(client_id, session, true),
                     MouseKind::ScrollDown => self.mouse_scroll(client_id, session, false),
-                    MouseKind::Drag(_) => self.mouse_drag(session, ev.col, ev.row),
-                    MouseKind::Up(_) => self.mouse_drag_end(),
+                    MouseKind::Drag(_) => self.mouse_drag(client_id, session, ev.col, ev.row),
+                    MouseKind::Up(_) => self.daemon.end_drag(client_id),
                     // Bare pointer motion: consumed (so it can't leak as text) but
                     // otherwise ignored — it must not dismiss overlays like help.
                     MouseKind::Move => {}
@@ -598,24 +603,11 @@ where
         }
     }
 
-    /// Drag: adjust the split ratio under the cursor (resize panes).
-    fn mouse_drag(&mut self, session: SessionId, col: u16, row: u16) {
-        let size = self
-            .daemon
-            .server
-            .effective_size(session)
-            .unwrap_or(PtySize::new(80, 24));
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            let wid = s.active_window();
-            if let Some(w) = s.window_mut(wid) {
-                w.resize_split_at(col, row, viewport);
-            }
-        }
-    }
-
-    fn mouse_drag_end(&mut self) {
-        // Stateless for v1: each drag event re-derives the ratio from position.
+    /// Drag: move the divider grabbed on press (if any) to follow the cursor and
+    /// re-fit. A drag that didn't start on a divider is a no-op, so dragging in
+    /// open pane area never resizes.
+    fn mouse_drag(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) {
+        self.daemon.drag_divider(client_id, session, col, row);
     }
 
     /// Focus a window by the number the user sees (status-bar number, which
