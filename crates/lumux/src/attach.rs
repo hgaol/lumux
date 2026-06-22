@@ -126,6 +126,16 @@ where
 
     let _term = RawTerminal::enter()?;
 
+    // Enable bracketed paste on the outer terminal so pasted text arrives wrapped
+    // in ESC[200~..ESC[201~ and is forwarded to the pane verbatim (never
+    // interpreted as the prefix or a binding). Disabled again at cleanup below.
+    {
+        use std::io::Write;
+        let mut out = io::stdout();
+        let _ = out.write_all(lumux_core::keymap::PASTE_ENABLE.as_bytes());
+        let _ = out.flush();
+    }
+
     // Shared flag: set when the daemon detaches us (or the connection ends), so
     // the stdin loop can notice even while no keys are being pressed.
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -226,12 +236,13 @@ where
     if let Some(h) = resize_handle {
         let _ = h.join();
     }
-    // Disable mouse reporting before the terminal is restored (harmless if it
-    // was never enabled).
+    // Disable mouse reporting and bracketed paste before the terminal is
+    // restored (harmless if they were never enabled).
     {
         use std::io::Write;
         let mut out = io::stdout();
         let _ = out.write_all(lumux_core::mouse::DISABLE.as_bytes());
+        let _ = out.write_all(lumux_core::keymap::PASTE_DISABLE.as_bytes());
         let _ = out.flush();
     }
     Ok(())

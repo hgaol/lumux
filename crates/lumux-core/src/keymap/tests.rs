@@ -55,6 +55,57 @@ fn large_paste_chunk_ending_mid_escape_survives_intact() {
     assert_eq!(out_len, chunk.len(), "every pasted byte must reach the pane");
 }
 
+fn passthrough_bytes(reactions: Vec<Reaction>) -> Vec<u8> {
+    reactions
+        .into_iter()
+        .flat_map(|x| match x {
+            Reaction::PassThrough(b) => b,
+            _ => Vec::new(),
+        })
+        .collect()
+}
+
+#[test]
+fn bracketed_paste_body_is_forwarded_verbatim() {
+    use crate::keymap::{Mode, PASTE_END, PASTE_START};
+    let mut k = km();
+    // A paste whose BODY contains the prefix byte (Ctrl-b = 0x02) and a binding
+    // char ('%'). None of it may be interpreted — it must all reach the pane,
+    // markers included, and the keymap must return to Normal afterward.
+    let mut input = Vec::new();
+    input.extend_from_slice(PASTE_START);
+    input.extend_from_slice(b"a\x02b % c\n");
+    input.extend_from_slice(PASTE_END);
+    let out = passthrough_bytes(k.feed(&input));
+    assert_eq!(out, input, "paste body (and markers) must pass through untouched");
+    assert_eq!(k.mode(), Mode::Normal, "keymap returns to Normal after the end marker");
+
+    // After the paste, the prefix works normally again.
+    let r = k.feed(&[0x02, b'%']);
+    assert_eq!(r, vec![Reaction::Do(Action::SplitHorizontal)]);
+}
+
+#[test]
+fn bracketed_paste_split_across_feeds() {
+    use crate::keymap::{Mode, PASTE_END, PASTE_START};
+    let mut k = km();
+    // Start marker + first half of the body in one chunk...
+    let mut a = Vec::new();
+    a.extend_from_slice(PASTE_START);
+    a.extend_from_slice(b"first\x02half");
+    let out_a = passthrough_bytes(k.feed(&a));
+    assert_eq!(out_a, a, "first chunk forwarded verbatim");
+    assert_eq!(k.mode(), Mode::Paste, "still inside the paste between chunks");
+
+    // ...rest of the body + end marker in the next chunk.
+    let mut b = Vec::new();
+    b.extend_from_slice(b" second % half\n");
+    b.extend_from_slice(PASTE_END);
+    let out_b = passthrough_bytes(k.feed(&b));
+    assert_eq!(out_b, b, "second chunk forwarded verbatim incl. end marker");
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
 #[test]
 fn prefix_then_command_triggers_action() {
     let mut k = km();

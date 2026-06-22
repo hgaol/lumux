@@ -24,7 +24,22 @@ pub enum Mode {
     /// Capturing text for a prompt (rename-window/-session): printable keys
     /// extend the buffer, Enter commits, Escape cancels.
     Prompt,
+    /// Inside a bracketed paste (between ESC[200~ and ESC[201~): every byte is
+    /// forwarded verbatim to the pane, so pasted content can't trigger the
+    /// prefix or any binding. tmux behaves the same.
+    Paste,
 }
+
+/// Bracketed-paste markers (DECSET 2004). The terminal wraps pasted text in
+/// these so a multiplexer can forward it verbatim instead of interpreting it.
+pub const PASTE_START: &[u8] = b"\x1b[200~";
+pub const PASTE_END: &[u8] = b"\x1b[201~";
+
+/// VT sequence the client sends to enable bracketed paste on the outer terminal
+/// (so pastes arrive wrapped in [`PASTE_START`]/[`PASTE_END`]), and to disable
+/// it again at detach.
+pub const PASTE_ENABLE: &str = "\x1b[?2004h";
+pub const PASTE_DISABLE: &str = "\x1b[?2004l";
 
 /// What the daemon should do in response to a chunk of decoded input.
 #[derive(Debug, Clone, PartialEq)]
@@ -147,6 +162,30 @@ impl Keymap {
         }
 
         while i < input.len() {
+            // Bracketed paste: handled before key decoding, since the markers and
+            // the pasted body must never be interpreted as keys/bindings.
+            if matches!(self.mode, Mode::Paste) {
+                // Forward bytes verbatim until the end marker. Pass the marker
+                // through too, so a paste-aware app in the pane sees a complete
+                // bracketed paste.
+                if input[i..].starts_with(PASTE_END) {
+                    passthrough.extend_from_slice(PASTE_END);
+                    i += PASTE_END.len();
+                    self.mode = Mode::Normal;
+                } else {
+                    passthrough.push(input[i]);
+                    i += 1;
+                }
+                continue;
+            }
+            if matches!(self.mode, Mode::Normal) && input[i..].starts_with(PASTE_START) {
+                // Enter paste mode; forward the start marker to the pane.
+                passthrough.extend_from_slice(PASTE_START);
+                i += PASTE_START.len();
+                self.mode = Mode::Paste;
+                continue;
+            }
+
             let Some((key, consumed)) = decode_key(&input[i..]) else {
                 // decode_key only fails on an escape sequence truncated at the
                 // end of this chunk (e.g. a large paste split at the client's
@@ -252,6 +291,11 @@ impl Keymap {
                         None => {}
                     }
                 }
+                // Paste is fully handled at the top of the loop (the body is
+                // forwarded verbatim and never decoded into keys), so control
+                // never reaches here. Forward the byte defensively rather than
+                // panicking if that ever changes.
+                Mode::Paste => passthrough.extend_from_slice(raw),
             }
         }
         if !passthrough.is_empty() {
