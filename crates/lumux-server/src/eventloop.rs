@@ -537,8 +537,8 @@ where
                         self.mouse_select_pane(session, ev.col, ev.row);
                         self.daemon.begin_drag(client_id, session, ev.col, ev.row);
                     }
-                    MouseKind::ScrollUp => self.mouse_scroll(client_id, session, true),
-                    MouseKind::ScrollDown => self.mouse_scroll(client_id, session, false),
+                    MouseKind::ScrollUp => self.mouse_scroll(client_id, session, ev.col, ev.row, true),
+                    MouseKind::ScrollDown => self.mouse_scroll(client_id, session, ev.col, ev.row, false),
                     MouseKind::Drag(_) => self.mouse_drag(client_id, session, ev.col, ev.row),
                     MouseKind::Up(_) => self.daemon.end_drag(client_id),
                     // Bare pointer motion: consumed (so it can't leak as text) but
@@ -587,13 +587,44 @@ where
         }
     }
 
-    /// Wheel: enter copy-mode (if not already) and scroll the history.
-    fn mouse_scroll(&mut self, client_id: u64, session: SessionId, up: bool) {
+    /// Focus the pane whose rectangle contains (col,row), if any. Returns true if
+    /// a pane was focused. Used by scroll to target the pane under the pointer.
+    fn focus_pane_at(&mut self, session: SessionId, col: u16, row: u16) -> bool {
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        // The status bar row holds no pane.
+        if row >= size.rows.saturating_sub(1) {
+            return false;
+        }
+        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            let wid = s.active_window();
+            if let Some(w) = s.window_mut(wid) {
+                let rects = lumux_core::layout::compute(&w.layout, viewport);
+                if let Some(pid) = lumux_core::layout::pane_at(&rects, col, row) {
+                    w.focus_pane(pid);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Wheel: scroll the pane under the pointer. If not already in copy-mode,
+    /// focus that pane first and enter copy-mode there (tmux scrolls the pane the
+    /// wheel is over, not just the focused one). While already in copy-mode, the
+    /// current pane keeps scrolling so an in-progress selection isn't hijacked.
+    fn mouse_scroll(&mut self, client_id: u64, session: SessionId, col: u16, row: u16, up: bool) {
         use lumux_core::keymap::CopyKey;
         if !self.daemon.in_copy_mode(client_id) {
             if !up {
                 return; // scrolling down in live view does nothing
             }
+            // Focus the pane under the pointer so copy-mode opens on it.
+            self.focus_pane_at(session, col, row);
             self.daemon.enter_copy_mode(client_id, session);
         }
         let key = if up { CopyKey::Up } else { CopyKey::Down };

@@ -33,6 +33,29 @@ fn start_daemon() -> std::path::PathBuf {
     path
 }
 
+/// Like [`start_daemon`] but with mouse reporting enabled, for tests that drive
+/// SGR mouse events (scroll/drag). Mouse is off by default, so without this the
+/// daemon passes mouse sequences through as text instead of acting on them.
+fn start_daemon_mouse() -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(1_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let cfg = lumux_core::config::Config {
+        mouse: true,
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
 /// A tiny framed client over a raw UnixStream (mirrors the real client wire
 /// behavior without a terminal).
 struct TestClient {
@@ -376,6 +399,52 @@ fn copy_mode_keeps_other_panes_with_multiple_panes() {
     assert!(
         vt.contains('│'),
         "copy-mode must keep the divider/other pane, not paint full-screen; got:\n{vt}"
+    );
+}
+
+#[test]
+fn scroll_targets_the_pane_under_the_pointer() {
+    // tmux scrolls the pane the wheel is over, not just the focused one. After a
+    // % split the NEW (right) pane is focused; scrolling the wheel over the LEFT
+    // pane must focus it and scroll ITS history — revealing a line that has
+    // already scrolled off the live screen, which only appears when the left
+    // pane is the scroll target.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("scrl".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // In the left pane, print a unique marker then push it off-screen with enough
+    // blank lines that it's only visible by scrolling THIS pane's history.
+    c.send(&ClientMsg::Input(b"echo LEFT_HISTORY_XZ; for i in $(seq 1 40); do echo .; done\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Split right; focus moves to the new (right) pane, which has no such history.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Sanity: the marker has scrolled off — it's not on the live screen now.
+    let (_d0, live) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !live.contains("LEFT_HISTORY_XZ"),
+        "precondition: marker should be scrolled off the live view; got:\n{live}"
+    );
+    // Wheel-up many notches over the LEFT pane (SGR ESC[<64;col;row M, col 10);
+    // enough to scroll past the ~40 filler lines back to the marker.
+    for _ in 0..20 {
+        c.send(&ClientMsg::Input(b"\x1b[<64;10;12M".to_vec()));
+        c.collect_until(Duration::from_millis(60), |_| false);
+    }
+    // Force a full repaint so we capture the complete current screen.
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(vt.contains("COPY"), "wheel should open copy-mode; got:\n{vt}");
+    assert!(
+        vt.contains("LEFT_HISTORY_XZ"),
+        "scrolling over the LEFT pane must scroll ITS history into view; got:\n{vt}"
     );
 }
 
