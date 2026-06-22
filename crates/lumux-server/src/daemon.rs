@@ -109,6 +109,8 @@ pub struct Daemon<S: PtySystem> {
     message: BTreeMap<u64, String>,
     /// Clients currently showing the key-binding help overlay (tmux prefix ?).
     help: std::collections::BTreeSet<u64>,
+    /// Per-client scroll offset (first visible binding row) for the help overlay.
+    help_offset: BTreeMap<u64, usize>,
     /// Clients in the session switcher, with their current highlighted index.
     choosing: BTreeMap<u64, usize>,
     /// Clients with an open text prompt (rename-window/-session): the target and
@@ -150,6 +152,7 @@ impl<S: PtySystem> Daemon<S> {
             copy: BTreeMap::new(),
             message: BTreeMap::new(),
             help: std::collections::BTreeSet::new(),
+            help_offset: BTreeMap::new(),
             choosing: BTreeMap::new(),
             prompt: BTreeMap::new(),
             dragging: BTreeMap::new(),
@@ -356,6 +359,7 @@ impl<S: PtySystem> Daemon<S> {
         self.copy.remove(&client_id);
         self.message.remove(&client_id);
         self.help.remove(&client_id);
+        self.help_offset.remove(&client_id);
         self.choosing.remove(&client_id);
         self.prompt.remove(&client_id);
         self.dragging.remove(&client_id);
@@ -447,11 +451,38 @@ impl<S: PtySystem> Daemon<S> {
     }
 
     /// Toggle the help overlay for a client (tmux prefix ?). Showing it the
-    /// first time opens it; any key (which re-emits ShowHelp) closes it.
+    /// first time opens it (scrolled to the top); pressing it again (or q /
+    /// Escape) closes it.
     pub fn toggle_help(&mut self, client_id: u64) {
         if !self.help.remove(&client_id) {
             self.help.insert(client_id);
+            self.help_offset.insert(client_id, 0); // fresh open starts at the top
+        } else {
+            self.help_offset.remove(&client_id);
         }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    /// Scroll the help overlay for a client (tmux-style up/down/paging). The
+    /// offset is clamped against the list length at render time, so this only
+    /// needs to move it; over-scrolling is harmless.
+    pub fn help_scroll(&mut self, client_id: u64, key: lumux_core::keymap::HelpKey) {
+        use lumux_core::keymap::HelpKey;
+        let off = self.help_offset.entry(client_id).or_insert(0);
+        // A page is most of the visible binding rows; the exact clamp happens in
+        // render_help, which knows the screen height and entry count.
+        const PAGE: usize = 10;
+        *off = match key {
+            HelpKey::Up => off.saturating_sub(1),
+            HelpKey::Down => off.saturating_add(1),
+            HelpKey::PageUp => off.saturating_sub(PAGE),
+            HelpKey::PageDown => off.saturating_add(PAGE),
+            HelpKey::Top => 0,
+            HelpKey::Bottom => usize::MAX, // clamped to the last page in render
+            HelpKey::Close => *off,        // handled by toggle_help; no-op here
+        };
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();
         }
@@ -1057,24 +1088,40 @@ impl<S: PtySystem> Daemon<S> {
             .map(|k| k.bindings().help_entries())
             .unwrap_or_default();
 
-        screen.write_plain(0, 0, "lumux key bindings");
-        // Two-column key/description list starting on row 2.
         let key_width = entries
             .iter()
             .map(|(k, _)| k.len())
             .max()
             .unwrap_or(8)
             .min(20);
+
+        // The list occupies rows [2, max_y); the bottom row is the status line.
         let max_y = rows.saturating_sub(1);
-        for (i, (key, desc)) in entries.iter().enumerate() {
-            let y = 2 + i;
-            if y >= max_y {
-                break;
-            }
+        let visible = max_y.saturating_sub(2);
+        // Clamp the scroll offset so the last page can't scroll past the end
+        // (this is also where HelpKey::Bottom's usize::MAX resolves to the end).
+        let max_off = entries.len().saturating_sub(visible);
+        let off = (*self.help_offset.get(&client_id).unwrap_or(&0)).min(max_off);
+
+        screen.write_plain(0, 0, "lumux key bindings");
+        for (row, (key, desc)) in entries.iter().skip(off).take(visible).enumerate() {
             let line = format!("  {key:<key_width$}   {desc}");
-            screen.write_plain(0, y, &line);
+            screen.write_plain(0, 2 + row, &line);
         }
-        screen.status_line(rows.saturating_sub(1), "-- HELP --  press any key to close");
+
+        // Status line: scroll hint, plus a position indicator when it scrolls.
+        let status = if entries.len() > visible {
+            let shown_end = (off + visible).min(entries.len());
+            format!(
+                "-- HELP --  ↑/↓ PgUp/PgDn scroll, q closes   [{}-{}/{}]",
+                off + 1,
+                shown_end,
+                entries.len()
+            )
+        } else {
+            "-- HELP --  q / Escape closes".to_string()
+        };
+        screen.status_line(rows.saturating_sub(1), &status);
         screen.set_cursor(None);
 
         let renderer = self.renderers.get_mut(&client_id)?;

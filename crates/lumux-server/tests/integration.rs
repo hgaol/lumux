@@ -622,12 +622,53 @@ fn prefix_question_shows_help_overlay() {
         vt.contains("key bindings") && vt.contains("HELP"),
         "prefix ? should render the help overlay; got:\n{vt}"
     );
-    // Any key closes it and returns to the live shell view.
+    // q closes it and returns to the live shell view.
     c.send(&ClientMsg::Input(b"q".to_vec()));
     let (_d2, vt2) = c.collect_until(Duration::from_secs(2), |_| false);
     assert!(
         !vt2.contains("-- HELP --"),
-        "a keypress should dismiss the help overlay"
+        "q should dismiss the help overlay"
+    );
+}
+
+#[test]
+fn help_overlay_scrolls_with_arrows() {
+    // tmux shows key bindings in a scrollable view. The binding list is longer
+    // than the screen, so scrolling down must reveal later entries and hide the
+    // first one — and an unrelated keypress must NOT close the overlay.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("helpscroll".into()),
+        shell: Some("/bin/sh".into()),
+        // A short screen guarantees the binding list overflows and must scroll.
+        size: WireSize { cols: 80, rows: 12 },
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b'?']));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The status line shows a position indicator when the list overflows.
+    assert!(
+        vt.contains("-- HELP --") && vt.contains("scroll"),
+        "overflowing help should show a scroll hint; got:\n{vt}"
+    );
+    assert!(vt.contains("[1-"), "should start at the top (1-..); got:\n{vt}");
+    // Page down a few times; the overlay stays open and the window moves.
+    for _ in 0..3 {
+        c.send(&ClientMsg::Input(b"\x1b[6~".to_vec())); // PageDown
+        c.collect_until(Duration::from_millis(120), |_| false);
+    }
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 12 }));
+    let (_d2, vt2) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt2.contains("-- HELP --"),
+        "scrolling must not close the overlay; got:\n{vt2}"
+    );
+    assert!(
+        !vt2.contains("[1-"),
+        "after paging down, the view should no longer start at row 1; got:\n{vt2}"
     );
 }
 

@@ -165,14 +165,25 @@ fn prefixed_arrow_selects_pane_directionally() {
 }
 
 #[test]
-fn prefix_question_shows_help_and_any_key_dismisses() {
+fn prefix_question_shows_help_and_scrolls_or_closes() {
+    use crate::keymap::HelpKey;
     let mut k = km();
     // Ctrl-b ? opens help.
     let r = k.feed(&[0x02, b'?']);
     assert_eq!(r, vec![Reaction::Do(Action::ShowHelp)]);
     assert_eq!(k.mode(), Mode::Help);
-    // Any key dismisses (re-emits ShowHelp to toggle off) and swallows the key.
-    let r = k.feed(b"x");
+    // Movement keys scroll the list (and stay in Help). Down arrow = ESC[B.
+    let r = k.feed(b"\x1b[B");
+    assert_eq!(r, vec![Reaction::Help(HelpKey::Down)]);
+    assert_eq!(k.mode(), Mode::Help);
+    // vi 'j' also scrolls down; 'k' up.
+    assert_eq!(k.feed(b"j"), vec![Reaction::Help(HelpKey::Down)]);
+    assert_eq!(k.feed(b"k"), vec![Reaction::Help(HelpKey::Up)]);
+    // An unrecognized key is ignored (overlay stays open, key swallowed).
+    assert_eq!(k.feed(b"x"), vec![]);
+    assert_eq!(k.mode(), Mode::Help);
+    // 'q' closes (re-emits ShowHelp to toggle off) and swallows the key.
+    let r = k.feed(b"q");
     assert_eq!(r, vec![Reaction::Do(Action::ShowHelp)]);
     assert_eq!(k.mode(), Mode::Normal);
     // Normal typing resumes.

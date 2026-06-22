@@ -300,6 +300,9 @@ where
                         Reaction::Prompt(pk) => {
                             self.handle_prompt_key(client_id, session, pk);
                         }
+                        Reaction::Help(hk) => {
+                            self.daemon.help_scroll(client_id, hk);
+                        }
                     }
                 }
                 self.render_session(session);

@@ -39,6 +39,8 @@ pub enum Reaction {
     Session(SessionKey),
     /// A prompt edit key (text entry for rename); the daemon edits its buffer.
     Prompt(PromptKey),
+    /// A help-overlay navigation key (scroll the binding list, or close it).
+    Help(HelpKey),
 }
 
 /// Keys handled while a text prompt is open (rename-window/-session).
@@ -63,6 +65,20 @@ pub enum SessionKey {
     Index(u32),
     Confirm,
     Cancel,
+}
+
+/// Keys handled while the help overlay is open: scroll the binding list, or
+/// close it (tmux shows key bindings in a scrollable view).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HelpKey {
+    Up,
+    Down,
+    PageUp,
+    PageDown,
+    Top,
+    Bottom,
+    /// Close the overlay (q / Escape / ?).
+    Close,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -213,10 +229,18 @@ impl Keymap {
                     // Other keys are ignored while the switcher is open.
                 }
                 Mode::Help => {
-                    // Any key dismisses the help overlay; the key is swallowed.
+                    // tmux shows key bindings in a scrollable view: arrows / vi
+                    // keys / paging scroll the list; q / Escape / ? close it.
+                    // Unrecognized keys are ignored (the overlay stays open).
                     flush_passthrough!();
-                    self.mode = Mode::Normal;
-                    reactions.push(Reaction::Do(Action::ShowHelp));
+                    match help_key(&key) {
+                        Some(HelpKey::Close) => {
+                            self.mode = Mode::Normal;
+                            reactions.push(Reaction::Do(Action::ShowHelp));
+                        }
+                        Some(hk) => reactions.push(Reaction::Help(hk)),
+                        None => {}
+                    }
                 }
             }
         }
@@ -251,6 +275,22 @@ fn session_key(key: &Key) -> Option<SessionKey> {
         _ => return None,
     };
     Some(sk)
+}
+
+/// Map a key to a help-overlay action while the help overlay is open. Movement
+/// keys scroll; q / Escape / ? close. Other keys return None (ignored).
+fn help_key(key: &Key) -> Option<HelpKey> {
+    let hk = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => HelpKey::Up,
+        KeyCode::Down | KeyCode::Char('j') => HelpKey::Down,
+        KeyCode::PageUp => HelpKey::PageUp,
+        KeyCode::PageDown | KeyCode::Space => HelpKey::PageDown,
+        KeyCode::Home | KeyCode::Char('g') => HelpKey::Top,
+        KeyCode::End | KeyCode::Char('G') => HelpKey::Bottom,
+        KeyCode::Char('q') | KeyCode::Escape | KeyCode::Char('?') | KeyCode::Enter => HelpKey::Close,
+        _ => return None,
+    };
+    Some(hk)
 }
 
 /// Map a key to a prompt edit action while a text prompt (rename) is open.
