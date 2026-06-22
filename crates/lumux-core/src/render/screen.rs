@@ -54,6 +54,15 @@ impl Screen {
         }
     }
 
+    /// Set a single character with default attributes at (x,y). Convenience for
+    /// callers that don't depend on termwiz types (e.g. the daemon's copy-mode
+    /// overpaint), clipped to the screen bounds.
+    pub fn set_char(&mut self, x: usize, y: usize, ch: char) {
+        if x < self.width && y < self.height {
+            self.cells[y * self.width + x] = Cell::new(ch, CellAttributes::default());
+        }
+    }
+
     /// Write a string with given attributes starting at (x,y), clipped to the
     /// row. Returns the next x after the written text.
     pub fn write_str(&mut self, x: usize, y: usize, s: &str, attrs: &CellAttributes) -> usize {

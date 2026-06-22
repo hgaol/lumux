@@ -969,34 +969,74 @@ impl<S: PtySystem> Daemon<S> {
 
     /// Render the active pane's scrolled history for a client in copy-mode.
     fn render_copy_mode(&mut self, client_id: u64, session: SessionId) -> Option<String> {
-        use lumux_core::render::Screen;
+        use lumux_core::render::WindowView;
         let size = self.server.effective_size(session)?;
-        let pid = self.active_pane(session)?;
-        let grid = &self.panes.get(&pid)?.grid;
-        let cm = self.copy.get(&client_id)?;
+        let s = self.server.session(session)?;
+        let window = s.window(s.active_window())?;
+        let active = window.active_pane();
 
+        // Lay out exactly like the live view so the OTHER panes keep rendering in
+        // their rectangles. A zoomed pane fills the screen; otherwise the split
+        // tree. (Previously copy-mode painted the active pane full-screen, which
+        // blanked every other pane — visible the moment you scrolled.)
+        let layout = match window.zoomed_pane() {
+            Some(pid) => lumux_core::model::PaneNode::leaf(pid),
+            None => window.layout.clone(),
+        };
+        let mut grids = BTreeMap::new();
+        for pid in window.pane_ids() {
+            if let Some(p) = self.panes.get(&pid) {
+                grids.insert(pid, &p.grid);
+            }
+        }
+        let view = WindowView {
+            layout: &layout,
+            grids: &grids,
+            active_pane: active,
+        };
         let cols = size.cols as usize;
         let rows = size.rows as usize;
         let content_rows = rows.saturating_sub(1);
-        let mut screen = Screen::new(cols, rows);
+        let mut screen = compose((cols, rows), &view, None, true);
 
+        // The active pane's rectangle, into which we paint the scrolled view.
+        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, content_rows as u16);
+        let rect = *lumux_core::layout::compute(&layout, viewport).get(&active)?;
+        let grid = &self.panes.get(&active)?.grid;
+        let cm = self.copy.get(&client_id)?;
         let top = cm.top();
-        for vy in 0..content_rows {
+
+        // Overpaint only the active pane's rect with its scrolled-back rows,
+        // clipped to the rect so it never bleeds into a neighbor.
+        let (ox, oy) = (rect.x as usize, rect.y as usize);
+        for vy in 0..rect.rows as usize {
+            // Clear the rect row first (scrolled history may be shorter).
+            for vx in 0..rect.cols as usize {
+                screen.set_char(ox + vx, oy + vy, ' ');
+            }
             if let Some(row) = grid.combined_row(top + vy) {
-                screen.write_plain(0, vy, &row.to_string_full());
+                let text = row.to_string_full();
+                for (vx, ch) in text.chars().take(rect.cols as usize).enumerate() {
+                    screen.set_char(ox + vx, oy + vy, ch);
+                }
             }
         }
+
+        // Place the copy cursor within the pane rect (if visible in this scroll).
+        let cur = cm.cursor();
+        if cur.row >= top && cur.row < top + rect.rows as usize {
+            let cx = ox + cur.col.min(rect.cols.saturating_sub(1) as usize);
+            let cy = oy + (cur.row - top);
+            screen.set_cursor(Some((cx.min(cols.saturating_sub(1)), cy.min(content_rows.saturating_sub(1)))));
+        }
+
+        // Copy-mode status line across the reserved bottom row.
         let label = if cm.has_selection() {
             "-- COPY (selecting) --  arrows/PgUp/PgDn move, Enter yanks, q quits"
         } else {
             "-- COPY --  arrows/PgUp/PgDn move, Space selects, q quits"
         };
         screen.status_line(rows.saturating_sub(1), label);
-        // Place the cursor at the copy cursor position (relative to top).
-        let cur = cm.cursor();
-        if cur.row >= top && cur.row < top + content_rows {
-            screen.set_cursor(Some((cur.col.min(cols.saturating_sub(1)), cur.row - top)));
-        }
 
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))

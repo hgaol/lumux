@@ -345,6 +345,41 @@ fn copy_mode_shows_mode_line() {
 }
 
 #[test]
+fn copy_mode_keeps_other_panes_with_multiple_panes() {
+    // Regression: entering copy-mode (which scrolling does) used to paint the
+    // active pane full-screen, blanking every other pane and erasing the
+    // divider. With two panes side by side, copy-mode must still show the split
+    // — a vertical divider glyph — not a single full-width pane.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cpmulti".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Split into two side-by-side panes (Ctrl-b %), so a divider exists.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    let (_d, split_vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        split_vt.contains('│'),
+        "precondition: split should draw a divider; got:\n{split_vt}"
+    );
+    // Enter copy-mode, then force a full repaint via a resize.
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(vt.contains("COPY"), "should be in copy-mode; got:\n{vt}");
+    assert!(
+        vt.contains('│'),
+        "copy-mode must keep the divider/other pane, not paint full-screen; got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();
