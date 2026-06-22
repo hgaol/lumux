@@ -172,12 +172,11 @@ where
 
     fn on_connect(&mut self, first: ClientMsg, out: Sender<ServerMsg>, reply: Sender<u64>) {
         let (session, size) = match self.resolve_attach(&first) {
-            Some(v) => v,
-            None => {
-                // Spawn failed (bad shell argv) or malformed first message.
-                let _ = out.send(ServerMsg::Error(
-                    "failed to start session (check the shell command)".into(),
-                ));
+            Ok(v) => v,
+            Err(msg) => {
+                // Reject the client with the specific reason (duplicate session
+                // name, spawn failure, …) instead of attaching.
+                let _ = out.send(ServerMsg::Error(msg));
                 let _ = reply.send(0);
                 return;
             }
@@ -204,10 +203,10 @@ where
     }
 
     /// Determine the session+size for an attach/new-session first message,
-    /// spawning the session if needed. Returns None if spawning failed (e.g. a
-    /// bad shell argv) so the caller can reject the client cleanly instead of
-    /// crashing the daemon.
-    fn resolve_attach(&mut self, first: &ClientMsg) -> Option<(SessionId, PtySize)> {
+    /// spawning the session if needed. Returns Err(message) to reject the client
+    /// with a specific reason: a spawn failure (bad shell argv), or a duplicate
+    /// session name on new-session (tmux rejects these too).
+    fn resolve_attach(&mut self, first: &ClientMsg) -> Result<(SessionId, PtySize), String> {
         match first {
             ClientMsg::Attach { session, size } => {
                 let sz: PtySize = (*size).into();
@@ -216,19 +215,31 @@ where
                     None => self.daemon.server.session_ids().first().copied(),
                 };
                 if let Some(sid) = existing {
-                    Some((sid, sz))
+                    Ok((sid, sz))
                 } else {
                     let name = session.clone().unwrap_or_else(|| "0".into());
-                    Some((self.spawn_session(name, None, sz)?, sz))
+                    let sid = self
+                        .spawn_session(name, None, sz)
+                        .ok_or_else(|| "failed to start session (check the shell command)".to_string())?;
+                    Ok((sid, sz))
                 }
             }
             ClientMsg::NewSession { name, shell, size } => {
                 let sz: PtySize = (*size).into();
                 let shell = shell.clone().map(|s| vec![s]);
                 let name = name.clone().unwrap_or_else(|| "0".into());
-                Some((self.spawn_session(name, shell, sz)?, sz))
+                // tmux refuses `new-session -s <name>` when <name> already
+                // exists ("duplicate session: <name>"); match that rather than
+                // silently creating a second session with the same name.
+                if self.daemon.server.find_session_by_name(&name).is_some() {
+                    return Err(format!("duplicate session: {name}"));
+                }
+                let sid = self
+                    .spawn_session(name, shell, sz)
+                    .ok_or_else(|| "failed to start session (check the shell command)".to_string())?;
+                Ok((sid, sz))
             }
-            _ => None,
+            _ => Err("malformed first message".to_string()),
         }
     }
 
@@ -994,9 +1005,15 @@ where
         loop {
             match listener.accept() {
                 Ok(conn) => {
-                    if spawn_client(conn, tx.clone()).is_err() {
-                        continue;
-                    }
+                    // Service each client on its own thread so the accept loop
+                    // stays free to take more connections — spawn_client runs a
+                    // blocking reader loop for the life of the client, so calling
+                    // it inline would serve only one client at a time (no
+                    // multi-client attach, and a second connection would hang).
+                    let tx = tx.clone();
+                    std::thread::spawn(move || {
+                        let _ = spawn_client(conn, tx);
+                    });
                 }
                 Err(_) => break,
             }
@@ -1046,6 +1063,12 @@ fn spawn_client<C: Transport + 'static>(conn: C, tx: Sender<Msg>) -> std::io::Re
 
     let client_id = reply_rx.recv().unwrap_or(0);
     if client_id == 0 {
+        // Rejected (duplicate session name, spawn failure, …). on_connect put an
+        // Error on out_rx before replying 0; flush it to the socket so the client
+        // sees the reason, since the writer thread below never starts.
+        while let Ok(msg) = out_rx.try_recv() {
+            let _ = writer.write_frame(&encode(&msg).unwrap_or_default());
+        }
         return Ok(());
     }
 

@@ -124,6 +124,21 @@ where
     };
     writer.write_frame(&encode(&first)?)?;
 
+    // Wait for the daemon's verdict before touching the terminal: Attached means
+    // we're in; Error means it refused (e.g. a duplicate session name) — print
+    // the reason and exit non-zero without entering raw mode.
+    loop {
+        let reply = reader
+            .read_frame()?
+            .ok_or_else(|| anyhow::anyhow!("daemon closed before attach"))?;
+        match lumux_core::proto::decode::<ServerMsg>(&reply) {
+            Ok(ServerMsg::Attached { .. }) => break,
+            Ok(ServerMsg::Error(e)) => anyhow::bail!("{e}"),
+            // Stray frames before the ack (none expected) are ignored.
+            Ok(_) | Err(_) => continue,
+        }
+    }
+
     let _term = RawTerminal::enter()?;
 
     // Enable bracketed paste on the outer terminal so pasted text arrives wrapped

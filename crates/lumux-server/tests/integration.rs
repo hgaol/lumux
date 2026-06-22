@@ -250,6 +250,84 @@ fn detach_then_reattach_preserves_session() {
 }
 
 #[test]
+fn duplicate_session_name_is_rejected() {
+    // tmux refuses `new-session -s <name>` when the name already exists. A second
+    // NewSession with the same name must get an Error, not a fresh Attached.
+    let path = start_daemon();
+    let mut c1 = TestClient::connect(&path);
+    c1.send(&ClientMsg::NewSession {
+        name: Some("dup".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    let (created, _) = c1.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    assert!(created, "first session should be created");
+
+    // Second client tries the same name.
+    let mut c2 = TestClient::connect(&path);
+    c2.send(&ClientMsg::NewSession {
+        name: Some("dup".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    let mut got_error = false;
+    let mut got_attached = false;
+    let (_done, _) = c2.collect_until(Duration::from_secs(2), |m| match m {
+        ServerMsg::Error(e) if e.contains("duplicate session") => {
+            got_error = true;
+            true
+        }
+        ServerMsg::Attached { .. } => {
+            got_attached = true;
+            true
+        }
+        _ => false,
+    });
+    assert!(got_error, "duplicate name must be rejected with an error");
+    assert!(!got_attached, "duplicate name must NOT create/attach a session");
+}
+
+#[test]
+fn two_clients_can_attach_concurrently() {
+    // Regression: the accept loop used to service each client inline, blocking in
+    // its reader loop, so a second client could never connect while the first was
+    // alive — no shared/multi-client attach. Both clients must attach at once.
+    let path = start_daemon();
+    let mut a = TestClient::connect(&path);
+    a.send(&ClientMsg::NewSession {
+        name: Some("shared".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    let (a_ok, _) = a.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    assert!(a_ok, "first client attaches");
+
+    // Second client attaches to the SAME session while the first is still alive.
+    let mut b = TestClient::connect(&path);
+    b.send(&ClientMsg::Attach {
+        session: Some("shared".into()),
+        size: size(),
+    });
+    let (b_ok, _) = b.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    assert!(b_ok, "second client must attach while the first is still connected");
+
+    // Both connections are live: input from the second client reaches the shell
+    // and the first client (sharing the session) sees the echoed output.
+    b.send(&ClientMsg::Input(b"echo SHARED_OK_789\n".to_vec()));
+    let (_d, vt_a) = a.collect_until(Duration::from_secs(3), |_| false);
+    assert!(
+        vt_a.contains("SHARED_OK_789"),
+        "first client should see output driven by the second (shared session); got:\n{vt_a}"
+    );
+}
+
+#[test]
 fn split_creates_second_pane_with_border() {
     let path = start_daemon();
     let mut c = TestClient::connect(&path);
