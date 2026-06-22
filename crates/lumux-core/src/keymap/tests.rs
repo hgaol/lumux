@@ -13,6 +13,49 @@ fn plain_typing_passes_through() {
 }
 
 #[test]
+fn paste_ending_mid_escape_is_not_truncated() {
+    // Regression: a large paste is split into chunks at the client's read buffer
+    // boundary. If a chunk ends mid-escape-sequence (a bare ESC[ needing a third
+    // byte), decode_key returns None — and feed() used to `break`, silently
+    // dropping the rest of the chunk. Every byte fed must reach the pane.
+    let mut k = km();
+    // "echo hi" then a truncated CSI ("\x1b[") at the very end of the chunk.
+    let chunk = b"echo hi\x1b[";
+    let r = k.feed(chunk);
+    let got: Vec<u8> = r
+        .into_iter()
+        .flat_map(|x| match x {
+            Reaction::PassThrough(b) => b,
+            _ => Vec::new(),
+        })
+        .collect();
+    assert_eq!(got, chunk, "no bytes may be dropped, even a partial escape tail");
+}
+
+#[test]
+fn large_paste_chunk_ending_mid_escape_survives_intact() {
+    // Mirror the real failure: the client splits a big paste at its 4096-byte
+    // read buffer, and a chunk happens to end mid-escape-sequence. The whole
+    // chunk — including the truncated escape tail — must reach the pane.
+    let mut k = km();
+    let mut chunk = Vec::new();
+    for i in 0..5000u32 {
+        chunk.extend_from_slice(format!("line {i}\n").as_bytes());
+    }
+    // End the chunk on a bare CSI introducer (needs a third byte to decode).
+    chunk.extend_from_slice(b"\x1b[");
+    let r = k.feed(&chunk);
+    let out_len: usize = r
+        .iter()
+        .map(|x| match x {
+            Reaction::PassThrough(b) => b.len(),
+            _ => 0,
+        })
+        .sum();
+    assert_eq!(out_len, chunk.len(), "every pasted byte must reach the pane");
+}
+
+#[test]
 fn prefix_then_command_triggers_action() {
     let mut k = km();
     // Ctrl-b then '%'

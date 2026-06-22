@@ -148,6 +148,16 @@ impl Keymap {
 
         while i < input.len() {
             let Some((key, consumed)) = decode_key(&input[i..]) else {
+                // decode_key only fails on an escape sequence truncated at the
+                // end of this chunk (e.g. a large paste split at the client's
+                // read-buffer boundary). In Normal mode the remaining bytes are
+                // real input bound for the pane — pass them straight through
+                // rather than dropping them, which would silently truncate the
+                // paste. In the overlay modes (copy/help/prompt/chooser) a single
+                // key is expected, so an undecodable tail is just swallowed.
+                if matches!(self.mode, Mode::Normal) {
+                    passthrough.extend_from_slice(&input[i..]);
+                }
                 break;
             };
             let raw = &input[i..i + consumed];
