@@ -462,11 +462,11 @@
     out('<span class="comment"># server auto-starts &middot; attached</span>');
 
     // 2) run a command, then split a pane ...................................
-    say('Run something, then <b>C-b |</b> splits a pane beside it — it inherits the dir.', '运行点什么，然后 <b>C-b |</b> 在旁边分出一个窗格 —— 它继承当前目录。');
+    say('Run something, then <b>C-b %</b> splits a pane beside it — it inherits the dir.', '运行点什么，然后 <b>C-b %</b> 在旁边分出一个窗格 —— 它继承当前目录。');
     type('cargo run');
     out('<span class="out">listening on :8080</span>');
     out('<span class="out">request 200 /healthz</span>');
-    press(kbd('C-b','|') + ' &nbsp;split &rarr;', function(){ splitNow(); });
+    press(kbd('C-b','%') + ' &nbsp;split &rarr;', function(){ splitNow(); });
     // after split, the new (right) pane is focused
     type('pwsh');
     out('<span class="out">PowerShell 7.4</span>');
@@ -599,7 +599,7 @@
       <div class="card">
         <div class="ico" data-zh="▦ 窗格">▦ panes</div>
         <h3 data-zh="分割、调整与缩放">Split, resize &amp; zoom</h3>
-        <p data-zh="水平或垂直分割（新窗格继承目录），按方向移动焦点，用 <kbd>H J K L</kbd> 调整大小，用 <kbd>z</kbd> 将单个窗格全屏缩放，并循环切换预设布局。">Split horizontally or vertically (new panes inherit the dir), move focus by direction, resize with <kbd>H J K L</kbd>, zoom one pane fullscreen with <kbd>z</kbd>, and cycle preset layouts.</p>
+        <p data-zh="水平或垂直分割（新窗格继承目录），按方向移动焦点，用 <kbd>Ctrl/Alt+方向键</kbd> 调整大小，用 <kbd>z</kbd> 将单个窗格全屏缩放，并循环切换预设布局。">Split horizontally or vertically (new panes inherit the dir), move focus by direction, resize with <kbd>Ctrl/Alt+arrows</kbd>, zoom one pane fullscreen with <kbd>z</kbd>, and cycle preset layouts.</p>
       </div>
       <div class="card">
         <div class="ico" data-zh="▥ vt">▥ vt</div>
@@ -698,8 +698,8 @@
     <h2 data-zh="自带肌肉记忆">Muscle memory included</h2>
     <p class="prefix-note" data-zh="前缀键是 <kbd>Ctrl-b</kbd>（可重新绑定）。按下前缀键之后：">Prefix is <kbd>Ctrl-b</kbd> (rebindable). After the prefix:</p>
     <div class="keys">
-      <div class="keyrow"><kbd>|</kbd><span data-zh="左右分割">split left / right</span></div>
-      <div class="keyrow"><kbd>- &nbsp;"</kbd><span data-zh="上下分割">split top / bottom</span></div>
+      <div class="keyrow"><kbd>"</kbd><span data-zh="上下分割">split top / bottom</span></div>
+      <div class="keyrow"><kbd>%</kbd><span data-zh="左右分割">split left / right</span></div>
       <div class="keyrow"><kbd>c</kbd><span data-zh="新建窗口">new window</span></div>
       <div class="keyrow"><kbd>n &nbsp;p</kbd><span data-zh="下一个 / 上一个窗口">next / previous window</span></div>
       <div class="keyrow"><kbd>l</kbd><span data-zh="上一个（最近）窗口">last (previous) window</span></div>
@@ -707,7 +707,8 @@
       <div class="keyrow"><kbd>&amp;</kbd><span data-zh="关闭当前窗口">kill the current window</span></div>
       <div class="keyrow"><kbd>↑↓←→</kbd><span data-zh="向该方向选择窗格">select pane in that direction</span></div>
       <div class="keyrow"><kbd>;</kbd><span data-zh="上一个（最近聚焦的）窗格">last (previously focused) pane</span></div>
-      <div class="keyrow"><kbd>H J K L</kbd><span data-zh="调整当前窗格大小">resize the active pane</span></div>
+      <div class="keyrow"><kbd>Ctrl+↑↓←→</kbd><span data-zh="调整当前窗格大小">resize the active pane</span></div>
+      <div class="keyrow"><kbd>Alt+↑↓←→</kbd><span data-zh="调整当前窗格大小（步长更大）">resize the active pane (larger step)</span></div>
       <div class="keyrow"><kbd>z</kbd><span data-zh="缩放 / 取消缩放当前窗格">zoom / unzoom the active pane</span></div>
       <div class="keyrow"><kbd>Space</kbd><span data-zh="循环切换预设布局">cycle preset layouts</span></div>
       <div class="keyrow"><kbd>x</kbd><span data-zh="关闭当前窗格">kill the active pane</span></div>
@@ -716,7 +717,6 @@
       <div class="keyrow"><kbd>[</kbd><span data-zh="进入复制模式">enter copy-mode</span></div>
       <div class="keyrow"><kbd>s</kbd><span data-zh="选择 / 切换会话">choose / switch session</span></div>
       <div class="keyrow"><kbd>d</kbd><span data-zh="分离（会话继续运行）">detach (session keeps running)</span></div>
-      <div class="keyrow"><kbd>r</kbd><span data-zh="重载配置文件">reload the config file</span></div>
       <div class="keyrow"><kbd>?</kbd><span data-zh="显示快捷键帮助">show the key-binding help</span></div>
       <div class="keyrow"><kbd>Ctrl-b</kbd><span data-zh="向 shell 发送字面量 Ctrl-b">send a literal Ctrl-b to the shell</span></div>
     </div>
@@ -728,7 +728,7 @@
   <div class="wrap">
     <div class="section-label" data-zh="// 配置">// configuration</div>
     <h2 data-zh="熟悉的 <code>.toml</code>">A familiar <code>.toml</code></h2>
-    <p class="section-sub" data-zh="位于 <code>%APPDATA%\lumux\config.toml</code>。用 <code>lumux source-file &lt;path&gt;</code> 或前缀键 + <kbd style=&quot;font-size:.78rem&quot;>r</kbd> 实时重载。">Lives at <code>%APPDATA%\lumux\config.toml</code>. Reload live with <code>lumux source-file &lt;path&gt;</code> or prefix + <kbd style="font-size:.78rem">r</kbd>.</p>
+    <p class="section-sub" data-zh="位于 <code>%APPDATA%\lumux\config.toml</code>。用 <code>lumux source-file &lt;path&gt;</code> 实时重载。">Lives at <code>%APPDATA%\lumux\config.toml</code>. Reload live with <code>lumux source-file &lt;path&gt;</code>.</p>
     <div class="codecols">
 <pre><span class="c"># prefix &amp; behavior</span>
 <span class="n">prefix</span> = <span class="s">"C-a"</span>          <span class="c"># Ctrl-a</span>
