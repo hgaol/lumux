@@ -651,8 +651,8 @@ fn select_window_respects_base_index() {
 fn split_horizontal_draws_vertical_border() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "splith");
-    // Ctrl-b | -> side-by-side split; a vertical border glyph appears.
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    // Ctrl-b % -> side-by-side split; a vertical border glyph appears.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     let (saw, vt) = c.collect_text(Duration::from_secs(5), "\u{2502}");
     assert!(saw, "horizontal split should draw a │ border; got:\n{vt}");
 }
@@ -673,7 +673,7 @@ fn kill_pane_removes_split() {
     let mut c = new_cmd_session(&path, "killp");
     // Split, confirm a border, then kill the active pane (Ctrl-b x). The border
     // should be gone after the layout collapses back to a single pane.
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     let (saw, _) = c.collect_text(Duration::from_secs(5), "\u{2502}");
     assert!(saw, "split should appear before kill");
     c.send(&ClientMsg::Input(vec![0x02, b'x']));
@@ -770,7 +770,7 @@ fn zoom_hides_other_panes_then_restores() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "zoom");
     // Split so there are two panes with a divider.
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     let (saw, _) = c.collect_text(Duration::from_secs(5), "\u{2502}");
     assert!(saw, "split should appear before zoom");
 
@@ -794,7 +794,7 @@ fn zoom_hides_other_panes_then_restores() {
 fn resize_pane_keeps_session_usable() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "resz");
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     c.collect_text(Duration::from_secs(5), "\u{2502}");
     // Ctrl-b L / H nudge the divider; the daemon must stay alive and rendering.
     c.send(&ClientMsg::Input(vec![0x02, b'L']));
@@ -814,7 +814,7 @@ fn next_layout_rearranges_and_keeps_session_usable() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "layout");
     // Two splits -> three panes (mix of borders present).
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     c.collect_text(Duration::from_secs(5), "\u{2502}");
     c.send(&ClientMsg::Input(vec![0x02, b'-']));
     c.drain(Duration::from_secs(1));
@@ -858,8 +858,8 @@ fn source_file_rebinds_prefix_live() {
     });
     assert!(sourced, "source-file should reply with confirmation");
 
-    // Now Ctrl-a | should split (new prefix); a border appears.
-    c.send(&ClientMsg::Input(vec![0x01, b'|']));
+    // Now Ctrl-a % should split (new prefix); a border appears.
+    c.send(&ClientMsg::Input(vec![0x01, b'%']));
     let (saw, vt) = c.collect_text(Duration::from_secs(5), "\u{2502}");
     assert!(
         saw,

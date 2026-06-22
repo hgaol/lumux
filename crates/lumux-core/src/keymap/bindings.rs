@@ -109,9 +109,8 @@ impl Default for Bindings {
 impl Bindings {
     pub fn tmux_defaults() -> Self {
         let mut table = HashMap::new();
-        table.insert(Key::char('|'), Action::SplitHorizontal);
+        // Splits: tmux's true defaults are " (top/bottom) and % (left/right).
         table.insert(Key::char('"'), Action::SplitVertical);
-        table.insert(Key::char('-'), Action::SplitVertical);
         table.insert(Key::char('%'), Action::SplitHorizontal);
         table.insert(Key::char('c'), Action::NewWindow);
         table.insert(Key::char('n'), Action::NextWindow);
@@ -122,7 +121,6 @@ impl Bindings {
         table.insert(Key::char('d'), Action::Detach);
         table.insert(Key::char('['), Action::EnterCopyMode);
         table.insert(Key::char('x'), Action::KillPane);
-        table.insert(Key::char('r'), Action::ReloadConfig);
         table.insert(Key::char('?'), Action::ShowHelp);
         table.insert(Key::char('s'), Action::ChooseSession);
         // Prefixed directional pane selection (tmux default arrow bindings).
@@ -134,12 +132,16 @@ impl Bindings {
         table.insert(Key::char('z'), Action::ZoomPane);
         // Cycle preset layouts (tmux prefix Space / next-layout).
         table.insert(Key::plain(KeyCode::Space), Action::NextLayout);
-        // Directional resize on the vi-style capitals (tmux's repeatable
-        // resize-pane bindings); arrows are taken by select-pane above.
-        table.insert(Key::char('H'), Action::ResizePaneLeft);
-        table.insert(Key::char('L'), Action::ResizePaneRight);
-        table.insert(Key::char('K'), Action::ResizePaneUp);
-        table.insert(Key::char('J'), Action::ResizePaneDown);
+        // Directional resize on the real tmux keys: Ctrl+arrows and Alt+arrows
+        // (tmux's repeatable resize-pane bindings; plain arrows are select-pane
+        // above). lumux resizes by a fixed ratio per press, so Ctrl and Alt map
+        // to the same step rather than tmux's 1-vs-5 cell amounts.
+        for (ctrl, alt) in [(true, false), (false, true)] {
+            table.insert(Key::modified(KeyCode::Left, ctrl, alt), Action::ResizePaneLeft);
+            table.insert(Key::modified(KeyCode::Right, ctrl, alt), Action::ResizePaneRight);
+            table.insert(Key::modified(KeyCode::Up, ctrl, alt), Action::ResizePaneUp);
+            table.insert(Key::modified(KeyCode::Down, ctrl, alt), Action::ResizePaneDown);
+        }
         // Rename prompts (tmux prefix , and $).
         table.insert(Key::char(','), Action::RenameWindow);
         table.insert(Key::char('$'), Action::RenameSession);
@@ -257,10 +259,43 @@ mod tests {
     #[test]
     fn default_bindings_present() {
         let b = Bindings::default();
-        assert_eq!(b.lookup(&Key::char('|')), Some(&Action::SplitHorizontal));
+        // tmux's true split keys.
+        assert_eq!(b.lookup(&Key::char('"')), Some(&Action::SplitVertical));
+        assert_eq!(b.lookup(&Key::char('%')), Some(&Action::SplitHorizontal));
         assert_eq!(b.lookup(&Key::char('c')), Some(&Action::NewWindow));
         assert_eq!(b.lookup(&Key::char('d')), Some(&Action::Detach));
         assert_eq!(b.lookup(&Key::char('3')), Some(&Action::SelectWindow(3)));
+    }
+
+    #[test]
+    fn resize_bound_on_tmux_arrow_keys_not_capitals() {
+        let b = Bindings::default();
+        // tmux resize-pane keys: Ctrl+arrows and Alt+arrows.
+        assert_eq!(
+            b.lookup(&Key::modified(KeyCode::Left, true, false)),
+            Some(&Action::ResizePaneLeft)
+        );
+        assert_eq!(
+            b.lookup(&Key::modified(KeyCode::Up, false, true)),
+            Some(&Action::ResizePaneUp)
+        );
+        // The old invented H/J/K/L bindings are gone.
+        assert_eq!(b.lookup(&Key::char('H')), None);
+        assert_eq!(b.lookup(&Key::char('J')), None);
+        // Plain arrows stay select-pane, not resize.
+        assert_eq!(
+            b.lookup(&Key::plain(KeyCode::Left)),
+            Some(&Action::SelectPaneLeft)
+        );
+    }
+
+    #[test]
+    fn non_tmux_defaults_are_unbound() {
+        let b = Bindings::default();
+        // tmux has no |, -, or r(reload) defaults.
+        assert_eq!(b.lookup(&Key::char('|')), None);
+        assert_eq!(b.lookup(&Key::char('-')), None);
+        assert_eq!(b.lookup(&Key::char('r')), None);
     }
 
     #[test]

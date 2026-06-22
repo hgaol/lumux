@@ -238,8 +238,8 @@ fn split_creates_second_pane_with_border() {
     c.collect_until(Duration::from_secs(2), |m| {
         matches!(m, ServerMsg::Attached { .. })
     });
-    // Ctrl-b | -> split horizontally. Send as raw input through the keymap.
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    // Ctrl-b % -> split horizontally. Send as raw input through the keymap.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
     // A vertical border glyph should now appear in the rendered frame.
     assert!(
@@ -394,8 +394,8 @@ fn source_file_rebinds_prefix_live() {
     );
     assert!(sourced, "source-file should reply with confirmation");
 
-    // Now Ctrl-a | should split (new prefix); a border appears.
-    c.send(&ClientMsg::Input(vec![0x01, b'|']));
+    // Now Ctrl-a % should split (new prefix); a border appears.
+    c.send(&ClientMsg::Input(vec![0x01, b'%']));
     let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
     assert!(
         vt.contains('│'),
@@ -459,7 +459,7 @@ fn split_inherits_current_directory() {
     ));
     c.collect_until(Duration::from_secs(2), |_| false);
     // Split: the new pane's shell should start in the same directory.
-    c.send(&ClientMsg::Input(vec![0x02, b'|']));
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
     c.collect_until(Duration::from_secs(2), |_| false);
     // Print the new pane's cwd; it must contain our unique dir name.
     c.send(&ClientMsg::Input(b"pwd\n".to_vec()));

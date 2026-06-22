@@ -15,8 +15,8 @@ fn plain_typing_passes_through() {
 #[test]
 fn prefix_then_command_triggers_action() {
     let mut k = km();
-    // Ctrl-b then '|'
-    let r = k.feed(&[0x02, b'|']);
+    // Ctrl-b then '%'
+    let r = k.feed(&[0x02, b'%']);
     assert_eq!(r, vec![Reaction::Do(Action::SplitHorizontal)]);
     assert_eq!(k.mode(), Mode::Normal);
 }
@@ -34,8 +34,8 @@ fn prefix_and_command_split_across_feeds() {
 #[test]
 fn passthrough_then_prefix_command_in_one_chunk() {
     let mut k = km();
-    // "ab" passes through, then Ctrl-b '|' triggers split.
-    let r = k.feed(&[b'a', b'b', 0x02, b'|']);
+    // "ab" passes through, then Ctrl-b '%' triggers split.
+    let r = k.feed(&[b'a', b'b', 0x02, b'%']);
     assert_eq!(
         r,
         vec![
@@ -187,7 +187,7 @@ fn help_entries_lists_bindings() {
     // The help lists the split and detach bindings with the prefix prefixed.
     assert!(entries
         .iter()
-        .any(|(k, d)| k == "C-b |" && d.contains("split")));
+        .any(|(k, d)| k == "C-b %" && d.contains("split")));
     assert!(entries.iter().any(|(k, _)| k == "C-b ?"));
     assert!(entries
         .iter()

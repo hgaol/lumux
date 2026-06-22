@@ -48,6 +48,12 @@ impl Key {
         }
     }
 
+    /// A non-char key with explicit modifiers (e.g. Ctrl-Left, Alt-Up), for the
+    /// tmux resize-pane bindings.
+    pub fn modified(code: KeyCode, ctrl: bool, alt: bool) -> Self {
+        Key { code, ctrl, alt }
+    }
+
     pub fn char(c: char) -> Self {
         Key {
             code: KeyCode::Char(c),

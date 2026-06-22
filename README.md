@@ -63,8 +63,8 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 
 | Key | Action |
 |-----|--------|
-| `\|` | split left/right |
-| `-` or `"` | split top/bottom |
+| `"` | split top/bottom |
+| `%` | split left/right |
 | `c` | new window |
 | `n` / `p` | next / previous window |
 | `l` | last (previously-active) window |
@@ -72,7 +72,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `&` | kill the active window |
 | arrows | select pane in that direction |
 | `;` | last (previously-active) pane |
-| `H` `J` `K` `L` | resize the active pane (left/down/up/right) |
+| `Ctrl`+arrows / `Alt`+arrows | resize the active pane |
 | `z` | zoom / unzoom the active pane |
 | `Space` | cycle preset layouts (even-horizontal/vertical, main, tiled) |
 | `,` | rename the current window |
@@ -80,8 +80,12 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `x` | kill the active pane |
 | `d` | detach (session keeps running) |
 | `[` | enter copy-mode |
-| `r` | reload the config file (flashes a confirmation) |
+| `?` | show the key-binding help |
 | `Ctrl-b` | send a literal `Ctrl-b` to the shell |
+
+These defaults match tmux. lumux doesn't bind `|`/`-` (splits) or `r` (reload) by
+default — tmux doesn't either — but you can add them in your config (or drop in a
+`~/.tmux.conf` that has them; see below).
 
 **Without the prefix** (configurable root bindings): e.g. `Alt+Arrow` jumps
 between panes instantly. With `mouse = true`, click selects a pane, the wheel
@@ -178,7 +182,8 @@ argv = ["pwsh.exe"]
 "M-Down" = "select-pane-down"
 ```
 
-Reload without restarting: `lumux source-file <path>` (or prefix + `r`).
+Reload without restarting: `lumux source-file <path>` (or bind a key to
+`reload-config` in your config).
 
 ## Building
 
