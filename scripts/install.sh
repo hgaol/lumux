@@ -72,8 +72,31 @@ mkdir -p "$INSTALL_DIR"
 install -m755 "$bin" "$INSTALL_DIR/lumux" 2>/dev/null || { cp "$bin" "$INSTALL_DIR/lumux"; chmod 755 "$INSTALL_DIR/lumux"; }
 
 say "Installed lumux $version -> $INSTALL_DIR/lumux"
-case ":$PATH:" in
-  *":$INSTALL_DIR:"*) ;;
-  *) printf '\n\033[1;33mnote:\033[0m %s is not on your PATH. Add it:\n  export PATH="%s:$PATH"\n' "$INSTALL_DIR" "$INSTALL_DIR" ;;
+
+# --- persist PATH + the 'lm' alias to your shell rc ------------------------
+# So a NEW terminal finds lumux on PATH and gets the short `lm` alias. Write to
+# the rc of the active shell (fall back to ~/.profile); a marker block keeps
+# re-runs idempotent. The alias line carries a comment so the user can drop it.
+case "${SHELL:-}" in
+  */zsh)  rc="$HOME/.zshrc" ;;
+  */bash) rc="$HOME/.bashrc" ;;
+  *)      rc="$HOME/.profile" ;;
 esac
-printf '\nStart a session:  \033[1;32mlumux new -s work\033[0m   (tip: alias lm=lumux)\n'
+# Show $HOME as a literal $HOME in the written PATH line for readability.
+case "$INSTALL_DIR" in
+  "$HOME"/*) path_entry="\$HOME/${INSTALL_DIR#"$HOME"/}" ;;
+  *)         path_entry="$INSTALL_DIR" ;;
+esac
+if ! grep -qsF "# >>> lumux >>>" "$rc"; then
+  {
+    printf '\n# >>> lumux >>>\n'
+    printf 'export PATH="%s:$PATH"\n' "$path_entry"
+    printf "alias lm=lumux   # comment out this line (prepend #) to use the full 'lumux' command\n"
+    printf '# <<< lumux <<<\n'
+  } >> "$rc" && info "added PATH + the 'lm' alias to $rc"
+else
+  info "$rc already has the lumux block (left unchanged)"
+fi
+
+printf '\nOpen a new terminal — or run \033[1;32m. %s\033[0m — to pick up PATH and the\n' "$rc"
+printf '\033[1;32mlm\033[0m alias, then start a session:  \033[1;32mlm new -s work\033[0m\n'
