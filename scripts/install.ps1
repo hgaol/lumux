@@ -111,6 +111,30 @@ try {
     Warn "note: added $dir to your user PATH - open a new terminal to pick it up."
   }
 
+  # --- add the 'lm' alias to your PowerShell profile -----------------------
+  # So a new terminal gets the short `lm` command. A marker block keeps re-runs
+  # idempotent, and the comment tells the user how to drop it for plain 'lumux'.
+  try {
+    if (-not (Test-Path $PROFILE)) {
+      New-Item -ItemType File -Path $PROFILE -Force | Out-Null
+    }
+    if (-not (Select-String -Path $PROFILE -Pattern '# >>> lumux >>>' -SimpleMatch -Quiet)) {
+      $block = @(
+        '',
+        '# >>> lumux >>>',
+        "# Comment out the next line (prepend #) to use the full 'lumux' command instead.",
+        'function lm { lumux @args }',
+        '# <<< lumux <<<'
+      )
+      Add-Content -Path $PROFILE -Value $block
+      Info "added the 'lm' alias to your PowerShell profile ($PROFILE)"
+    } else {
+      Info "your PowerShell profile already has the lumux block (left unchanged)"
+    }
+  } catch {
+    Warn "could not update your PowerShell profile: $($_.Exception.Message)"
+  }
+
   # --- warn if a *different* lumux.exe shadows ours on PATH ----------------
   # A common "I updated but the version didn't change" cause: another lumux.exe
   # (e.g. from cargo install, in ~\.cargo\bin) comes earlier on PATH.
@@ -129,7 +153,8 @@ Write-Host ''
 Warn 'If a lumux server was already running, it keeps the old version until restarted:'
 Write-Host '    lumux kill-server' -ForegroundColor Green -NoNewline
 Write-Host '   then start fresh.'
-Write-Host 'Start a session:  ' -NoNewline
-Write-Host 'lumux new -s work' -ForegroundColor Green -NoNewline
-Write-Host '   (tip: Set-Alias lm lumux)'
+Write-Host 'Open a new terminal to pick up PATH and the ' -NoNewline
+Write-Host 'lm' -ForegroundColor Green -NoNewline
+Write-Host ' alias, then start a session:  ' -NoNewline
+Write-Host 'lm new -s work' -ForegroundColor Green
 }
