@@ -527,6 +527,49 @@ fn scroll_targets_the_pane_under_the_pointer() {
 }
 
 #[test]
+fn scroll_on_alt_screen_sends_arrow_keys_to_the_app() {
+    // A pane on the alternate screen (a TUI app like vim/less or an agent) owns
+    // the viewport and has no scrollback. The wheel must be sent to the app as
+    // arrow keys, NOT open copy-mode — otherwise scrolling appears to do nothing.
+    // We prove the arrows actually reach the app with `cat -v`, which echoes its
+    // stdin and renders control bytes visibly (ESC -> ^[), so a wheel-up shows as
+    // ^[[A in the pane.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("altscrl".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Enter the alternate screen (DEC 1049, as a TUI app does on startup), then
+    // run `cat -v` so input bytes echo back with control chars made visible.
+    c.send(&ClientMsg::Input(b"printf '\\033[?1049h'; cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+
+    // Wheel-up over the pane a few notches, accumulating everything the pane
+    // echoes back (cat -v renders the sent arrows as ^[[A).
+    let mut seen = String::new();
+    for _ in 0..3 {
+        c.send(&ClientMsg::Input(b"\x1b[<64;10;12M".to_vec()));
+        let (_d, chunk) = c.collect_until(Duration::from_millis(200), |_| false);
+        seen.push_str(&chunk);
+    }
+    let (_done, tail) = c.collect_until(Duration::from_secs(1), |_| false);
+    seen.push_str(&tail);
+    assert!(
+        !seen.contains("-- COPY --"),
+        "wheel on an alt-screen pane must not open copy-mode; got:\n{seen}"
+    );
+    assert!(
+        seen.contains("^[[A"),
+        "wheel-up must send an up-arrow (ESC[A) to the alt-screen app; got:\n{seen}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

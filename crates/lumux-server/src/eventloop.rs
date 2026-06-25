@@ -627,15 +627,32 @@ where
         false
     }
 
-    /// Wheel: scroll the pane under the pointer. If not already in copy-mode,
-    /// focus that pane first and enter copy-mode there (tmux scrolls the pane the
-    /// wheel is over, not just the focused one). While already in copy-mode, the
-    /// current pane keeps scrolling so an in-progress selection isn't hijacked.
+    /// Wheel: scroll the pane under the pointer. Two cases, matching tmux:
+    /// - A pane on the *alternate screen* (vim/less, or a TUI agent like Claude
+    ///   Code) owns the viewport and has no scrollback, so the wheel is
+    ///   translated into arrow-key input sent to that app, which scrolls itself.
+    /// - Otherwise, enter copy-mode on that pane and scroll its history.
+    ///
+    /// While already in copy-mode the current pane keeps scrolling, so an
+    /// in-progress selection isn't hijacked.
     fn mouse_scroll(&mut self, client_id: u64, session: SessionId, col: u16, row: u16, up: bool) {
         use lumux_core::keymap::CopyKey;
+
+        // Not yet in copy-mode: decide between alt-screen passthrough and copy.
         if !self.daemon.in_copy_mode(client_id) {
+            if let Some(pid) = self.pane_at_point(session, col, row) {
+                if self.daemon.pane_on_alt_screen(pid) {
+                    // Send arrow keys to the app (3 per notch, like tmux). CSI
+                    // arrows (ESC[A / ESC[B) work for the vast majority of TUIs.
+                    let arrow: &[u8] = if up { b"\x1b[A" } else { b"\x1b[B" };
+                    for _ in 0..3 {
+                        let _ = self.daemon.write_pane(pid, arrow);
+                    }
+                    return;
+                }
+            }
             if !up {
-                return; // scrolling down in live view does nothing
+                return; // scrolling down in live (non-alt) view does nothing
             }
             // Focus the pane under the pointer so copy-mode opens on it.
             self.focus_pane_at(session, col, row);
@@ -646,6 +663,19 @@ where
         for _ in 0..3 {
             self.daemon.copy_navigate(client_id, session, key);
         }
+    }
+
+    /// The pane id whose rectangle contains (col,row), without changing focus.
+    fn pane_at_point(&self, session: SessionId, col: u16, row: u16) -> Option<PaneId> {
+        let size = self.daemon.server.effective_size(session)?;
+        if row >= size.rows.saturating_sub(1) {
+            return None; // status bar row
+        }
+        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        let s = self.daemon.server.session(session)?;
+        let w = s.window(s.active_window())?;
+        let rects = lumux_core::layout::compute(&w.layout, viewport);
+        lumux_core::layout::pane_at(&rects, col, row)
     }
 
     /// Drag: move the divider grabbed on press (if any) to follow the cursor and

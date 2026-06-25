@@ -685,6 +685,14 @@ impl<S: PtySystem> Daemon<S> {
         Some(s.window(s.active_window())?.active_pane())
     }
 
+    /// Whether `pid`'s pane is currently on the alternate screen (a full-screen
+    /// app like vim/less or a TUI agent owns the viewport). Such panes have no
+    /// scrollback to browse, so a mouse wheel must be translated into arrow-key
+    /// input for the app rather than entering copy-mode.
+    pub fn pane_on_alt_screen(&self, pid: PaneId) -> bool {
+        self.panes.get(&pid).is_some_and(|p| p.grid.alt_screen())
+    }
+
     /// Poll every live pane's child and return those that have exited. ConPTY
     /// does not reliably deliver read-EOF when a shell exits (the output pipe can
     /// stay open after the child is gone), so relying on the reader thread's EOF
