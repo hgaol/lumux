@@ -1051,21 +1051,13 @@ impl<S: PtySystem> Daemon<S> {
         let cm = self.copy.get(&client_id)?;
         let top = cm.top();
 
-        // Overpaint only the active pane's rect with its scrolled-back rows,
-        // clipped to the rect so it never bleeds into a neighbor.
+        // Overpaint only the active pane's rect with its scrolled-back rows.
+        // Copy real cells (not a re-derived string) so wide glyphs keep their
+        // two-column layout and cell attributes/colors survive — exactly like
+        // the live blit path. A plain char-by-char copy drifts every column
+        // after a wide (CJK/emoji) char and drops colors, which looked garbled.
         let (ox, oy) = (rect.x as usize, rect.y as usize);
-        for vy in 0..rect.rows as usize {
-            // Clear the rect row first (scrolled history may be shorter).
-            for vx in 0..rect.cols as usize {
-                screen.set_char(ox + vx, oy + vy, ' ');
-            }
-            if let Some(row) = grid.combined_row(top + vy) {
-                let text = row.to_string_full();
-                for (vx, ch) in text.chars().take(rect.cols as usize).enumerate() {
-                    screen.set_char(ox + vx, oy + vy, ch);
-                }
-            }
-        }
+        screen.blit_grid_scrolled(ox, oy, rect.cols as usize, rect.rows as usize, grid, top);
 
         // Place the copy cursor within the pane rect (if visible in this scroll).
         let cur = cm.cursor();

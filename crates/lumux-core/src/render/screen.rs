@@ -54,15 +54,6 @@ impl Screen {
         }
     }
 
-    /// Set a single character with default attributes at (x,y). Convenience for
-    /// callers that don't depend on termwiz types (e.g. the daemon's copy-mode
-    /// overpaint), clipped to the screen bounds.
-    pub fn set_char(&mut self, x: usize, y: usize, ch: char) {
-        if x < self.width && y < self.height {
-            self.cells[y * self.width + x] = Cell::new(ch, CellAttributes::default());
-        }
-    }
-
     /// Write a string with given attributes starting at (x,y), clipped to the
     /// row. Returns the next x after the written text.
     pub fn write_str(&mut self, x: usize, y: usize, s: &str, attrs: &CellAttributes) -> usize {
@@ -176,6 +167,32 @@ impl Screen {
             let cells = row.cells();
             for gx in 0..cols {
                 let cell = cells.get(gx).cloned().unwrap_or_else(Cell::blank);
+                self.set_cell(ox + gx, oy + gy, cell);
+            }
+        }
+    }
+
+    /// Blit a `cols` x `rows` window of a grid's *combined* (history + visible)
+    /// buffer, starting at combined-row `top`, into the rectangle at (ox,oy).
+    /// Used for the copy-mode scrolled view. Copies real cells (not a re-derived
+    /// string) so wide glyphs keep their two-column layout and attributes/colors
+    /// survive; rows past the end of the buffer are filled blank.
+    pub fn blit_grid_scrolled(
+        &mut self,
+        ox: usize,
+        oy: usize,
+        cols: usize,
+        rows: usize,
+        grid: &crate::grid::Grid,
+        top: usize,
+    ) {
+        for gy in 0..rows {
+            let row = grid.combined_row(top + gy);
+            for gx in 0..cols {
+                let cell = row
+                    .and_then(|r| r.cells().get(gx))
+                    .cloned()
+                    .unwrap_or_else(Cell::blank);
                 self.set_cell(ox + gx, oy + gy, cell);
             }
         }

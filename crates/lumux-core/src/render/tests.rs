@@ -388,3 +388,58 @@ fn centre_start_matches_rendered_centre() {
         }
     }
 }
+
+#[test]
+fn blit_grid_scrolled_keeps_wide_char_columns() {
+    // Regression: the copy-mode scrolled overpaint used to re-derive a string and
+    // write it char-by-char, so a wide (CJK) glyph drifted every following column.
+    // blit_grid_scrolled copies real cells, so columns stay aligned and the wide
+    // glyph occupies two columns with the ASCII after it at the right place.
+    let mut g = Grid::new(20, 3, 50);
+    // A wide char (中, 2 cols) then "AB". Push it into history with newlines so
+    // it's reachable via the combined buffer at row 0.
+    g.feed("中AB\r\nx\r\ny".as_bytes());
+
+    let mut screen = Screen::new(20, 3);
+    // Blit the combined buffer from the top (row 0 holds "中AB").
+    screen.blit_grid_scrolled(0, 0, 20, 3, &g, 0);
+
+    let row0 = screen.row_string(0);
+    // The wide glyph occupies two columns (中 + a spacer rendered as a space),
+    // with "AB" right after — no dropped or shifted columns.
+    assert!(row0.starts_with("中 AB"), "wide char + following ASCII must stay aligned; got {row0:?}");
+    // Column 0 is the wide glyph; column 1 is its spacer; 'A' sits at column 2.
+    assert_eq!(screen.cell(0, 0).map(|c| c.str()), Some("中"));
+    assert_eq!(screen.cell(2, 0).map(|c| c.str()), Some("A"));
+    assert_eq!(screen.cell(3, 0).map(|c| c.str()), Some("B"));
+}
+
+#[test]
+fn blit_grid_scrolled_preserves_color() {
+    // Regression: copy-mode scroll used to re-derive a plain string and write it
+    // with default attributes, so colored history rendered as white-on-black.
+    // blit_grid_scrolled copies real cells, so colors (and bold etc.) survive —
+    // matching tmux, whose copy-mode keeps the original colors.
+    use termwiz::color::ColorAttribute;
+    let mut g = Grid::new(20, 3, 50);
+    // Red "RED" then default "ok", pushed into history.
+    g.feed(b"\x1b[31mRED\x1b[m ok\r\nx\r\ny");
+
+    let mut screen = Screen::new(20, 3);
+    screen.blit_grid_scrolled(0, 0, 20, 3, &g, 0);
+
+    // The "RED" cells must keep their red foreground (palette index 1), not the
+    // default attribute the old char-by-char copy produced.
+    let red_cell = screen.cell(0, 0).expect("cell 0,0");
+    assert_eq!(red_cell.str(), "R");
+    assert_eq!(
+        red_cell.attrs().foreground(),
+        ColorAttribute::PaletteIndex(1),
+        "scrolled copy-mode must preserve cell colors; got {:?}",
+        red_cell.attrs().foreground()
+    );
+    // And a default cell after the reset stays default.
+    let ok_cell = screen.cell(4, 0).expect("cell 4,0");
+    assert_eq!(ok_cell.str(), "o");
+    assert_eq!(ok_cell.attrs().foreground(), ColorAttribute::Default);
+}
