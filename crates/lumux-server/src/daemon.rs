@@ -646,10 +646,16 @@ impl<S: PtySystem> Daemon<S> {
             if let Some(k) = self.keymaps.get_mut(&client_id) {
                 k.reset();
             }
+            // The view reverts from the scrolled copy view to the live shell —
+            // force a clean repaint for that transition.
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
         }
-        if let Some(r) = self.renderers.get_mut(&client_id) {
-            r.invalidate();
-        }
+        // While still scrolling, do NOT invalidate: render_copy_mode produces a
+        // full Screen and the differ emits a minimal incremental update. Forcing
+        // a full repaint here would clear the screen (ESC[2J) every wheel notch,
+        // which shows as flicker.
         still
     }
 

@@ -570,6 +570,49 @@ fn scroll_on_alt_screen_sends_arrow_keys_to_the_app() {
 }
 
 #[test]
+fn copy_mode_scroll_is_incremental_not_a_clear() {
+    // Regression: scrolling in copy-mode used to invalidate the renderer every
+    // step, forcing a full repaint that clears the screen (ESC[2J) each wheel
+    // notch — visible as flicker. A scroll step must instead send an incremental
+    // diff with no clear-screen.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("noflicker".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Produce scrollable history so copy-mode has somewhere to go.
+    c.send(&ClientMsg::Input(b"for i in $(seq 1 60); do echo line$i; done\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // First wheel-up enters copy-mode (this frame legitimately repaints, and
+    // shows the mode line).
+    c.send(&ClientMsg::Input(b"\x1b[<64;40;12M".to_vec()));
+    let (_d0, enter) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        enter.contains("-- COPY --"),
+        "precondition: first wheel-up should enter copy-mode; got:\n{enter}"
+    );
+    // A SUBSEQUENT wheel-up is a pure scroll step — capture just its frame(s). It
+    // should be an incremental diff: it moves content but never clears the
+    // screen. (The mode line is unchanged, so a smooth diff won't even re-send
+    // it — that's the point.)
+    c.send(&ClientMsg::Input(b"\x1b[<64;40;12M".to_vec()));
+    let (_d, step) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !step.is_empty(),
+        "a scroll step should still send an (incremental) frame"
+    );
+    assert!(
+        !step.contains("\u{1b}[2J"),
+        "a copy-mode scroll step must not clear the screen (no flicker); got:\n{step:?}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();
