@@ -9,16 +9,16 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.8"
+version = "0.1.9"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/hgaol/lumux"
 
 [workspace.dependencies]
-lumux-core = { path = "crates/lumux-core", version = "0.1.8" }
-lumux-server = { path = "crates/lumux-server", version = "0.1.8" }
-lumux-backend-unix = { path = "crates/lumux-backend-unix", version = "0.1.8" }
-lumux-backend-win = { path = "crates/lumux-backend-win", version = "0.1.8" }
+lumux-core = { path = "crates/lumux-core", version = "0.1.9" }
+lumux-server = { path = "crates/lumux-server", version = "0.1.9" }
+lumux-backend-unix = { path = "crates/lumux-backend-unix", version = "0.1.9" }
+lumux-backend-win = { path = "crates/lumux-backend-win", version = "0.1.9" }
 
 # async runtime
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "sync", "time", "process"] }
