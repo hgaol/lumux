@@ -544,6 +544,14 @@ where
         let mut i = 0;
         while i < bytes.len() {
             if let Some((ev, used)) = mouse::parse(&bytes[i..]) {
+                // If the app in the pane under the pointer enabled mouse
+                // reporting, forward the raw event to it (pane-relative) and skip
+                // lumux's own handling — so the wheel/clicks work inside vim,
+                // htop, Claude Code, etc. (matches tmux).
+                if self.try_forward_mouse_to_app(session, &ev) {
+                    i += used;
+                    continue;
+                }
                 match ev.kind {
                     MouseKind::Down(_) => {
                         // A press both focuses the pane under the cursor and, if
@@ -676,6 +684,50 @@ where
         let w = s.window(s.active_window())?;
         let rects = lumux_core::layout::compute(&w.layout, viewport);
         lumux_core::layout::pane_at(&rects, col, row)
+    }
+
+    /// The pane and its rectangle containing (col,row) — used to translate a
+    /// mouse event into pane-relative coordinates before forwarding to the app.
+    fn pane_and_rect_at_point(
+        &self,
+        session: SessionId,
+        col: u16,
+        row: u16,
+    ) -> Option<(PaneId, lumux_core::layout::Rect)> {
+        let size = self.daemon.server.effective_size(session)?;
+        if row >= size.rows.saturating_sub(1) {
+            return None;
+        }
+        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        let s = self.daemon.server.session(session)?;
+        let w = s.window(s.active_window())?;
+        let rects = lumux_core::layout::compute(&w.layout, viewport);
+        let pid = lumux_core::layout::pane_at(&rects, col, row)?;
+        let rect = *rects.get(&pid)?;
+        Some((pid, rect))
+    }
+
+    /// If the pane under the pointer has mouse reporting on, forward the raw event
+    /// to that app re-encoded with pane-relative coordinates and return true (so
+    /// the caller skips lumux's own scroll/copy/select handling). tmux behavior:
+    /// a mouse-aware TUI (vim, htop, Claude Code) handles the wheel/clicks itself.
+    fn try_forward_mouse_to_app(
+        &mut self,
+        session: SessionId,
+        ev: &lumux_core::mouse::MouseEvent,
+    ) -> bool {
+        let Some((pid, rect)) = self.pane_and_rect_at_point(session, ev.col, ev.row) else {
+            return false;
+        };
+        if !self.daemon.pane_wants_mouse(pid) {
+            return false;
+        }
+        // Translate screen coords to pane-relative (clamped into the rect).
+        let rel_col = ev.col.saturating_sub(rect.x).min(rect.cols.saturating_sub(1));
+        let rel_row = ev.row.saturating_sub(rect.y).min(rect.rows.saturating_sub(1));
+        let bytes = lumux_core::mouse::encode_sgr(ev.raw_button, rel_col, rel_row, ev.press);
+        let _ = self.daemon.write_pane(pid, &bytes);
+        true
     }
 
     /// Drag: move the divider grabbed on press (if any) to follow the cursor and

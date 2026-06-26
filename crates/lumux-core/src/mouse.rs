@@ -12,6 +12,11 @@ pub struct MouseEvent {
     pub kind: MouseKind,
     pub col: u16,
     pub row: u16,
+    /// The raw SGR button code and press/release, kept so the event can be
+    /// re-encoded faithfully (preserving modifier bits) when forwarding to an app
+    /// that has mouse reporting on. See [`encode_sgr`].
+    pub raw_button: u32,
+    pub press: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,7 +73,32 @@ pub fn parse(bytes: &[u8]) -> Option<(MouseEvent, usize)> {
     let col = x.saturating_sub(1);
     let row = y.saturating_sub(1);
     let kind = decode_button(b, is_press)?;
-    Some((MouseEvent { kind, col, row }, end + 1))
+    Some((
+        MouseEvent {
+            kind,
+            col,
+            row,
+            raw_button: b,
+            press: is_press,
+        },
+        end + 1,
+    ))
+}
+
+/// Re-encode a mouse event as an SGR sequence (`ESC[<b;x;yM/m`) with the given
+/// 0-based coordinates (translated to 1-based on the wire). Used to forward an
+/// event to an app that enabled mouse reporting, with pane-relative coords. The
+/// original raw button code is preserved so modifiers survive the round trip.
+pub fn encode_sgr(raw_button: u32, col: u16, row: u16, press: bool) -> Vec<u8> {
+    let final_byte = if press { 'M' } else { 'm' };
+    format!(
+        "\x1b[<{};{};{}{}",
+        raw_button,
+        col as u32 + 1,
+        row as u32 + 1,
+        final_byte
+    )
+    .into_bytes()
 }
 
 fn decode_button(b: u32, is_press: bool) -> Option<MouseKind> {
@@ -141,6 +171,32 @@ mod tests {
         assert_eq!(up.kind, MouseKind::ScrollUp);
         let (down, _) = parse(b"\x1b[<65;1;1M").unwrap();
         assert_eq!(down.kind, MouseKind::ScrollDown);
+    }
+
+    #[test]
+    fn parse_then_encode_roundtrips() {
+        // An event parsed and re-encoded at the SAME coords must be byte-identical
+        // — this is what makes forwarding to a mouse-aware app faithful.
+        for seq in [
+            &b"\x1b[<0;5;3M"[..],   // left press
+            &b"\x1b[<0;5;3m"[..],   // left release
+            &b"\x1b[<64;10;20M"[..], // wheel up
+            &b"\x1b[<65;10;20M"[..], // wheel down
+            &b"\x1b[<2;7;9M"[..],    // right press
+        ] {
+            let (ev, _) = parse(seq).unwrap();
+            let out = encode_sgr(ev.raw_button, ev.col, ev.row, ev.press);
+            assert_eq!(out, seq, "roundtrip mismatch for {:?}", std::str::from_utf8(seq));
+        }
+    }
+
+    #[test]
+    fn encode_translates_to_pane_relative() {
+        // Forwarding subtracts the pane origin from the screen coords; encode then
+        // re-adds the 1-based offset. A screen event at col 4,row 2 in a pane whose
+        // origin is (3,1) is pane-relative (1,1) -> wire "2;2".
+        let out = encode_sgr(0, 1, 1, true);
+        assert_eq!(out, b"\x1b[<0;2;2M");
     }
 
     #[test]

@@ -59,6 +59,12 @@ pub struct Grid {
     scroll_bottom: usize,
     /// The last grapheme printed, for REP (CSI Ps b) which repeats it.
     last_print: Option<char>,
+    /// Whether the app running in this pane has enabled mouse reporting (DEC
+    /// modes 1000 normal / 1002 button-event / 1003 any-event). When set, the
+    /// daemon forwards raw mouse events to the app (re-encoded with pane-relative
+    /// coordinates) instead of using them for its own scroll/copy-mode — matching
+    /// tmux, so the wheel/clicks work inside a TUI like vim or Claude Code.
+    mouse_tracking: bool,
 }
 
 /// The primary-screen state stashed while the alternate screen is shown.
@@ -103,6 +109,7 @@ impl Grid {
             scroll_top: 0,
             scroll_bottom: height - 1,
             last_print: None,
+            mouse_tracking: false,
         }
     }
 
@@ -119,6 +126,13 @@ impl Grid {
     /// the alt screen has none.
     pub fn alt_screen(&self) -> bool {
         self.primary.is_some()
+    }
+
+    /// Whether the app in this pane has turned on mouse reporting (DEC 1000/1002/
+    /// 1003). When true, the daemon forwards raw mouse events to it instead of
+    /// using them for scroll/copy-mode (tmux behavior).
+    pub fn wants_mouse(&self) -> bool {
+        self.mouse_tracking
     }
 
     /// Whether the text cursor should be shown (DEC mode 25). Apps hide it while
@@ -342,6 +356,13 @@ impl Grid {
             }
             DecPrivateModeCode::ShowCursor => self.cursor_visible = set,
             DecPrivateModeCode::AutoWrap => self.autowrap = set,
+            // Mouse reporting: 1000 (normal), 1002 (button-event), 1003 (any-
+            // event). lumux only needs to know whether the app wants mouse events
+            // at all, so all three toggle one flag. (1006 SGR is just the encoding
+            // and doesn't itself turn tracking on.)
+            DecPrivateModeCode::MouseTracking
+            | DecPrivateModeCode::ButtonEventMouse
+            | DecPrivateModeCode::AnyEventMouse => self.mouse_tracking = set,
             _ => {}
         }
     }

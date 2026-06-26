@@ -404,3 +404,20 @@ fn repeat_replays_last_grapheme() {
     assert_eq!(g.cursor(), (5, 0));
 }
 
+#[test]
+fn tracks_app_mouse_mode() {
+    let mut g = grid();
+    assert!(!g.wants_mouse(), "mouse off by default");
+    // App enables button-event mouse tracking (1002) + SGR coords (1006).
+    g.feed(b"\x1b[?1002h\x1b[?1006h");
+    assert!(g.wants_mouse(), "app enabled mouse reporting");
+    // And disabling it again clears the flag.
+    g.feed(b"\x1b[?1002l");
+    assert!(!g.wants_mouse(), "app disabled mouse reporting");
+    // Normal-tracking (1000) and any-event (1003) also count.
+    g.feed(b"\x1b[?1000h");
+    assert!(g.wants_mouse());
+    g.feed(b"\x1b[?1000l\x1b[?1003h");
+    assert!(g.wants_mouse());
+}
+

@@ -570,6 +570,49 @@ fn scroll_on_alt_screen_sends_arrow_keys_to_the_app() {
 }
 
 #[test]
+fn wheel_is_forwarded_to_a_mouse_aware_app() {
+    // Regression for "the scroll wheel sends arrow keys in Claude Code": when the
+    // app in the pane has enabled mouse reporting, the wheel must be FORWARDED to
+    // it as a raw SGR mouse event (so the app scrolls natively), NOT translated to
+    // arrow keys. cat -v echoes the bytes the app receives, so a forwarded wheel
+    // shows as the SGR sequence (^[[<64;...M), and there must be no arrow (^[[A).
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("mouseapp".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // App enables mouse reporting (button-event 1002 + SGR 1006), then cat -v.
+    c.send(&ClientMsg::Input(b"printf '\\033[?1002h\\033[?1006h'; cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+
+    let mut seen = String::new();
+    for _ in 0..3 {
+        c.send(&ClientMsg::Input(b"\x1b[<64;10;12M".to_vec()));
+        let (_d, chunk) = c.collect_until(Duration::from_millis(200), |_| false);
+        seen.push_str(&chunk);
+    }
+    let (_done, tail) = c.collect_until(Duration::from_secs(1), |_| false);
+    seen.push_str(&tail);
+    assert!(
+        seen.contains("[<64;"),
+        "a mouse-aware app must receive the raw wheel SGR event; got:\n{seen}"
+    );
+    assert!(
+        !seen.contains("^[[A"),
+        "a mouse-aware app must NOT receive translated arrow keys; got:\n{seen}"
+    );
+    assert!(
+        !seen.contains("-- COPY --"),
+        "forwarding to the app must not open copy-mode; got:\n{seen}"
+    );
+}
+
+#[test]
 fn copy_mode_scroll_is_incremental_not_a_clear() {
     // Regression: scrolling in copy-mode used to invalidate the renderer every
     // step, forcing a full repaint that clears the screen (ESC[2J) each wheel

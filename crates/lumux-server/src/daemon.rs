@@ -699,6 +699,13 @@ impl<S: PtySystem> Daemon<S> {
         self.panes.get(&pid).is_some_and(|p| p.grid.alt_screen())
     }
 
+    /// Whether the app in `pid`'s pane has enabled mouse reporting. When true,
+    /// the daemon forwards raw mouse events to it (re-encoded pane-relative)
+    /// instead of using them for scroll/copy-mode/selection — like tmux.
+    pub fn pane_wants_mouse(&self, pid: PaneId) -> bool {
+        self.panes.get(&pid).is_some_and(|p| p.grid.wants_mouse())
+    }
+
     /// Poll every live pane's child and return those that have exited. ConPTY
     /// does not reliably deliver read-EOF when a shell exits (the output pipe can
     /// stay open after the child is gone), so relying on the reader thread's EOF
