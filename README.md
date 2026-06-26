@@ -121,9 +121,9 @@ cp ~/.tmux.conf ~/.lumux.conf
 
 lumux reads the directives it supports (`prefix`, `mouse`, `history-limit`,
 `base-index`, `default-shell`/`default-command`, `status-justify`,
-`status-left`/`-right`, `status-style`, and `bind` / `bind -n` for the actions
-it has) and **ignores everything else with a warning**, so a full real-world
-tmux.conf loads cleanly. A ready example is in
+`status-left`/`-right`, `status-style`, `pane-active-border-style`, and `bind` /
+`bind -n` for the actions it has) and **ignores everything else with a
+warning**, so a full real-world tmux.conf loads cleanly. A ready example is in
 [`examples/lumux.conf`](examples/lumux.conf).
 
 ### Native TOML

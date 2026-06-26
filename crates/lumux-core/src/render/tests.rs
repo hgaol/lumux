@@ -27,6 +27,7 @@ fn single_pane_fills_content_area() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(1),
+        active_border: None,
     };
     let screen = compose((20, 5), &view, None, false);
     assert_eq!(screen.row_string(0), "hello");
@@ -45,6 +46,7 @@ fn horizontal_split_draws_vertical_border() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(1),
+        active_border: None,
     };
     let screen = compose((20, 3), &view, None, false);
     let row0 = screen.row_string(0);
@@ -66,6 +68,7 @@ fn status_bar_occupies_bottom_row() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(1),
+        active_border: None,
     };
     let status = StatusBar {
         left: "[work] 0:sh".into(),
@@ -98,6 +101,7 @@ fn reserved_status_row_keeps_panes_out_of_bottom_line() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(1),
+        active_border: None,
     };
     let screen = compose((20, 5), &view, None, true);
     // The bottom row (index 4) must be blank — reserved for the status bar.
@@ -123,6 +127,7 @@ fn active_pane_cursor_wins() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(2),
+        active_border: None,
     };
     let screen = compose((20, 3), &view, None, false);
     // 20 cols, divider 1 => 19 usable, ratio 0.5 => round(9.5)=10 left / 9 right.
@@ -140,6 +145,7 @@ fn client_renderer_full_then_incremental() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(1),
+        active_border: None,
     };
     let mut cr = ClientRenderer::new();
     let first = cr.render(compose((20, 3), &view, None, false));
@@ -154,6 +160,7 @@ fn client_renderer_full_then_incremental() {
         layout: &layout,
         grids: &refs(&grids2),
         active_pane: p(1),
+        active_border: None,
     };
     let second = cr.render(compose((20, 3), &view2, None, false));
     assert!(
@@ -172,6 +179,7 @@ fn renderer_invalidate_forces_repaint() {
         layout: &layout,
         grids: &refs(&grids),
         active_pane: p(1),
+        active_border: None,
     };
     let mut cr = ClientRenderer::new();
     let _ = cr.render(compose((10, 2), &view, None, false));
@@ -200,7 +208,7 @@ fn repaint_roundtrip_preserves_text_with_inline_sgr() {
     let layout = PaneNode::leaf(PaneId(1));
     let mut grids: BTreeMap<PaneId, &Grid> = BTreeMap::new();
     grids.insert(PaneId(1), &src);
-    let view = WindowView { layout: &layout, grids: &grids, active_pane: PaneId(1) };
+    let view = WindowView { layout: &layout, grids: &grids, active_pane: PaneId(1), active_border: None };
     let screen = compose((80, 4), &view, None, false);
 
     // The composed screen's row 0 must read the literal text (no shift).
@@ -442,4 +450,65 @@ fn blit_grid_scrolled_preserves_color() {
     let ok_cell = screen.cell(4, 0).expect("cell 4,0");
     assert_eq!(ok_cell.str(), "o");
     assert_eq!(ok_cell.attrs().foreground(), ColorAttribute::Default);
+}
+
+#[test]
+fn active_pane_border_is_highlighted() {
+    use termwiz::color::ColorAttribute;
+    // [LEFT | RIGHT] split in 20x3, active = LEFT (p1). The shared divider is the
+    // right edge of the active pane, so it must carry the highlight color; the
+    // active pane's own content is unaffected.
+    let mut layout = PaneNode::leaf(p(1));
+    layout.split_leaf(p(1), p(2), SplitDir::Horizontal);
+    let mut grids = BTreeMap::new();
+    grids.insert(p(1), grid_with("L", 9, 3));
+    grids.insert(p(2), grid_with("R", 9, 3));
+    let green = border_attrs("green");
+    assert!(green.is_some());
+    let view = WindowView {
+        layout: &layout,
+        grids: &refs(&grids),
+        active_pane: p(1),
+        active_border: green,
+    };
+    let screen = compose((20, 3), &view, None, false);
+
+    // Find the divider column (the │ in row 0) and check it's green.
+    let row0 = screen.row_string(0);
+    let div_col = row0.find('│').expect("a divider should be drawn");
+    let div_cell = screen.cell(div_col, 0).expect("divider cell");
+    assert_eq!(div_cell.str(), "│");
+    assert_eq!(
+        div_cell.attrs().foreground(),
+        ColorAttribute::PaletteIndex(2), // green
+        "active pane's border must be highlighted green"
+    );
+}
+
+#[test]
+fn inactive_pane_border_is_not_highlighted() {
+    use termwiz::color::ColorAttribute;
+    // Same split but active = RIGHT (p2). Now the LEFT pane's own right-edge
+    // divider (which is also the active pane's left edge) is highlighted, but a
+    // 3-pane check is cleaner: with no active_border set, NO divider is colored.
+    let mut layout = PaneNode::leaf(p(1));
+    layout.split_leaf(p(1), p(2), SplitDir::Horizontal);
+    let mut grids = BTreeMap::new();
+    grids.insert(p(1), grid_with("L", 9, 3));
+    grids.insert(p(2), grid_with("R", 9, 3));
+    let view = WindowView {
+        layout: &layout,
+        grids: &refs(&grids),
+        active_pane: p(1),
+        active_border: None, // highlight disabled
+    };
+    let screen = compose((20, 3), &view, None, false);
+    let row0 = screen.row_string(0);
+    let div_col = row0.find('│').expect("a divider should be drawn");
+    let div_cell = screen.cell(div_col, 0).expect("divider cell");
+    assert_eq!(
+        div_cell.attrs().foreground(),
+        ColorAttribute::Default,
+        "with no active_border, dividers stay default-colored"
+    );
 }

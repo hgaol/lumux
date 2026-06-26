@@ -52,6 +52,9 @@ pub struct Config {
     /// Status bar background/foreground as tmux color names or indices.
     pub status_bg: String,
     pub status_fg: String,
+    /// Foreground color of the active pane's border (tmux pane-active-border).
+    /// A tmux color name or `colourN`. Empty disables the highlight.
+    pub pane_active_border_fg: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -81,6 +84,8 @@ impl Default for Config {
             status_justify: "centre".to_string(),
             status_bg: "colour236".to_string(),
             status_fg: "white".to_string(),
+            // tmux's default: the active pane gets a green border.
+            pane_active_border_fg: "green".to_string(),
         }
     }
 }

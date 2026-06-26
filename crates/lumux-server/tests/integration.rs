@@ -795,6 +795,7 @@ fn example_parity_config_parses_and_binds() {
     assert_eq!(cfg.base_index, 1);
     assert_eq!(cfg.status_justify, "centre");
     assert_eq!(cfg.status_bg, "colour24");
+    assert_eq!(cfg.pane_active_border_fg, "green");
     // Bindings compile into a usable table (prefix + root nav + reload).
     let b = cfg.to_bindings().expect("bindings build");
     use lumux_core::keymap::{Action, Key, KeyCode};

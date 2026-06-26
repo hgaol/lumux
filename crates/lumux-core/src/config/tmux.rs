@@ -193,14 +193,29 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
         "status-bg" => cfg.status_bg = value.to_string(),
         "status-fg" => cfg.status_fg = value.to_string(),
         "status-style" => apply_style_pairs(cfg, value),
+        // Active pane border color (tmux pane-active-border-style fg=green). We
+        // take the fg= part; lumux doesn't style inactive borders.
+        "pane-active-border-style" => {
+            if let Some(fg) = style_fg(value) {
+                cfg.pane_active_border_fg = fg;
+            }
+        }
         // Known-but-irrelevant to lumux: silently accept the common ones so a
         // typical tmux.conf doesn't spew warnings for things that are simply the
         // default behavior in lumux.
         "mode-keys" | "status-keys" | "escape-time" | "status" | "status-interval"
         | "renumber-windows" | "set-titles" | "status-left-length" | "status-right-length"
-        | "aggressive-resize" | "default-terminal" | "focus-events" => {}
+        | "aggressive-resize" | "default-terminal" | "focus-events" | "pane-border-style" => {}
         other => warnings.push(format!("unsupported option: {other}")),
     }
+}
+
+/// Extract the `fg=` color from a tmux style string like `fg=green,bold`.
+fn style_fg(value: &str) -> Option<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .find_map(|p| p.strip_prefix("fg=").map(str::to_string))
 }
 
 /// Set the default shell from a tmux `default-shell`/`default-command` value by
@@ -416,6 +431,15 @@ mod tests {
     }
 
     #[test]
+    fn pane_active_border_style_sets_fg() {
+        let c = Config::from_tmux("set -g pane-active-border-style fg=colour208,bold").unwrap();
+        assert_eq!(c.pane_active_border_fg, "colour208");
+        // pane-border-style is accepted (ignored) without a warning.
+        let p = Config::from_tmux_verbose("set -g pane-border-style fg=grey").unwrap();
+        assert!(p.warnings.is_empty(), "pane-border-style must be silently accepted");
+    }
+
+    #[test]
     fn default_command_with_args_splits_argv() {
         let c = Config::from_tmux(r#"set -g default-command "powershell.exe -NoLogo""#).unwrap();
         assert_eq!(
@@ -540,6 +564,7 @@ mod tests {
         assert_eq!(c.base_index, 1);
         assert_eq!(c.status_justify, "centre");
         assert_eq!(c.status_bg, "colour24");
+        assert_eq!(c.pane_active_border_fg, "green");
         // default-shell becomes the resolved default argv.
         assert_eq!(c.shell_argv(None), Some(vec!["powershell.exe".to_string()]));
         // Bindings compile, including the splits, zoom, and root nav.

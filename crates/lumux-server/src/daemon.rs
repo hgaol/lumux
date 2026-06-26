@@ -183,6 +183,13 @@ impl<S: PtySystem> Daemon<S> {
         self.config.mouse
     }
 
+    /// Border attributes for the active pane (tmux pane-active-border-style),
+    /// built from `pane_active_border_fg`. None when the config disables it
+    /// (empty string), so no highlight is drawn.
+    fn active_border_attrs(&self) -> Option<lumux_core::render::CellAttributes> {
+        lumux_core::render::border_attrs(&self.config.pane_active_border_fg)
+    }
+
     /// Lowest window/pane number shown to the user (tmux base-index). Window
     /// selection keys/commands are offset by this so the digit a user presses
     /// matches the number rendered in the status bar.
@@ -854,6 +861,7 @@ impl<S: PtySystem> Daemon<S> {
             layout: &layout,
             grids: &grids,
             active_pane,
+            active_border: self.active_border_attrs(),
         };
         // Compose panes without a built-in status row, but reserve the bottom
         // row so panes don't extend into it; we then paint our own styled status
@@ -1045,6 +1053,7 @@ impl<S: PtySystem> Daemon<S> {
             layout: &layout,
             grids: &grids,
             active_pane: active,
+            active_border: self.active_border_attrs(),
         };
         let cols = size.cols as usize;
         let rows = size.rows as usize;

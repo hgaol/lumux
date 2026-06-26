@@ -17,6 +17,9 @@ pub struct WindowView<'a> {
     pub grids: &'a BTreeMap<PaneId, &'a Grid>,
     /// The focused pane (its cursor becomes the screen cursor).
     pub active_pane: PaneId,
+    /// Attributes for the active pane's border (tmux pane-active-border-style).
+    /// `None` draws every border with the default attribute (no highlight).
+    pub active_border: Option<CellAttributes>,
 }
 
 /// A single-line status bar description.
@@ -237,6 +240,32 @@ pub fn compose(
         }
     }
 
+    // Highlight the active pane's border (tmux pane-active-border-style): redraw
+    // its four edges in the highlight color over the default borders, but only
+    // where a divider actually exists (not at the screen/content edges). With a
+    // single pane there are no dividers, so nothing is highlighted — matching
+    // tmux, which only shows borders when the window is split.
+    if let (Some(attrs), Some(rect)) = (view.active_border.as_ref(), rects.get(&view.active_pane)) {
+        let (x0, y0) = (rect.x as usize, rect.y as usize);
+        let (x1, y1) = ((rect.x + rect.cols) as usize, (rect.y + rect.rows) as usize);
+        // Right edge (divider to the pane on the right).
+        if x1 < w {
+            screen.vline(x1, y0, y1, attrs);
+        }
+        // Left edge (divider drawn by the pane on the left sits at x0-1).
+        if x0 > 0 {
+            screen.vline(x0 - 1, y0, y1, attrs);
+        }
+        // Bottom edge.
+        if y1 < content_rows {
+            screen.hline(y1, x0, x1, attrs);
+        }
+        // Top edge (divider above sits at y0-1).
+        if y0 > 0 {
+            screen.hline(y0 - 1, x0, x1, attrs);
+        }
+    }
+
     // Map the active pane's cursor into screen space, honoring DEC mode 25:
     // a hidden cursor (full-screen apps hide it while repainting) stays None so
     // the differ emits a hide rather than parking a stray block on screen.
@@ -258,6 +287,19 @@ pub fn compose(
         status.render(&mut screen);
     }
     screen
+}
+
+/// Build foreground-only [`CellAttributes`] from a tmux color name/index, for
+/// the active pane border. Returns None for an empty string (highlight off).
+/// Keeps termwiz types inside this crate so the daemon doesn't depend on them.
+pub fn border_attrs(fg: &str) -> Option<CellAttributes> {
+    let fg = fg.trim();
+    if fg.is_empty() {
+        return None;
+    }
+    let mut a = CellAttributes::default();
+    a.set_foreground(crate::status::parse_color(fg));
+    Some(a)
 }
 
 fn blit_pane(screen: &mut Screen, rect: Rect, grid: &Grid) {

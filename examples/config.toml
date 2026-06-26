@@ -30,6 +30,9 @@ status_right = "#[fg=cyan]%H:%M #[fg=yellow]%d-%b-%y"
 # When centre-justified, the middle shows the current window name (#W).
 status_format = "[#S] #W"
 
+# Color of the active pane's border (tmux pane-active-border-style fg=).
+pane_active_border_fg = "green"
+
 # --- Shell profiles -------------------------------------------------------
 # default_shell picks one of the profiles below; omit to use the system shell.
 # On Windows you'll typically want one of these. Uncomment to use:
