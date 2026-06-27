@@ -17,6 +17,15 @@ pub struct Pos {
     pub col: usize,
 }
 
+/// Direction of a copy-mode search, remembered so `n`/`N` can repeat it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SearchDir {
+    /// Toward the top of the buffer (older lines) — tmux `?`.
+    Backward,
+    /// Toward the bottom of the buffer (newer lines) — tmux `/`.
+    Forward,
+}
+
 /// Per-pane copy-mode state.
 #[derive(Debug, Clone)]
 pub struct CopyMode {
@@ -28,6 +37,9 @@ pub struct CopyMode {
     anchor: Option<Pos>,
     /// Viewport height (visible rows), to bound paging and clamp.
     height: usize,
+    /// Last search query and direction, so `n`/`N` repeat without retyping.
+    last_query: Option<String>,
+    last_dir: SearchDir,
 }
 
 impl CopyMode {
@@ -42,6 +54,8 @@ impl CopyMode {
             cursor: Pos { row: top, col: 0 },
             anchor: None,
             height: h,
+            last_query: None,
+            last_dir: SearchDir::Backward,
         }
     }
 
@@ -66,6 +80,91 @@ impl CopyMode {
         self.anchor = None;
     }
 
+    /// The remembered search query (for showing in the status line / repeating).
+    pub fn last_query(&self) -> Option<&str> {
+        self.last_query.as_deref()
+    }
+
+    /// Run a fresh search for `query` in `dir`, starting just past the cursor,
+    /// and move the cursor to the first match. Remembers the query/direction so
+    /// [`search_repeat`] (`n`/`N`) can continue it. Returns true if a match was
+    /// found (cursor moved); false leaves the cursor put. An empty query is a
+    /// no-op that still records nothing.
+    pub fn search(&mut self, query: &str, dir: SearchDir, grid: &Grid) -> bool {
+        if query.is_empty() {
+            return false;
+        }
+        let found = self.find(query, dir, self.cursor, grid);
+        self.last_query = Some(query.to_string());
+        self.last_dir = dir;
+        if let Some(pos) = found {
+            self.cursor = pos;
+            self.scroll_to_cursor(grid);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Repeat the last search. `same_dir` true is `n` (keep direction); false is
+    /// `N` (reverse). No-op (returns false) if no search has run yet.
+    pub fn search_repeat(&mut self, same_dir: bool, grid: &Grid) -> bool {
+        let Some(query) = self.last_query.clone() else {
+            return false;
+        };
+        let dir = match (self.last_dir, same_dir) {
+            (d, true) => d,
+            (SearchDir::Forward, false) => SearchDir::Backward,
+            (SearchDir::Backward, false) => SearchDir::Forward,
+        };
+        if let Some(pos) = self.find(&query, dir, self.cursor, grid) {
+            self.cursor = pos;
+            self.scroll_to_cursor(grid);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Find the next occurrence of `query` relative to `from`, scanning in `dir`.
+    /// Matching is plain (case-sensitive) substring over each row's full text.
+    /// The search starts on the cell just after `from` (forward) or just before
+    /// it (backward) so repeats advance past the current match.
+    fn find(&self, query: &str, dir: SearchDir, from: Pos, grid: &Grid) -> Option<Pos> {
+        let len = grid.combined_len();
+        if len == 0 {
+            return None;
+        }
+        match dir {
+            SearchDir::Forward => {
+                // Remainder of the start row (after the cursor col), then each
+                // following row in full.
+                for row in from.row..len {
+                    let text = row_chars(grid, row)?;
+                    let start = if row == from.row { from.col + 1 } else { 0 };
+                    if let Some(col) = find_in_row(&text, query, start, true) {
+                        return Some(Pos { row, col });
+                    }
+                }
+            }
+            SearchDir::Backward => {
+                for row in (0..=from.row).rev() {
+                    let text = row_chars(grid, row)?;
+                    // On the start row, only look before the cursor col.
+                    let limit = if row == from.row {
+                        Some(from.col)
+                    } else {
+                        None
+                    };
+                    if let Some(col) = find_in_row_rev(&text, query, limit) {
+                        return Some(Pos { row, col });
+                    }
+                }
+            }
+        }
+        None
+    }
+
     /// Handle a navigation key. Returns true if still in copy-mode, false if the
     /// key requested exit (Quit).
     pub fn navigate(&mut self, key: CopyKey, grid: &Grid) -> bool {
@@ -75,6 +174,14 @@ impl CopyMode {
             CopyKey::Quit => return false,
             CopyKey::StartSelection | CopyKey::Yank => {
                 // Selection start / yank are handled by the daemon, not here.
+            }
+            CopyKey::SearchForward
+            | CopyKey::SearchBackward
+            | CopyKey::RepeatSearch
+            | CopyKey::RepeatSearchRev => {
+                // Search open/repeat is driven by the daemon (which owns the
+                // query buffer and calls search()/search_repeat()), not by plain
+                // navigation. No cursor movement here.
             }
             CopyKey::Up => {
                 self.cursor.row = self.cursor.row.saturating_sub(1);
@@ -167,6 +274,44 @@ fn order(a: Pos, b: Pos) -> (Pos, Pos) {
     } else {
         (b, a)
     }
+}
+
+/// The full text of combined-buffer row `row` as a char vector, or None if the
+/// row doesn't exist. Trailing blanks are kept trimmed off so a match column
+/// lines up with visible content.
+fn row_chars(grid: &Grid, row: usize) -> Option<Vec<char>> {
+    Some(grid.combined_row(row)?.to_string_full().trim_end().chars().collect())
+}
+
+/// First column >= `start` in `hay` where `needle` matches, scanning forward.
+/// `_forward` documents intent at the call site; the scan is always low→high
+/// here. Column is a char index.
+fn find_in_row(hay: &[char], needle: &str, start: usize, _forward: bool) -> Option<usize> {
+    let n: Vec<char> = needle.chars().collect();
+    if n.is_empty() || n.len() > hay.len() {
+        return None;
+    }
+    let last = hay.len() - n.len();
+    (start..=last).find(|&i| hay[i..i + n.len()] == n[..])
+}
+
+/// Last column in `hay` where `needle` matches, scanning backward. If `limit`
+/// is `Some(l)`, only matches that *start* strictly before column `l` count (so
+/// a backward repeat moves past the current match). Column is a char index.
+fn find_in_row_rev(hay: &[char], needle: &str, limit: Option<usize>) -> Option<usize> {
+    let n: Vec<char> = needle.chars().collect();
+    if n.is_empty() || n.len() > hay.len() {
+        return None;
+    }
+    let max_start = hay.len() - n.len();
+    // Largest start index we may consider: bounded by max_start, and by limit-1
+    // when a limit is set. limit == 0 means "nothing before column 0" → no match.
+    let upper = match limit {
+        Some(0) => return None,
+        Some(l) => (l - 1).min(max_start),
+        None => max_start,
+    };
+    (0..=upper).rev().find(|&i| hay[i..i + n.len()] == n[..])
 }
 
 /// Encode `text` as an OSC-52 set-clipboard sequence. Sent down the client
@@ -286,6 +431,96 @@ mod tests {
         let g = grid_with_history();
         let cm = CopyMode::enter(&g);
         assert_eq!(cm.selected_text(&g), "");
+    }
+
+    fn search_grid() -> Grid {
+        // 20 wide, 4 tall, ample scrollback. Distinct markers on known rows.
+        let mut g = Grid::new(20, 4, 100);
+        g.feed(b"alpha needle one\r\n");   // row 0: has "needle"
+        g.feed(b"beta filler line\r\n");   // row 1
+        g.feed(b"gamma needle two\r\n");   // row 2: has "needle"
+        g.feed(b"delta last line\r\n");    // row 3
+        g
+    }
+
+    #[test]
+    fn search_backward_finds_previous_match() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        // Start at the bottom; search backward should land on row 2's "needle".
+        cm.cursor = Pos { row: 3, col: 19 };
+        assert!(cm.search("needle", SearchDir::Backward, &g));
+        assert_eq!(cm.cursor().row, 2);
+        assert_eq!(cm.cursor().col, "gamma ".chars().count());
+    }
+
+    #[test]
+    fn search_forward_finds_next_match() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        // Cursor sits just past row 0's "needle" (col 6..11), so forward search
+        // skips it and lands on row 2's "needle".
+        cm.cursor = Pos { row: 0, col: 12 };
+        assert!(cm.search("needle", SearchDir::Forward, &g));
+        assert_eq!(cm.cursor().row, 2);
+        // And a match earlier on the SAME row is found when we start before it.
+        cm.cursor = Pos { row: 0, col: 0 };
+        assert!(cm.search("needle", SearchDir::Forward, &g));
+        assert_eq!(cm.cursor().row, 0);
+        assert_eq!(cm.cursor().col, "alpha ".chars().count());
+    }
+
+    #[test]
+    fn search_repeat_advances_and_reverses() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 3, col: 19 };
+        // Backward to row 2.
+        assert!(cm.search("needle", SearchDir::Backward, &g));
+        assert_eq!(cm.cursor().row, 2);
+        // `n` repeats backward → row 0.
+        assert!(cm.search_repeat(true, &g));
+        assert_eq!(cm.cursor().row, 0);
+        // `N` reverses → forward → back to row 2.
+        assert!(cm.search_repeat(false, &g));
+        assert_eq!(cm.cursor().row, 2);
+    }
+
+    #[test]
+    fn search_miss_leaves_cursor_and_returns_false() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 3, col: 5 };
+        assert!(!cm.search("zzzz-nope", SearchDir::Backward, &g));
+        assert_eq!(cm.cursor().row, 3);
+        assert_eq!(cm.cursor().col, 5);
+    }
+
+    #[test]
+    fn search_remembers_query() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        assert_eq!(cm.last_query(), None);
+        cm.cursor = Pos { row: 3, col: 0 };
+        cm.search("needle", SearchDir::Backward, &g);
+        assert_eq!(cm.last_query(), Some("needle"));
+    }
+
+    #[test]
+    fn empty_query_is_a_noop() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 2, col: 3 };
+        assert!(!cm.search("", SearchDir::Forward, &g));
+        assert_eq!(cm.cursor().row, 2);
+        assert_eq!(cm.last_query(), None);
+    }
+
+    #[test]
+    fn search_repeat_without_prior_search_is_noop() {
+        let g = search_grid();
+        let mut cm = CopyMode::enter(&g);
+        assert!(!cm.search_repeat(true, &g));
     }
 
     #[test]

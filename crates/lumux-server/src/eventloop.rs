@@ -18,7 +18,7 @@ use std::io::Read;
 use std::sync::mpsc::{channel, Sender};
 
 use lumux_core::copymode::osc52;
-use lumux_core::keymap::{Action, CopyKey, PromptKey, Reaction, SessionKey};
+use lumux_core::keymap::{Action, CopyKey, PromptKey, Reaction, SearchKey, SessionKey};
 use lumux_core::layout::Direction;
 use lumux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use lumux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
@@ -323,6 +323,9 @@ where
                         }
                         Reaction::Help(hk) => {
                             self.daemon.help_scroll(client_id, hk);
+                        }
+                        Reaction::Search(sk) => {
+                            self.handle_search_key(client_id, session, sk);
                         }
                     }
                 }
@@ -970,10 +973,47 @@ where
                 }
                 self.render_client(client_id);
             }
+            // Open the search query input (forward `/` or backward `?`). The
+            // keymap has already switched to Search mode; seed the buffer.
+            CopyKey::SearchForward => {
+                self.daemon
+                    .search_open(client_id, lumux_core::copymode::SearchDir::Forward);
+                self.render_client(client_id);
+            }
+            CopyKey::SearchBackward => {
+                self.daemon
+                    .search_open(client_id, lumux_core::copymode::SearchDir::Backward);
+                self.render_client(client_id);
+            }
+            // Repeat the last search (n keeps direction, N reverses).
+            CopyKey::RepeatSearch | CopyKey::RepeatSearchRev => {
+                let same = matches!(ck, CopyKey::RepeatSearch);
+                if !self.daemon.search_repeat(client_id, session, same) {
+                    self.daemon.flash_message(client_id, "no more matches");
+                }
+                self.render_client(client_id);
+            }
             _ => {
                 self.daemon.copy_navigate(client_id, session, ck);
             }
         }
+    }
+
+    /// Drive the copy-mode search text input (after `/`/`?`). Confirm runs the
+    /// search and jumps the cursor; cancel returns to navigation; chars/backspace
+    /// edit the live query (shown incrementally in the status line).
+    fn handle_search_key(&mut self, client_id: u64, session: SessionId, sk: SearchKey) {
+        match sk {
+            SearchKey::Char(c) => self.daemon.search_push(client_id, c),
+            SearchKey::Backspace => self.daemon.search_backspace(client_id),
+            SearchKey::Cancel => self.daemon.search_cancel(client_id),
+            SearchKey::Confirm => {
+                if !self.daemon.search_confirm(client_id, session) {
+                    self.daemon.flash_message(client_id, "pattern not found");
+                }
+            }
+        }
+        self.render_client(client_id);
     }
 
     fn do_split(&mut self, session: SessionId, dir: SplitDir) {

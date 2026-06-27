@@ -24,6 +24,9 @@ pub enum Mode {
     /// Capturing text for a prompt (rename-window/-session): printable keys
     /// extend the buffer, Enter commits, Escape cancels.
     Prompt,
+    /// Capturing a copy-mode search query (after `/` or `?`): printable keys
+    /// extend the query, Enter runs the search, Escape cancels back to copy-mode.
+    Search,
     /// Inside a bracketed paste (between ESC[200~ and ESC[201~): every byte is
     /// forwarded verbatim to the pane, so pasted content can't trigger the
     /// prefix or any binding. tmux behaves the same.
@@ -56,6 +59,9 @@ pub enum Reaction {
     Prompt(PromptKey),
     /// A help-overlay navigation key (scroll the binding list, or close it).
     Help(HelpKey),
+    /// A copy-mode search edit key (text entry for `/`/`?`), with the direction
+    /// chosen when search was opened.
+    Search(SearchKey),
 }
 
 /// Keys handled while a text prompt is open (rename-window/-session).
@@ -68,6 +74,19 @@ pub enum PromptKey {
     /// Commit the buffer (Enter).
     Confirm,
     /// Abandon the prompt (Escape).
+    Cancel,
+}
+
+/// Keys handled while a copy-mode search query is being typed (after `/`/`?`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchKey {
+    /// Append a typed character to the query.
+    Char(char),
+    /// Delete the last character (Backspace).
+    Backspace,
+    /// Run the search with the typed query (Enter).
+    Confirm,
+    /// Abandon search, returning to copy-mode navigation (Escape).
     Cancel,
 }
 
@@ -113,6 +132,12 @@ pub enum CopyKey {
     StartSelection,
     /// Copy the selection and exit copy-mode (Enter / 'y').
     Yank,
+    /// Open the search query input, searching forward (`/`) or backward (`?`).
+    SearchForward,
+    SearchBackward,
+    /// Repeat the last search in the same (`n`) or opposite (`N`) direction.
+    RepeatSearch,
+    RepeatSearchRev,
     Quit,
 }
 
@@ -260,12 +285,31 @@ impl Keymap {
                 Mode::Copy => {
                     flush_passthrough!();
                     if let Some(ck) = copy_key(&key) {
-                        if ck == CopyKey::Quit {
-                            self.mode = Mode::Normal;
+                        match ck {
+                            CopyKey::Quit => self.mode = Mode::Normal,
+                            // Opening search switches to text-entry mode; the
+                            // daemon seeds an empty query and renders the prompt.
+                            CopyKey::SearchForward | CopyKey::SearchBackward => {
+                                self.mode = Mode::Search;
+                            }
+                            _ => {}
                         }
                         reactions.push(Reaction::Copy(ck));
                     }
                     // Non-navigation keys in copy-mode are ignored.
+                }
+                Mode::Search => {
+                    flush_passthrough!();
+                    if let Some(sk) = search_key(&key) {
+                        // Confirm/Cancel both close the query input; control
+                        // returns to copy-mode navigation (NOT Normal), so the
+                        // user can keep scrolling or press n/N.
+                        if matches!(sk, SearchKey::Confirm | SearchKey::Cancel) {
+                            self.mode = Mode::Copy;
+                        }
+                        reactions.push(Reaction::Search(sk));
+                    }
+                    // Non-text keys (arrows, etc.) are ignored while typing.
                 }
                 Mode::ChooseSession => {
                     flush_passthrough!();
@@ -367,6 +411,26 @@ fn prompt_key(key: &Key) -> Option<PromptKey> {
     Some(pk)
 }
 
+/// Map a key to a copy-mode search edit action while a search query is open.
+/// Mirrors [`prompt_key`] but yields [`SearchKey`]. Backspace arrives as Ctrl-H
+/// or DEL depending on the terminal.
+fn search_key(key: &Key) -> Option<SearchKey> {
+    if (key.ctrl && key.code == KeyCode::Char('h'))
+        || key.code == KeyCode::Char('\u{7f}')
+        || key.code == KeyCode::Char('\u{8}')
+    {
+        return Some(SearchKey::Backspace);
+    }
+    let sk = match key.code {
+        KeyCode::Enter => SearchKey::Confirm,
+        KeyCode::Escape => SearchKey::Cancel,
+        KeyCode::Space => SearchKey::Char(' '),
+        KeyCode::Char(c) if !key.ctrl && !key.alt && !c.is_control() => SearchKey::Char(c),
+        _ => return None,
+    };
+    Some(sk)
+}
+
 fn copy_key(key: &Key) -> Option<CopyKey> {
     let ck = match key.code {
         KeyCode::Up => CopyKey::Up,
@@ -383,6 +447,11 @@ fn copy_key(key: &Key) -> Option<CopyKey> {
         KeyCode::Char('v') => CopyKey::StartSelection,
         KeyCode::Enter => CopyKey::Yank,
         KeyCode::Char('y') => CopyKey::Yank,
+        // Search: `/` forward, `?` backward, `n`/`N` repeat.
+        KeyCode::Char('/') => CopyKey::SearchForward,
+        KeyCode::Char('?') => CopyKey::SearchBackward,
+        KeyCode::Char('n') => CopyKey::RepeatSearch,
+        KeyCode::Char('N') => CopyKey::RepeatSearchRev,
         // vi-style.
         KeyCode::Char('k') => CopyKey::Up,
         KeyCode::Char('j') => CopyKey::Down,

@@ -116,6 +116,9 @@ pub struct Daemon<S: PtySystem> {
     /// Clients with an open text prompt (rename-window/-session): the target and
     /// the buffer typed so far.
     prompt: BTreeMap<u64, Prompt>,
+    /// Clients typing a copy-mode search query (after `/`/`?`): the in-progress
+    /// query and the direction to search when confirmed.
+    search: BTreeMap<u64, SearchInput>,
     /// Clients mid-divider-drag: the path to the divider grabbed on mouse-press,
     /// so subsequent drag motion moves that same divider (even off its line).
     dragging: BTreeMap<u64, Vec<bool>>,
@@ -128,6 +131,13 @@ pub struct Daemon<S: PtySystem> {
 pub struct Prompt {
     pub target: PromptTarget,
     pub buffer: String,
+}
+
+/// An open copy-mode search input: the query typed so far and which way to look.
+#[derive(Clone)]
+pub struct SearchInput {
+    pub buffer: String,
+    pub dir: lumux_core::copymode::SearchDir,
 }
 
 /// What an open prompt will rename when confirmed.
@@ -155,6 +165,7 @@ impl<S: PtySystem> Daemon<S> {
             help_offset: BTreeMap::new(),
             choosing: BTreeMap::new(),
             prompt: BTreeMap::new(),
+            search: BTreeMap::new(),
             dragging: BTreeMap::new(),
             clipboard,
             config: Config::default(),
@@ -369,6 +380,7 @@ impl<S: PtySystem> Daemon<S> {
         self.help_offset.remove(&client_id);
         self.choosing.remove(&client_id);
         self.prompt.remove(&client_id);
+        self.search.remove(&client_id);
         self.dragging.remove(&client_id);
         self.server.detach_client(client_id);
     }
@@ -457,9 +469,110 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
-    /// Toggle the help overlay for a client (tmux prefix ?). Showing it the
-    /// first time opens it (scrolled to the top); pressing it again (or q /
-    /// Escape) closes it.
+    /// Open a copy-mode search input for `client_id` in `dir` (tmux `/` forward,
+    /// `?` backward). Seeds an empty query; subsequent keys edit it. No-op if the
+    /// client isn't in copy-mode.
+    pub fn search_open(&mut self, client_id: u64, dir: lumux_core::copymode::SearchDir) {
+        if !self.in_copy_mode(client_id) {
+            return;
+        }
+        self.search.insert(
+            client_id,
+            SearchInput {
+                buffer: String::new(),
+                dir,
+            },
+        );
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    pub fn in_search(&self, client_id: u64) -> bool {
+        self.search.contains_key(&client_id)
+    }
+
+    /// The open search query and its direction prefix char (`/` or `?`) for the
+    /// status line, if this client is typing a search.
+    pub fn search_prompt(&self, client_id: u64) -> Option<(char, &str)> {
+        self.search.get(&client_id).map(|s| {
+            let prefix = match s.dir {
+                lumux_core::copymode::SearchDir::Forward => '/',
+                lumux_core::copymode::SearchDir::Backward => '?',
+            };
+            (prefix, s.buffer.as_str())
+        })
+    }
+
+    pub fn search_push(&mut self, client_id: u64, c: char) {
+        if let Some(s) = self.search.get_mut(&client_id) {
+            s.buffer.push(c);
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    pub fn search_backspace(&mut self, client_id: u64) {
+        if let Some(s) = self.search.get_mut(&client_id) {
+            s.buffer.pop();
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Cancel the search input, returning to copy-mode navigation. The cursor
+    /// stays where it was (no jump).
+    pub fn search_cancel(&mut self, client_id: u64) {
+        if self.search.remove(&client_id).is_some() {
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Run the typed search against the active pane's copy-mode buffer, moving
+    /// the copy cursor to the first match. Returns false if there was no match
+    /// (the caller flashes a message). An empty query just closes the input.
+    pub fn search_confirm(&mut self, client_id: u64, session: SessionId) -> bool {
+        let Some(input) = self.search.remove(&client_id) else {
+            return true;
+        };
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        let query = input.buffer;
+        if query.trim().is_empty() {
+            return true;
+        }
+        let Some(pid) = self.active_pane(session) else {
+            return true;
+        };
+        let Some(grid) = self.panes.get(&pid).map(|p| &p.grid) else {
+            return true;
+        };
+        match self.copy.get_mut(&client_id) {
+            Some(cm) => cm.search(&query, input.dir, grid),
+            None => true,
+        }
+    }
+
+    /// Repeat the last copy-mode search (tmux `n`/`N`). `same_dir` true keeps the
+    /// original direction (`n`), false reverses it (`N`). Returns false when
+    /// there was no further match.
+    pub fn search_repeat(&mut self, client_id: u64, session: SessionId, same_dir: bool) -> bool {
+        let Some(pid) = self.active_pane(session) else {
+            return true;
+        };
+        let Some(grid) = self.panes.get(&pid).map(|p| &p.grid) else {
+            return true;
+        };
+        match self.copy.get_mut(&client_id) {
+            Some(cm) => cm.search_repeat(same_dir, grid),
+            None => true,
+        }
+    }
     pub fn toggle_help(&mut self, client_id: u64) {
         if !self.help.remove(&client_id) {
             self.help.insert(client_id);
@@ -648,6 +761,8 @@ impl<S: PtySystem> Daemon<S> {
         };
         if !still {
             self.copy.remove(&client_id);
+            // A search input can't outlive copy-mode; drop it too.
+            self.search.remove(&client_id);
             // Copy-mode ended: bring the keymap back to Normal so subsequent keys
             // go to the shell (mirrors the keyboard `q`/Escape reset path).
             if let Some(k) = self.keymaps.get_mut(&client_id) {
@@ -1083,13 +1198,23 @@ impl<S: PtySystem> Daemon<S> {
             screen.set_cursor(Some((cx.min(cols.saturating_sub(1)), cy.min(content_rows.saturating_sub(1)))));
         }
 
-        // Copy-mode status line across the reserved bottom row.
-        let label = if cm.has_selection() {
-            "-- COPY (selecting) --  arrows/PgUp/PgDn move, Enter yanks, q quits"
+        // Copy-mode status line across the reserved bottom row. While a search
+        // query is being typed, show it as a `/query` (or `?query`) prompt so
+        // the user sees what they're searching for, like tmux.
+        if let Some((prefix, query)) = self.search_prompt(client_id) {
+            let line = format!("{prefix}{query}");
+            screen.status_line(rows.saturating_sub(1), &line);
+            // Park the cursor at the end of the query so typing feels live.
+            let cx = line.chars().count().min(cols.saturating_sub(1));
+            screen.set_cursor(Some((cx, rows.saturating_sub(1))));
         } else {
-            "-- COPY --  arrows/PgUp/PgDn move, Space selects, q quits"
-        };
-        screen.status_line(rows.saturating_sub(1), label);
+            let label = if cm.has_selection() {
+                "-- COPY (selecting) --  arrows/PgUp/PgDn move, / search, Enter yanks, q quits"
+            } else {
+                "-- COPY --  arrows/PgUp/PgDn move, / search, Space selects, q quits"
+            };
+            screen.status_line(rows.saturating_sub(1), label);
+        }
 
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))

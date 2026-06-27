@@ -703,6 +703,73 @@ fn copy_mode_scroll_is_incremental_not_a_clear() {
 }
 
 #[test]
+fn copy_mode_search_jumps_to_match() {
+    // tmux copy-mode `/`/`?` search. Put a unique marker far up in history, push
+    // it off the live screen, enter copy-mode, and search backward for it. The
+    // match must scroll into view (it isn't visible at the live tail).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("search".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Print a unique marker, then enough lines to push it into scrollback.
+    c.send(&ClientMsg::Input(
+        b"echo FINDME_MARKER_42; for i in $(seq 1 60); do echo f$i; done\n".to_vec(),
+    ));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Precondition: the marker is NOT on the live screen.
+    let (_d0, live) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !live.contains("FINDME_MARKER_42"),
+        "precondition: marker should be scrolled off; got:\n{live}"
+    );
+    // Enter copy-mode (prefix [), then type a backward search: ? F I N D M E Enter.
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"?FINDME\r".to_vec()));
+    // Force a full repaint so we capture the whole post-search screen.
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("FINDME_MARKER_42"),
+        "search must scroll the matching line into view; got:\n{vt}"
+    );
+}
+
+#[test]
+fn copy_mode_search_prompt_is_shown_while_typing() {
+    // While typing a search query, the bottom row shows it as `?FINDME` (tmux's
+    // incremental search prompt), not the normal "-- COPY --" status.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("searchprompt".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(b"for i in $(seq 1 40); do echo l$i; done\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Open backward search and type a few chars (no Enter yet).
+    c.send(&ClientMsg::Input(b"?abc".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("?abc"),
+        "the search prompt should echo the typed query; got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

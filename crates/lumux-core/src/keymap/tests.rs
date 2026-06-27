@@ -1,4 +1,4 @@
-use crate::keymap::{Action, CopyKey, Key, Keymap, Mode, Reaction};
+use crate::keymap::{Action, CopyKey, Key, Keymap, Mode, Reaction, SearchKey};
 
 fn km() -> Keymap {
     Keymap::with_defaults()
@@ -202,6 +202,49 @@ fn copy_mode_ignores_non_nav_keys() {
     let r = k.feed(b"z"); // not a nav key
     assert!(r.is_empty());
     assert_eq!(k.mode(), Mode::Copy, "stays in copy mode");
+}
+
+#[test]
+fn copy_mode_search_open_type_and_run() {
+    let mut k = km();
+    k.feed(&[0x02, b'[']);
+    // `/` opens a forward search and switches to Search mode.
+    let r = k.feed(b"/");
+    assert_eq!(r, vec![Reaction::Copy(CopyKey::SearchForward)]);
+    assert_eq!(k.mode(), Mode::Search);
+    // Typed chars become SearchKey::Char (NOT pane passthrough or nav keys).
+    assert_eq!(
+        k.feed(b"ab"),
+        vec![
+            Reaction::Search(SearchKey::Char('a')),
+            Reaction::Search(SearchKey::Char('b')),
+        ]
+    );
+    // Enter runs the search and returns to copy-mode navigation (not Normal).
+    let r = k.feed(b"\r");
+    assert_eq!(r, vec![Reaction::Search(SearchKey::Confirm)]);
+    assert_eq!(k.mode(), Mode::Copy);
+}
+
+#[test]
+fn copy_mode_search_cancel_returns_to_copy() {
+    let mut k = km();
+    k.feed(&[0x02, b'[']);
+    k.feed(b"?"); // backward search
+    assert_eq!(k.mode(), Mode::Search);
+    let r = k.feed(b"\x1b"); // Escape
+    assert_eq!(r, vec![Reaction::Search(SearchKey::Cancel)]);
+    assert_eq!(k.mode(), Mode::Copy, "cancel returns to copy nav, not Normal");
+}
+
+#[test]
+fn copy_mode_repeat_search_keys() {
+    let mut k = km();
+    k.feed(&[0x02, b'[']);
+    assert_eq!(k.feed(b"n"), vec![Reaction::Copy(CopyKey::RepeatSearch)]);
+    assert_eq!(k.feed(b"N"), vec![Reaction::Copy(CopyKey::RepeatSearchRev)]);
+    // n/N don't leave copy-mode.
+    assert_eq!(k.mode(), Mode::Copy);
 }
 
 #[test]

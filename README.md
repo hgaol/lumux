@@ -92,9 +92,10 @@ between panes instantly. With `mouse = true`, click selects a pane, the wheel
 scrolls into copy-mode history, and dragging a divider resizes panes.
 
 **Copy-mode:** arrows / PageUp / PageDown / Home / End or vi keys (`hjkl`) to
-move; `u` / `d` half-page scroll; `Space` or `v` starts a selection; `Enter` or
-`y` yanks (and copies to your local terminal's clipboard via OSC-52); `q` or
-`Escape` exits.
+move; `u` / `d` half-page scroll; `/` searches forward and `?` backward, with
+`n` / `N` to jump to the next / previous match; `Space` or `v` starts a
+selection; `Enter` or `y` yanks (and copies to your local terminal's clipboard
+via OSC-52); `q` or `Escape` exits.
 
 ## Configuration
 
