@@ -1038,6 +1038,57 @@ fn swap_pane_exchanges_pane_positions() {
 }
 
 #[test]
+fn swap_window_reorders_the_status_list() {
+    // tmux swap-window (lumux: prefix < / >): moving the active window changes its
+    // position in the status-bar window list. We create three named windows, move
+    // the active (last) one left, and assert its name now appears before the
+    // window it swapped with in the rendered status row.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("mw".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Rename window 0, then create two more with distinct names.
+    c.send(&ClientMsg::Input(vec![0x02, b',']));
+    c.send(&ClientMsg::Input(b"AAA\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.send(&ClientMsg::Input(vec![0x02, b',']));
+    c.send(&ClientMsg::Input(b"BBB\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.send(&ClientMsg::Input(vec![0x02, b',']));
+    c.send(&ClientMsg::Input(b"CCC\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Order is AAA, BBB, CCC with CCC active. Capture the status row.
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    let (a0, b0, cc0) = (
+        before.find("AAA"),
+        before.find("BBB"),
+        before.find("CCC"),
+    );
+    assert!(
+        a0 < b0 && b0 < cc0,
+        "precondition: status order AAA<BBB<CCC; got:\n{before}"
+    );
+    // Move the active window (CCC) left → order becomes AAA, CCC, BBB.
+    c.send(&ClientMsg::Input(vec![0x02, b'<']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    let (a1, b1, cc1) = (after.find("AAA"), after.find("BBB"), after.find("CCC"));
+    assert!(
+        a1 < cc1 && cc1 < b1,
+        "after moving left, CCC should sit before BBB; got:\n{after}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

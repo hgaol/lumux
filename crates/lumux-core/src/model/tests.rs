@@ -606,3 +606,40 @@ fn swap_pane_with_unknown_or_self_is_noop() {
     assert!(!srv.swap_active_pane(sid, p1));
     assert!(!srv.swap_active_pane(sid, PaneId(9999)));
 }
+
+// ----- move/swap-window -----
+
+#[test]
+fn move_active_window_reorders_the_list() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let w1 = srv.new_window(sid, "", sh()).unwrap();
+    let w2 = srv.new_window(sid, "", sh()).unwrap();
+    // Order is [w0, w1, w2]; w2 is active (newest).
+    assert_eq!(srv.session(sid).unwrap().window_ids(), vec![w0, w1, w2]);
+    // Move the active window (w2) one slot earlier → [w0, w2, w1].
+    assert!(srv.session_mut(sid).unwrap().move_active_window(-1));
+    assert_eq!(srv.session(sid).unwrap().window_ids(), vec![w0, w2, w1]);
+    // The active window is unchanged (still w2), just repositioned.
+    assert_eq!(srv.session(sid).unwrap().active_window(), w2);
+}
+
+#[test]
+fn move_active_window_wraps_at_ends() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let w1 = srv.new_window(sid, "", sh()).unwrap();
+    // Focus the first window, then move it left → wraps to the end.
+    srv.session_mut(sid).unwrap().focus_window(w0);
+    assert!(srv.session_mut(sid).unwrap().move_active_window(-1));
+    assert_eq!(srv.session(sid).unwrap().window_ids(), vec![w1, w0]);
+}
+
+#[test]
+fn move_window_single_window_is_noop() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    assert!(!srv.session_mut(sid).unwrap().move_active_window(1));
+}

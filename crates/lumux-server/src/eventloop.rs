@@ -541,6 +541,8 @@ where
             Action::ShowHelp => self.daemon.toggle_help(client_id),
             Action::ChooseSession => self.daemon.open_chooser(client_id),
             Action::DisplayPanes => self.daemon.show_pane_numbers(client_id),
+            Action::SwapWindowLeft => self.do_move_window(session, -1),
+            Action::SwapWindowRight => self.do_move_window(session, 1),
             Action::PasteBuffer => {
                 if !self.daemon.paste_buffer(session) {
                     self.daemon.flash_message(client_id, "no buffers");
@@ -1096,6 +1098,21 @@ where
     fn invalidate_session(&mut self, session: SessionId) {
         for id in self.session_clients(session) {
             self.daemon.invalidate_client(id);
+        }
+    }
+
+    /// Move the active window earlier (`delta < 0`) or later (`delta > 0`) in the
+    /// window list (tmux swap-window). Only the status-bar window list changes, so
+    /// a repaint suffices — no PTY resize.
+    fn do_move_window(&mut self, session: SessionId, delta: i32) {
+        let moved = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| s.move_active_window(delta))
+            .unwrap_or(false);
+        if moved {
+            self.invalidate_session(session);
         }
     }
 

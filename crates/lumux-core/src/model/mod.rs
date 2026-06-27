@@ -401,6 +401,28 @@ impl Session {
         }
     }
 
+    /// Move the active window one slot earlier (`delta < 0`) or later (`delta >
+    /// 0`) in the window list (tmux swap-window with the neighbor). Wraps around
+    /// the ends so moving the first window left puts it last, matching the
+    /// next/prev navigation feel. No-op for a single window. Returns true if the
+    /// order changed.
+    pub fn move_active_window(&mut self, delta: i32) -> bool {
+        let n = self.windows.len();
+        if n < 2 {
+            return false;
+        }
+        let Some(pos) = self.windows.iter().position(|w| w.id == self.active_window) else {
+            return false;
+        };
+        // Target index with wraparound.
+        let target = (pos as i32 + delta).rem_euclid(n as i32) as usize;
+        if target == pos {
+            return false;
+        }
+        self.windows.swap(pos, target);
+        true
+    }
+
     pub fn focus_window(&mut self, id: WindowId) -> bool {
         if self.windows.iter().any(|w| w.id == id) {
             self.set_active_window(id);
