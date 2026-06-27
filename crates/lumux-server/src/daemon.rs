@@ -727,6 +727,38 @@ impl<S: PtySystem> Daemon<S> {
         self.buffers.push(text)
     }
 
+    /// Run a shell command (tmux run-shell) and push its combined stdout/stderr
+    /// into a paste buffer. Returns a short status string for the flash line. The
+    /// command runs via `sh -c` with a captured, non-interactive stdout — output
+    /// is bounded so a runaway command can't blow up memory.
+    pub fn run_shell(&mut self, cmd: &str) -> String {
+        use std::process::Command;
+        let output = Command::new("sh").arg("-c").arg(cmd).output();
+        match output {
+            Ok(out) => {
+                let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+                if !out.stderr.is_empty() {
+                    text.push_str(&String::from_utf8_lossy(&out.stderr));
+                }
+                // Bound the captured output (256 KiB) so a huge dump is safe.
+                const CAP: usize = 256 * 1024;
+                if text.len() > CAP {
+                    text.truncate(CAP);
+                }
+                let trimmed = text.trim_end().to_string();
+                if trimmed.is_empty() {
+                    format!("run-shell: exit {}", out.status.code().unwrap_or(-1))
+                } else {
+                    match self.buffers.push(trimmed) {
+                        Some(name) => format!("run-shell output → {name}"),
+                        None => "run-shell: no output".to_string(),
+                    }
+                }
+            }
+            Err(e) => format!("run-shell failed: {e}"),
+        }
+    }
+
     /// Open the paste-buffer chooser for a client (tmux prefix `=`). Returns
     /// false (and opens nothing) when there are no buffers.
     pub fn open_buffer_chooser(&mut self, client_id: u64) -> bool {

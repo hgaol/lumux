@@ -1080,6 +1080,10 @@ where
                 None => self.daemon.flash_message(client_id, "nothing to capture"),
             },
             ParsedCommand::RespawnPane => self.do_respawn_pane(client_id, session),
+            ParsedCommand::RunShell(cmd) => {
+                let status = self.daemon.run_shell(&cmd);
+                self.daemon.flash_message(client_id, status);
+            }
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);

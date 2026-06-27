@@ -145,9 +145,52 @@ fn apply_directive(
             warnings.push(format!("unbind not applied: {}", tokens.join(" ")));
             Ok(())
         }
+        // if-shell <cmd> <then> [else]: run <cmd>; on success apply <then> as a
+        // directive, else <else>. The then/else are quoted command strings (the
+        // tokenizer has already unquoted them).
+        "if-shell" | "if" => {
+            apply_if_shell(cfg, &tokens[1..], warnings);
+            Ok(())
+        }
+        // run-shell at config-load time: run the command for its side effects
+        // (its output has nowhere to go during parsing). Bounded; failures warn.
+        "run-shell" | "run" => {
+            if let Some(c) = tokens.get(1) {
+                let _ = std::process::Command::new("sh").arg("-c").arg(c).output();
+            }
+            Ok(())
+        }
         other => {
             warnings.push(format!("unsupported command: {other}"));
             Ok(())
+        }
+    }
+}
+
+/// Handle `if-shell <cmd> <then> [else]`: run `<cmd>` via `sh -c`; on exit 0
+/// apply the `<then>` command line, otherwise the optional `<else>` line. The
+/// branch strings are themselves tokenized and applied as a directive (so e.g.
+/// `if-shell "test -d ~/x" "set -g mouse on"` works). Skipped flags like `-b`/`-F`
+/// are ignored.
+fn apply_if_shell(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
+    // Drop leading flags (-b background, -F format, etc.).
+    let args: Vec<&String> = rest.iter().filter(|t| !t.starts_with('-')).collect();
+    let Some(test_cmd) = args.first() else {
+        warnings.push("if-shell: missing command".to_string());
+        return;
+    };
+    let ok = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(test_cmd.as_str())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false);
+    let branch = if ok { args.get(1) } else { args.get(2) };
+    if let Some(branch) = branch {
+        if let Some(tokens) = tokenize(branch) {
+            if !tokens.is_empty() {
+                let _ = apply_directive(cfg, &tokens, warnings);
+            }
         }
     }
 }
@@ -459,6 +502,19 @@ mod tests {
         let p = Config::from_tmux_verbose("set -g remain-on-exit on").unwrap();
         assert!(p.config.remain_on_exit);
         assert!(p.warnings.is_empty());
+    }
+
+    #[test]
+    fn if_shell_applies_the_chosen_branch() {
+        // True test → the THEN branch runs (mouse turned on).
+        let c = Config::from_tmux(r#"if-shell "true" "set -g mouse on""#).unwrap();
+        assert!(c.mouse, "then-branch should apply when the test succeeds");
+        // False test → the ELSE branch runs.
+        let c = Config::from_tmux(r#"if-shell "false" "set -g mouse on" "set -g mouse off""#).unwrap();
+        assert!(!c.mouse, "else-branch should apply when the test fails");
+        // False test with no else → nothing happens (mouse stays default off).
+        let c = Config::from_tmux(r#"if-shell "false" "set -g mouse on""#).unwrap();
+        assert!(!c.mouse);
     }
 
     #[test]

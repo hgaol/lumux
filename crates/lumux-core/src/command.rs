@@ -44,6 +44,8 @@ pub enum ParsedCommand {
     CapturePane,
     /// `respawn-pane`: restart the shell in a dead pane (remain-on-exit).
     RespawnPane,
+    /// `run-shell <cmd>`: run a shell command; its output goes to a paste buffer.
+    RunShell(String),
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -57,6 +59,20 @@ pub fn parse_command(line: &str) -> Option<ParsedCommand> {
     let line = line.trim();
     if line.is_empty() {
         return None;
+    }
+    // run-shell takes the entire remainder verbatim (it's a shell command line,
+    // so we must NOT split/strip its flags and quotes).
+    for prefix in ["run-shell ", "run ", "run-shell\t", "run\t"] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let cmd = rest.trim();
+            if cmd.is_empty() {
+                return Some(ParsedCommand::BadArgs("usage: run-shell COMMAND"));
+            }
+            return Some(ParsedCommand::RunShell(cmd.to_string()));
+        }
+    }
+    if line == "run-shell" || line == "run" {
+        return Some(ParsedCommand::BadArgs("usage: run-shell COMMAND"));
     }
     let mut parts = line.split_whitespace();
     let verb = parts.next()?;
@@ -267,5 +283,18 @@ mod tests {
     fn respawn_pane_and_aliases() {
         assert_eq!(parse_command("respawn-pane"), Some(ParsedCommand::RespawnPane));
         assert_eq!(parse_command("respawnp"), Some(ParsedCommand::RespawnPane));
+    }
+
+    #[test]
+    fn run_shell_takes_the_rest_verbatim() {
+        assert_eq!(
+            parse_command("run-shell echo hi -n"),
+            Some(ParsedCommand::RunShell("echo hi -n".to_string()))
+        );
+        assert_eq!(
+            parse_command("run date +%s"),
+            Some(ParsedCommand::RunShell("date +%s".to_string()))
+        );
+        assert!(matches!(parse_command("run-shell"), Some(ParsedCommand::BadArgs(_))));
     }
 }

@@ -1449,6 +1449,33 @@ fn emacs_mode_keys_scroll_copy_mode() {
 }
 
 #[test]
+fn run_shell_captures_output_to_a_buffer() {
+    // tmux run-shell: ":run-shell echo …" runs the command and its output goes
+    // into a paste buffer. We run a marker echo, then open the buffer chooser
+    // (prefix =) and confirm the marker shows in the preview.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("rsh".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"run-shell echo RUNSHELL_OUT_TT\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'=']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("-- BUFFERS --") && vt.contains("RUNSHELL_OUT_TT"),
+        "run-shell output should land in a paste buffer; got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();
