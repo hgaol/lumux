@@ -248,6 +248,17 @@ fn copy_mode_repeat_search_keys() {
 }
 
 #[test]
+fn copy_mode_rectangle_toggle_keys() {
+    let mut k = km();
+    k.feed(&[0x02, b'[']);
+    // Ctrl-v (byte 0x16) toggles rectangle/block selection.
+    assert_eq!(k.feed(&[0x16]), vec![Reaction::Copy(CopyKey::RectangleToggle)]);
+    // Capital R does too (vi copy-mode alias).
+    assert_eq!(k.feed(b"R"), vec![Reaction::Copy(CopyKey::RectangleToggle)]);
+    assert_eq!(k.mode(), Mode::Copy, "toggling block stays in copy-mode");
+}
+
+#[test]
 fn buffer_chooser_opens_and_navigates() {
     use crate::keymap::BufferKey;
     let mut k = km();

@@ -40,6 +40,9 @@ pub struct CopyMode {
     /// Last search query and direction, so `n`/`N` repeat without retyping.
     last_query: Option<String>,
     last_dir: SearchDir,
+    /// When true, the selection is a column-bounded rectangle (tmux block /
+    /// rectangle-toggle) rather than the default line-wise stream.
+    rectangle: bool,
 }
 
 impl CopyMode {
@@ -56,6 +59,7 @@ impl CopyMode {
             height: h,
             last_query: None,
             last_dir: SearchDir::Backward,
+            rectangle: false,
         }
     }
 
@@ -78,6 +82,23 @@ impl CopyMode {
 
     pub fn clear_selection(&mut self) {
         self.anchor = None;
+    }
+
+    /// Whether the selection is in rectangle (block) mode.
+    pub fn is_rectangle(&self) -> bool {
+        self.rectangle
+    }
+
+    /// Toggle rectangle (block) selection (tmux `rectangle-toggle`, copy-mode
+    /// `Ctrl-v` / `R`). Also begins a selection at the cursor if none is active,
+    /// so a single keypress both starts and shapes a block — matching tmux, where
+    /// rectangle-toggle in mid-air starts selecting. Returns the new state.
+    pub fn toggle_rectangle(&mut self) -> bool {
+        self.rectangle = !self.rectangle;
+        if self.anchor.is_none() {
+            self.anchor = Some(self.cursor);
+        }
+        self.rectangle
     }
 
     /// The remembered search query (for showing in the status line / repeating).
@@ -172,8 +193,10 @@ impl CopyMode {
         let max_row = combined.saturating_sub(1);
         match key {
             CopyKey::Quit => return false,
-            CopyKey::StartSelection | CopyKey::Yank => {
-                // Selection start / yank are handled by the daemon, not here.
+            CopyKey::StartSelection | CopyKey::Yank | CopyKey::RectangleToggle => {
+                // Selection start / yank / rectangle-toggle are handled by the
+                // daemon (which calls start_selection / toggle_rectangle), not
+                // here. No cursor movement.
             }
             CopyKey::SearchForward
             | CopyKey::SearchBackward
@@ -234,11 +257,15 @@ impl CopyMode {
     }
 
     /// Extract the currently selected text (inclusive of cursor cell). Returns
-    /// empty string when there is no selection.
+    /// empty string when there is no selection. In rectangle mode the selection
+    /// is a column-bounded block; otherwise it's the usual line-wise stream.
     pub fn selected_text(&self, grid: &Grid) -> String {
         let Some(anchor) = self.anchor else {
             return String::new();
         };
+        if self.rectangle {
+            return self.selected_block(anchor, grid);
+        }
         let (start, end) = order(anchor, self.cursor);
         let mut out = String::new();
         for row in start.row..=end.row {
@@ -260,6 +287,32 @@ impl CopyMode {
             let slice: String = text[c0..c1.min(text.len())].iter().collect();
             out.push_str(slice.trim_end());
             if row != end.row {
+                out.push('\n');
+            }
+        }
+        out
+    }
+
+    /// Extract a rectangular (block) selection: the same column range
+    /// `[min(col), max(col))` taken from every row between the anchor and cursor.
+    /// Each row's slice keeps its own trailing whitespace trimmed, and rows are
+    /// newline-joined — matching tmux's block yank.
+    fn selected_block(&self, anchor: Pos, grid: &Grid) -> String {
+        let r0 = anchor.row.min(self.cursor.row);
+        let r1 = anchor.row.max(self.cursor.row);
+        // Column range is inclusive of the cursor cell, like the stream selection.
+        let lo = anchor.col.min(self.cursor.col);
+        let hi = anchor.col.max(self.cursor.col) + 1;
+        let mut out = String::new();
+        for row in r0..=r1 {
+            if let Some(r) = grid.combined_row(row) {
+                let text: Vec<char> = r.to_string_full().chars().collect();
+                let c0 = lo.min(text.len());
+                let c1 = hi.min(text.len());
+                let slice: String = text[c0..c1].iter().collect();
+                out.push_str(slice.trim_end());
+            }
+            if row != r1 {
                 out.push('\n');
             }
         }
@@ -431,6 +484,62 @@ mod tests {
         let g = grid_with_history();
         let cm = CopyMode::enter(&g);
         assert_eq!(cm.selected_text(&g), "");
+    }
+
+    #[test]
+    fn rectangle_selection_takes_a_column_block() {
+        // Three rows of equal-width content; a block selection of columns [1,3)
+        // takes the same 2-char slice from each row.
+        let mut g = Grid::new(20, 4, 50);
+        g.feed(b"abcde\r\nfghij\r\nklmno");
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 1 };
+        assert!(cm.toggle_rectangle()); // turns block mode on, anchors here
+        assert!(cm.is_rectangle());
+        // Extend to row 2, col 2 → columns 1..=2 of each row: "bc","gh","lm".
+        cm.cursor = Pos { row: 2, col: 2 };
+        assert_eq!(cm.selected_text(&g), "bc\ngh\nlm");
+    }
+
+    #[test]
+    fn rectangle_is_independent_of_drag_direction() {
+        // Selecting up-and-left yields the same block as down-and-right.
+        let mut g = Grid::new(20, 4, 50);
+        g.feed(b"abcde\r\nfghij\r\nklmno");
+        let mut cm = CopyMode::enter(&g);
+        // Anchor bottom-right (row 2, col 3), cursor top-left (row 0, col 1).
+        cm.cursor = Pos { row: 2, col: 3 };
+        cm.toggle_rectangle();
+        cm.cursor = Pos { row: 0, col: 1 };
+        // Columns 1..=3 of each row: "bcd","ghi","lmn".
+        assert_eq!(cm.selected_text(&g), "bcd\nghi\nlmn");
+    }
+
+    #[test]
+    fn stream_and_block_differ_across_rows() {
+        // The same anchor/cursor yields different text in stream vs block mode.
+        let mut g = Grid::new(20, 3, 50);
+        g.feed(b"abcde\r\nfghij");
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 2 };
+        cm.start_selection(); // stream mode
+        cm.cursor = Pos { row: 1, col: 1 };
+        // Stream: from (0,2) to (1,1). End col is exclusive of the cursor cell in
+        // stream mode, so row 1 contributes cols 0..1 = "f".
+        assert_eq!(cm.selected_text(&g), "cde\nf");
+        // Toggle to block: columns 1..=2 of both rows = "bc","gh".
+        cm.toggle_rectangle();
+        assert_eq!(cm.selected_text(&g), "bc\ngh");
+    }
+
+    #[test]
+    fn toggle_rectangle_starts_selection_when_none() {
+        let g = grid_with_history();
+        let mut cm = CopyMode::enter(&g);
+        assert!(!cm.has_selection());
+        cm.toggle_rectangle();
+        assert!(cm.has_selection(), "toggling block mid-air begins a selection");
+        assert!(cm.is_rectangle());
     }
 
     fn search_grid() -> Grid {

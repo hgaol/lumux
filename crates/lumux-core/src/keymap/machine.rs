@@ -150,6 +150,8 @@ pub enum CopyKey {
     End,
     /// Begin/extend a selection at the cursor (Space / 'v').
     StartSelection,
+    /// Toggle rectangle (block) selection (tmux rectangle-toggle, `Ctrl-v` / `R`).
+    RectangleToggle,
     /// Copy the selection and exit copy-mode (Enter / 'y').
     Yank,
     /// Open the search query input, searching forward (`/`) or backward (`?`).
@@ -484,6 +486,11 @@ fn search_key(key: &Key) -> Option<SearchKey> {
 }
 
 fn copy_key(key: &Key) -> Option<CopyKey> {
+    // Ctrl-v toggles rectangle (block) selection (tmux rectangle-toggle). Checked
+    // before the code match since it carries the ctrl modifier.
+    if key.ctrl && key.code == KeyCode::Char('v') {
+        return Some(CopyKey::RectangleToggle);
+    }
     let ck = match key.code {
         KeyCode::Up => CopyKey::Up,
         KeyCode::Down => CopyKey::Down,
@@ -497,6 +504,8 @@ fn copy_key(key: &Key) -> Option<CopyKey> {
         KeyCode::Char('q') => CopyKey::Quit,
         KeyCode::Space => CopyKey::StartSelection,
         KeyCode::Char('v') => CopyKey::StartSelection,
+        // Rectangle/block toggle (vi copy-mode also binds capital R).
+        KeyCode::Char('R') => CopyKey::RectangleToggle,
         KeyCode::Enter => CopyKey::Yank,
         KeyCode::Char('y') => CopyKey::Yank,
         // Search: `/` forward, `?` backward, `n`/`N` repeat.

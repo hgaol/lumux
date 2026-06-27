@@ -886,6 +886,17 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
+    /// Toggle rectangle (block) selection for the client's copy-mode (tmux
+    /// rectangle-toggle). Begins a selection if none is active.
+    pub fn copy_toggle_rectangle(&mut self, client_id: u64) {
+        if let Some(cm) = self.copy.get_mut(&client_id) {
+            cm.toggle_rectangle();
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
     /// Yank the current selection to the clipboard and exit copy-mode. Returns
     /// the OSC-52-or-similar bytes to forward to the client, if any.
     pub fn copy_yank(&mut self, client_id: u64, session: SessionId) -> Option<String> {
@@ -1313,10 +1324,14 @@ impl<S: PtySystem> Daemon<S> {
             let cx = line.chars().count().min(cols.saturating_sub(1));
             screen.set_cursor(Some((cx, rows.saturating_sub(1))));
         } else {
-            let label = if cm.has_selection() {
-                "-- COPY (selecting) --  arrows/PgUp/PgDn move, / search, Enter yanks, q quits"
-            } else {
-                "-- COPY --  arrows/PgUp/PgDn move, / search, Space selects, q quits"
+            let label = match (cm.has_selection(), cm.is_rectangle()) {
+                (true, true) => {
+                    "-- COPY (block) --  arrows move, Ctrl-v toggles block, Enter yanks, q quits"
+                }
+                (true, false) => {
+                    "-- COPY (selecting) --  arrows/PgUp/PgDn move, / search, Enter yanks, q quits"
+                }
+                _ => "-- COPY --  arrows/PgUp/PgDn move, / search, Space selects, q quits",
             };
             screen.status_line(rows.saturating_sub(1), label);
         }

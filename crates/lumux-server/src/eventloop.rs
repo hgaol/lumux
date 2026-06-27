@@ -989,6 +989,10 @@ where
                 self.daemon.copy_start_selection(client_id);
                 self.render_client(client_id);
             }
+            CopyKey::RectangleToggle => {
+                self.daemon.copy_toggle_rectangle(client_id);
+                self.render_client(client_id);
+            }
             CopyKey::Yank => {
                 let text = self.daemon.copy_yank(client_id, session);
                 // Yank exits copy-mode; reset the keymap and emit OSC-52 so the
