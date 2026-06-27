@@ -293,6 +293,95 @@ impl<S: PtySystem> Daemon<S> {
         self.pane_cwd(pid)
     }
 
+    /// Capture the structure of all sessions into a serializable snapshot (tmux-
+    /// resurrect save). Records, per pane, its shell argv and current working
+    /// directory so the shell can be relaunched on restore. The live pane ids are
+    /// remapped to dense snapshot-local ids so the file is independent of the
+    /// daemon's id counter.
+    pub fn snapshot(&self) -> lumux_core::persist::StateFile {
+        use lumux_core::persist::{PaneSnap, SessionSnap, StateFile, WindowSnap};
+        let mut sessions = Vec::new();
+        for sid in self.server.session_ids() {
+            let Some(s) = self.server.session(sid) else { continue };
+            let win_ids = s.window_ids();
+            let active_window = win_ids.iter().position(|&w| w == s.active_window()).unwrap_or(0);
+            let mut windows = Vec::new();
+            for &wid in &win_ids {
+                let Some(w) = s.window(wid) else { continue };
+                let pane_ids = w.pane_ids();
+                // Map each real PaneId -> dense snapshot id (its position).
+                let id_of = |pid: PaneId| pane_ids.iter().position(|&p| p == pid).unwrap_or(0) as u32;
+                let active_pane = pane_ids.iter().position(|&p| p == w.active_pane()).unwrap_or(0);
+                let panes = pane_ids
+                    .iter()
+                    .map(|&pid| PaneSnap {
+                        layout_id: id_of(pid),
+                        shell: w.pane(pid).map(|p| p.shell.clone()).unwrap_or_default(),
+                        cwd: self.pane_cwd(pid),
+                    })
+                    .collect();
+                // Clone the layout tree with leaf ids remapped to snapshot ids.
+                let layout = remap_layout(&w.layout, &id_of);
+                windows.push(WindowSnap {
+                    name: w.name.clone(),
+                    layout,
+                    panes,
+                    active_pane,
+                    synchronized: w.is_synchronized(),
+                    auto_rename: w.auto_rename(),
+                });
+            }
+            sessions.push(SessionSnap {
+                name: s.name.clone(),
+                windows,
+                active_window,
+            });
+        }
+        StateFile::new(sessions)
+    }
+
+    /// Save the current snapshot to `path` atomically (write a temp file then
+    /// rename, so a crash mid-write can't corrupt the state file). Returns Ok on
+    /// success. An empty snapshot still writes (so a deliberately-emptied state
+    /// is honored on restart).
+    pub fn save_state(&self, path: &std::path::Path) -> std::io::Result<()> {
+        let bytes = self
+            .snapshot()
+            .encode()
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        let tmp = path.with_extension("bin.tmp");
+        std::fs::write(&tmp, &bytes)?;
+        std::fs::rename(&tmp, path)?;
+        Ok(())
+    }
+
+    /// Rebuild one session from a snapshot (tmux-resurrect restore): construct the
+    /// model via [`Server::restore_session`], then spawn a PTY for every pane in
+    /// its saved working directory. Returns each pane's id + reader so the event
+    /// loop can start pumping it. Panes whose PTY fails to spawn are skipped
+    /// (logged), leaving the rest of the session intact.
+    // The nested (id, reader) vec is inherent to the generic PTY type; factoring
+    // a generic alias would add noise without aiding readability.
+    #[allow(clippy::type_complexity)]
+    pub fn restore_session(
+        &mut self,
+        snap: &lumux_core::persist::SessionSnap,
+        size: PtySize,
+    ) -> Option<(SessionId, Vec<(PaneId, <S::Pty as Pty>::Reader)>)> {
+        let (sid, spawns) = self.server.restore_session(snap)?;
+        let mut readers = Vec::new();
+        for sp in spawns {
+            match self.spawn_pane(sp.id, &sp.shell, size, sp.cwd) {
+                Ok(reader) => readers.push((sp.id, reader)),
+                Err(e) => tracing::warn!("restore: failed to spawn pane {:?}: {e}", sp.id),
+            }
+        }
+        Some((sid, readers))
+    }
+
     /// Create a new session with its first pane spawned. Returns (session, pane)
     /// and the reader for the pane so the event loop can start pumping it.
     pub fn new_session(
@@ -1181,6 +1270,11 @@ impl<S: PtySystem> Daemon<S> {
         self.config.remain_on_exit
     }
 
+    /// Whether session persistence (save/restore to disk) is enabled.
+    pub fn persist_enabled(&self) -> bool {
+        self.config.persist
+    }
+
     /// The command line registered for `event` via set-hook, if any (tmux hooks).
     pub fn hook_command(&self, event: &str) -> Option<String> {
         self.config.hooks.get(event).cloned()
@@ -2036,6 +2130,25 @@ fn resolve_cwd(_pid: u32) -> Option<String> {
 #[cfg(windows)]
 fn resolve_cwd(_pid: u32) -> Option<String> {
     None
+}
+
+/// Clone a [`PaneNode`] tree, replacing each leaf's real [`PaneId`] with the
+/// snapshot-local id produced by `id_of`. Used when capturing a layout so the
+/// saved tree references dense ids independent of the live id counter.
+fn remap_layout(
+    node: &lumux_core::model::PaneNode,
+    id_of: &impl Fn(PaneId) -> u32,
+) -> lumux_core::model::PaneNode {
+    use lumux_core::model::PaneNode;
+    match node {
+        PaneNode::Leaf(pid) => PaneNode::Leaf(PaneId(id_of(*pid))),
+        PaneNode::Split { dir, ratio, first, second } => PaneNode::Split {
+            dir: *dir,
+            ratio: *ratio,
+            first: Box::new(remap_layout(first, id_of)),
+            second: Box::new(remap_layout(second, id_of)),
+        },
+    }
 }
 
 /// 0-based position of `wid` within its session's window list.

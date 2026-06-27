@@ -29,6 +29,15 @@ impl Pane {
     }
 }
 
+/// What the daemon needs to spawn one pane's PTY after a restore: the freshly
+/// allocated id and the saved shell argv + working directory.
+#[derive(Debug, Clone)]
+pub struct PaneSpawn {
+    pub id: PaneId,
+    pub shell: Vec<String>,
+    pub cwd: Option<String>,
+}
+
 /// A window: a named "tab" filling the client viewport, holding a pane tree and
 /// tracking which pane has input focus.
 #[derive(Debug, Clone)]
@@ -78,6 +87,54 @@ impl Window {
 
     pub fn active_pane(&self) -> PaneId {
         self.active_pane
+    }
+
+    /// Rebuild a window from a saved [`WindowSnap`](crate::persist::WindowSnap).
+    /// Allocates a fresh [`PaneId`] per saved pane (keyed by its snapshot
+    /// `layout_id`), reconstructs the exact split layout with those ids, and
+    /// restores the name + sync/auto-rename flags. Returns the window plus a
+    /// [`PaneSpawn`] per pane for the caller to start PTYs. None if the snapshot
+    /// has no panes.
+    fn from_snapshot(snap: &crate::persist::WindowSnap) -> Option<(Window, Vec<PaneSpawn>)> {
+        if snap.panes.is_empty() {
+            return None;
+        }
+        // snapshot layout_id -> fresh PaneId.
+        let mut id_map: BTreeMap<u32, PaneId> = BTreeMap::new();
+        let mut panes = BTreeMap::new();
+        let mut spawns = Vec::new();
+        for psnap in &snap.panes {
+            let pid = PaneId::alloc();
+            id_map.insert(psnap.layout_id, pid);
+            panes.insert(pid, Pane::new(pid, psnap.shell.clone()));
+            spawns.push(PaneSpawn {
+                id: pid,
+                shell: psnap.shell.clone(),
+                cwd: psnap.cwd.clone(),
+            });
+        }
+        // Remap the saved layout's snapshot ids to the fresh ids. Any leaf whose
+        // id is missing (corrupt file) falls back to the first pane so the tree
+        // stays valid rather than panicking.
+        let fallback = spawns[0].id;
+        let layout = remap_snapshot_layout(&snap.layout, &id_map, fallback);
+        // Active pane index into the (ordered) spawns list.
+        let active_idx = snap.active_pane.min(spawns.len() - 1);
+        let active_pane = spawns[active_idx].id;
+        let wid = WindowId::alloc();
+        let window = Window {
+            id: wid,
+            name: snap.name.clone(),
+            layout,
+            panes,
+            active_pane,
+            last_pane: None,
+            layout_kind: None,
+            zoomed: None,
+            synchronized: snap.synchronized,
+            auto_rename: snap.auto_rename,
+        };
+        Some((window, spawns))
     }
 
     /// Set the active pane, remembering the prior one for `last-pane`. Changing
@@ -544,6 +601,41 @@ impl Server {
         sid
     }
 
+    /// Rebuild a session from a saved [`SessionSnap`](crate::persist::SessionSnap)
+    /// (tmux-resurrect restore). Allocates fresh ids for the session, its windows,
+    /// and panes; reconstructs each window's exact split layout from the snapshot;
+    /// and returns the new [`SessionId`] plus a [`PaneSpawn`] per pane (its fresh
+    /// id, shell argv, and saved cwd) so the daemon can spawn a PTY for each. The
+    /// model is built fully here; only PTY I/O is left to the caller.
+    pub fn restore_session(
+        &mut self,
+        snap: &crate::persist::SessionSnap,
+    ) -> Option<(SessionId, Vec<PaneSpawn>)> {
+        if snap.windows.is_empty() {
+            return None;
+        }
+        let sid = SessionId::alloc();
+        let mut spawns = Vec::new();
+        let mut windows = Vec::new();
+        for wsnap in &snap.windows {
+            let (window, mut win_spawns) = Window::from_snapshot(wsnap)?;
+            spawns.append(&mut win_spawns);
+            windows.push(window);
+        }
+        // Assemble the session: first window seeds it, the rest are appended.
+        let active_idx = snap.active_window.min(windows.len() - 1);
+        let active_wid = windows[active_idx].id;
+        let mut it = windows.into_iter();
+        let first = it.next()?;
+        let mut session = Session::new(sid, snap.name.clone(), first);
+        for w in it {
+            session.windows.push(w);
+        }
+        session.active_window = active_wid;
+        self.sessions.insert(sid, session);
+        Some((sid, spawns))
+    }
+
     pub fn kill_session(&mut self, id: SessionId) -> bool {
         let removed = self.sessions.remove(&id).is_some();
         if removed {
@@ -784,6 +876,27 @@ pub enum CascadeResult {
     WindowClosed,
     SessionClosed,
     NotFound,
+}
+
+/// Clone a saved layout tree, replacing each snapshot leaf id with the freshly
+/// allocated [`PaneId`] from `id_map`. A leaf whose id isn't in the map (corrupt
+/// file) falls back to `fallback` so the tree stays structurally valid.
+fn remap_snapshot_layout(
+    node: &PaneNode,
+    id_map: &BTreeMap<u32, PaneId>,
+    fallback: PaneId,
+) -> PaneNode {
+    match node {
+        PaneNode::Leaf(snap_id) => {
+            PaneNode::Leaf(*id_map.get(&snap_id.0).unwrap_or(&fallback))
+        }
+        PaneNode::Split { dir, ratio, first, second } => PaneNode::Split {
+            dir: *dir,
+            ratio: *ratio,
+            first: Box::new(remap_snapshot_layout(first, id_map, fallback)),
+            second: Box::new(remap_snapshot_layout(second, id_map, fallback)),
+        },
+    }
 }
 
 /// Pick a window name: use `name` if non-empty, otherwise derive a tmux-style

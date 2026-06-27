@@ -7,11 +7,12 @@
 //! pane (collapsing its parent split so the sibling takes its place).
 
 use super::id::PaneId;
+use serde::{Deserialize, Serialize};
 
 /// Orientation of a split. `Horizontal` stacks panes left|right (a vertical
 /// divider); `Vertical` stacks them top/bottom (a horizontal divider). Naming
 /// follows tmux's `split-window -h` (left|right) / `-v` (top/bottom).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SplitDir {
     /// Panes side by side, divided by a vertical line. `-h`.
     Horizontal,
@@ -19,7 +20,7 @@ pub enum SplitDir {
     Vertical,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum PaneNode {
     Leaf(PaneId),
     Split {

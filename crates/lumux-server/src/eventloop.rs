@@ -70,6 +70,10 @@ struct Loop<S: PtySystem> {
     clients: HashMap<u64, ClientHandle>,
     pane_session: HashMap<PaneId, SessionId>,
     tx: Sender<Msg>,
+    /// Last time auto-save wrote the state file, to throttle to ~every 15s.
+    last_autosave: std::time::Instant,
+    /// Where the session snapshot is saved/restored (tmux-resurrect).
+    state_path: std::path::PathBuf,
 }
 
 /// Run the control loop until no sessions and no clients remain. Spawns one
@@ -95,6 +99,23 @@ where
     <S::Pty as Pty>::Reader: Send + 'static,
     L: Listener + 'static,
 {
+    run_with_config_at(pty_system, listener, config, crate::state_path())
+}
+
+/// Like [`run_with_config`] but with an explicit session-state file path. Used by
+/// tests (which need independent, controllable state files) and by callers that
+/// override the default location.
+pub fn run_with_config_at<S, L>(
+    pty_system: S,
+    listener: L,
+    config: lumux_core::config::Config,
+    state_path: std::path::PathBuf,
+) -> std::io::Result<()>
+where
+    S: PtySystem + 'static,
+    <S::Pty as Pty>::Reader: Send + 'static,
+    L: Listener + 'static,
+{
     let (tx, rx) = channel::<Msg>();
     spawn_accept(listener, tx.clone());
     spawn_ticker(tx.clone());
@@ -106,15 +127,24 @@ where
         clients: HashMap::new(),
         pane_session: HashMap::new(),
         tx: tx.clone(),
+        last_autosave: std::time::Instant::now(),
+        state_path,
     };
     // Hold one tx so the loop never sees a disconnected channel while idle.
     drop(tx);
+
+    // Restore saved sessions (tmux-resurrect) before serving clients, when
+    // persistence is enabled and a state file exists. Restored sessions make the
+    // daemon non-empty, so guard the empty-exit check with `served`.
+    let mut served = false;
+    if lp.daemon.persist_enabled() && lp.restore_from_disk() {
+        served = true;
+    }
 
     // The daemon auto-exits once it has served at least one client and then goes
     // idle (no sessions, no clients). `served` gates this so the periodic Tick —
     // which now drives the loop before any client connects — can't trip the
     // emptiness check at startup and kill a freshly-bound daemon.
-    let mut served = false;
     for msg in rx {
         if matches!(msg, Msg::ClientConnected { .. }) {
             served = true;
@@ -131,6 +161,37 @@ impl<S: PtySystem + 'static> Loop<S>
 where
     <S::Pty as Pty>::Reader: Send + 'static,
 {
+    /// Restore saved sessions from the on-disk state file (tmux-resurrect). Reads
+    /// [`crate::state_path`], decodes it, and rebuilds each session — spawning a
+    /// PTY + reader thread per pane and recording its pane→session mapping.
+    /// Returns true if at least one session was restored. A missing, empty, or
+    /// version-mismatched file is a no-op (false). Panes spawn at a default size;
+    /// they refit when the first client attaches and triggers a resize.
+    fn restore_from_disk(&mut self) -> bool {
+        let path = self.state_path.clone();
+        let Ok(bytes) = std::fs::read(&path) else {
+            return false;
+        };
+        let Some(state) = lumux_core::persist::StateFile::decode(&bytes) else {
+            return false;
+        };
+        let size = PtySize::new(80, 24);
+        let mut restored = 0;
+        for snap in &state.sessions {
+            if let Some((sid, readers)) = self.daemon.restore_session(snap, size) {
+                for (pid, reader) in readers {
+                    self.pane_session.insert(pid, sid);
+                    spawn_pane_reader(pid, reader, self.tx.clone());
+                }
+                restored += 1;
+            }
+        }
+        if restored > 0 {
+            tracing::info!("restored {restored} session(s) from {}", path.display());
+        }
+        restored > 0
+    }
+
     fn handle(&mut self, msg: Msg) {
         match msg {
             Msg::ClientConnected { first, out, reply } => self.on_connect(first, out, reply),
@@ -167,6 +228,15 @@ where
                     if let Some(&sid) = self.pane_session.get(&pane) {
                         self.handle_pane_exited(sid, pane);
                     }
+                }
+                // Auto-save the session snapshot when persistence is on, throttled
+                // to ~every 15s so we don't hammer the disk on every 250ms tick.
+                if self.daemon.persist_enabled()
+                    && self.last_autosave.elapsed() >= std::time::Duration::from_secs(15)
+                    && !self.daemon.server.is_empty()
+                {
+                    let _ = self.daemon.save_state(&self.state_path);
+                    self.last_autosave = std::time::Instant::now();
                 }
             }
         }
@@ -1069,6 +1139,13 @@ where
             ParsedCommand::RunShell(cmd) => {
                 let status = self.daemon.run_shell(&cmd);
                 self.daemon.flash_message(client_id, status);
+            }
+            ParsedCommand::SaveState => {
+                let path = self.state_path.clone();
+                match self.daemon.save_state(&path) {
+                    Ok(()) => self.daemon.flash_message(client_id, "state saved"),
+                    Err(e) => self.daemon.flash_message(client_id, format!("save failed: {e}")),
+                }
             }
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {

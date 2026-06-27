@@ -8,9 +8,11 @@ use std::fmt;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicU32, Ordering};
 
+use serde::{Deserialize, Serialize};
+
 macro_rules! define_id {
     ($name:ident, $sigil:literal, $counter:ident) => {
-        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
         pub struct $name(pub u32);
 
         static $counter: AtomicU32 = AtomicU32::new(1);

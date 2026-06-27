@@ -239,6 +239,7 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
         // and stays ignored below.)
         "auto-resize" => cfg.auto_resize = on_off(value),
         "remain-on-exit" => cfg.remain_on_exit = on_off(value),
+        "persist" => cfg.persist = on_off(value),
         "history-limit" => {
             if let Ok(n) = value.parse() {
                 cfg.scrollback = n;
@@ -525,6 +526,10 @@ mod tests {
         let p = Config::from_tmux_verbose("set -g remain-on-exit on").unwrap();
         assert!(p.config.remain_on_exit);
         assert!(p.warnings.is_empty());
+        // persist toggles its flag too.
+        let c = Config::from_tmux("set -g persist on").unwrap();
+        assert!(c.persist);
+        assert!(!Config::default().persist, "persist is off by default");
     }
 
     #[test]

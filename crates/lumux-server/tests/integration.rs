@@ -124,6 +124,25 @@ fn start_daemon_respawn_hook() -> std::path::PathBuf {
     path
 }
 
+/// A persistence-enabled daemon on a caller-chosen socket + state path. Two
+/// calls with the SAME `state` path but DIFFERENT sockets simulate a daemon
+/// restart: the first saves, the second restores from the shared state file.
+fn start_daemon_persist(sock: &std::path::Path, state: &std::path::Path) {
+    let listener = UnixSocketListener::bind(sock).expect("bind");
+    let cfg = lumux_core::config::Config {
+        persist: true,
+        ..Default::default()
+    };
+    let state = state.to_path_buf();
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config_at(UnixPtySystem, listener, cfg, state);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !sock.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 /// A tiny framed client over a raw UnixStream (mirrors the real client wire
 /// behavior without a terminal).
 struct TestClient {
@@ -203,6 +222,25 @@ impl TestClient {
         }
         (false, vt)
     }
+}
+
+/// Whether the rendered status bar lists window number `n`. Window entries
+/// render as `<n>:<name>` where the name starts with a letter (the shell
+/// basename), so we match `"<n>:"` followed by an ASCII letter. This avoids the
+/// status-bar clock (`HH:MM`, a digit after the colon) masquerading as a window
+/// entry — a real bug that made `contains("1:")` flaky at times like 11:13.
+fn has_window(vt: &str, n: u32) -> bool {
+    let needle = format!("{n}:");
+    let bytes = vt.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = vt[from..].find(&needle) {
+        let after = from + rel + needle.len();
+        if bytes.get(after).is_some_and(|b| b.is_ascii_alphabetic()) {
+            return true;
+        }
+        from += rel + 1;
+    }
+    false
 }
 
 /// Decode one length-prefixed ServerMsg from `buf`, returning bytes consumed.
@@ -552,7 +590,7 @@ fn exiting_one_window_keeps_session_alive() {
         "session must stay alive after one window of several exits"
     );
     assert!(
-        vt.contains("0:"),
+        has_window(&vt, 0),
         "the surviving window should still render in the status bar; got:\n{vt}"
     );
 }
@@ -1006,11 +1044,13 @@ fn break_pane_creates_a_new_window() {
     c.collect_until(Duration::from_secs(2), |m| {
         matches!(m, ServerMsg::Attached { .. })
     });
-    // One window so far: the status list has "0:" but no "1:".
+    // One window so far: the status list has "0:sh" but no "1:sh". (Match the
+    // full "N:sh" entry, not bare "N:", so the status-bar clock like "11:13"
+    // can't masquerade as a window entry.)
     c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
     let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
     assert!(
-        before.contains("0:") && !before.contains("1:"),
+        has_window(&before, 0) && !has_window(&before, 1),
         "precondition: exactly one window; got:\n{before}"
     );
     // Split into two panes (Ctrl-b %), then break the active pane out (Ctrl-b !).
@@ -1020,7 +1060,7 @@ fn break_pane_creates_a_new_window() {
     c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
     let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
     assert!(
-        after.contains("0:") && after.contains("1:"),
+        has_window(&after, 0) && has_window(&after, 1),
         "break-pane should create a second window; got:\n{after}"
     );
 }
@@ -1312,7 +1352,7 @@ fn command_prompt_join_pane_merges_windows() {
     c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
     let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
     assert!(
-        before.contains("0:") && before.contains("1:"),
+        has_window(&before, 0) && has_window(&before, 1),
         "precondition: two windows; got:\n{before}"
     );
     // Join the other window's pane into this one (-h side by side).
@@ -1323,7 +1363,7 @@ fn command_prompt_join_pane_merges_windows() {
     // Source window (single pane) closed → only one window remains; active window
     // now has two panes (a divider).
     assert!(
-        after.contains("0:") && !after.contains("1:"),
+        has_window(&after, 0) && !has_window(&after, 1),
         "join-pane should close the emptied source window; got:\n{after}"
     );
     assert!(
@@ -1527,6 +1567,62 @@ fn pane_exited_hook_respawns_the_pane() {
         vt.contains("HOOK_RESPAWN_VV"),
         "pane-exited hook should respawn a working shell; got:\n{vt}"
     );
+}
+
+#[test]
+fn persist_save_and_restore_round_trip() {
+    // tmux-resurrect: with persistence on, a saved session is rebuilt by a fresh
+    // daemon. Daemon #1 creates a session, splits into two panes, renames the
+    // window, and :save-state. Daemon #2 (different socket, SAME state file)
+    // restores it — the rebuilt session must have the renamed window and two
+    // panes (a divider), proving layout+shell restore across a "restart".
+    let dir = std::env::temp_dir();
+    let uniq = format!("{}-{:?}", std::process::id(), std::thread::current().id());
+    let state = dir.join(format!("lumux-state-{uniq}.bin"));
+    let sock1 = dir.join(format!("lumux-persist1-{uniq}.sock"));
+    let sock2 = dir.join(format!("lumux-persist2-{uniq}.sock"));
+    let _ = std::fs::remove_file(&state);
+
+    // --- Daemon #1: build a session and save it. ---
+    start_daemon_persist(&sock1, &state);
+    let mut c1 = TestClient::connect(&sock1);
+    c1.send(&ClientMsg::NewSession {
+        name: Some("persisted".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c1.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Rename the window, split into two panes.
+    c1.send(&ClientMsg::Input(vec![0x02, b',']));
+    c1.send(&ClientMsg::Input(b"MYWIN\r".to_vec()));
+    c1.collect_until(Duration::from_secs(1), |_| false);
+    c1.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c1.collect_until(Duration::from_secs(1), |_| false);
+    // Save the snapshot explicitly.
+    c1.send(&ClientMsg::Input(vec![0x02, b':']));
+    c1.send(&ClientMsg::Input(b"save-state\r".to_vec()));
+    c1.collect_until(Duration::from_secs(1), |_| false);
+    assert!(state.exists(), "save-state should write the state file");
+
+    // --- Daemon #2: fresh daemon, same state file → restores. ---
+    start_daemon_persist(&sock2, &state);
+    let mut c2 = TestClient::connect(&sock2);
+    // Attach with no name → picks the (restored) existing session rather than
+    // creating a new empty one.
+    c2.send(&ClientMsg::Attach { session: None, size: size() });
+    c2.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c2.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c2.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("MYWIN"),
+        "restored session should keep the renamed window; got:\n{vt}"
+    );
+    assert!(
+        vt.contains('│'),
+        "restored window should have two panes (a divider); got:\n{vt}"
+    );
+
+    let _ = std::fs::remove_file(&state);
 }
 
 #[test]
@@ -1774,9 +1870,11 @@ fn status_bar_shows_window_list() {
     c.collect_until(Duration::from_secs(1), |_| false);
     c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
     let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
-    // The window list renders entries "0: 1: 2:" with the active one marked '*'.
+    // The window list renders entries "0:sh 1:sh 2:sh" with the active one
+    // marked '*'. Match the "N:sh" entry (not bare "N:") so the status-bar clock
+    // can't masquerade as a window entry.
     assert!(
-        vt.contains("0:") && vt.contains("1:") && vt.contains("2:") && vt.contains('*'),
+        has_window(&vt, 0) && has_window(&vt, 1) && has_window(&vt, 2) && vt.contains('*'),
         "status bar should list all windows with an active marker; got:\n{vt}"
     );
 }

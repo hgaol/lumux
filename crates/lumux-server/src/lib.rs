@@ -9,7 +9,7 @@ pub mod daemon;
 pub mod eventloop;
 
 pub use daemon::Daemon;
-pub use eventloop::{run, run_with_config};
+pub use eventloop::{run, run_with_config, run_with_config_at};
 
 use std::path::Path;
 
@@ -88,6 +88,18 @@ pub fn config_path() -> std::path::PathBuf {
         .into_iter()
         .next()
         .unwrap_or_else(|| std::path::PathBuf::from("config.toml"))
+}
+
+/// Path to the saved-session state file (tmux-resurrect style). Honors
+/// `$LUMUX_STATE` (exact file) for tests / power users, else
+/// `<config-dir>/state.bin`, falling back to `state.bin` in the cwd.
+pub fn state_path() -> std::path::PathBuf {
+    if let Some(p) = std::env::var_os("LUMUX_STATE") {
+        return std::path::PathBuf::from(p);
+    }
+    config_dir()
+        .map(|d| d.join("state.bin"))
+        .unwrap_or_else(|| std::path::PathBuf::from("state.bin"))
 }
 
 /// The per-user config directory: %APPDATA%\lumux (Windows) or

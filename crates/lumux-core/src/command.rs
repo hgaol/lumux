@@ -46,6 +46,8 @@ pub enum ParsedCommand {
     RespawnPane,
     /// `run-shell <cmd>`: run a shell command; its output goes to a paste buffer.
     RunShell(String),
+    /// `save-state`: write the session snapshot to disk now (tmux-resurrect save).
+    SaveState,
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -150,6 +152,7 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
         "display-panes" | "displayp" => ParsedCommand::DisplayPanes,
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
+        "save-state" | "saves" => ParsedCommand::SaveState,
         "detach-client" | "detach" => ParsedCommand::Detach,
         other => ParsedCommand::Unknown(other.to_string()),
     }
@@ -296,5 +299,11 @@ mod tests {
             Some(ParsedCommand::RunShell("date +%s".to_string()))
         );
         assert!(matches!(parse_command("run-shell"), Some(ParsedCommand::BadArgs(_))));
+    }
+
+    #[test]
+    fn save_state_and_alias() {
+        assert_eq!(parse_command("save-state"), Some(ParsedCommand::SaveState));
+        assert_eq!(parse_command("saves"), Some(ParsedCommand::SaveState));
     }
 }

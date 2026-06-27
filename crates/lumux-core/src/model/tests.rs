@@ -722,3 +722,58 @@ fn auto_rename_tracks_title_until_manual_rename() {
     assert!(!w.apply_auto_title("htop"), "auto-rename is off after manual");
     assert_eq!(w.name, "mine");
 }
+
+// ----- restore from snapshot -----
+
+#[test]
+fn restore_session_rebuilds_structure_from_snapshot() {
+    use crate::persist::{PaneSnap, SessionSnap, WindowSnap};
+    // A window with layout [a | [b / c]] over three panes; b is active.
+    let mut layout = PaneNode::leaf(PaneId(0));
+    layout.split_leaf(PaneId(0), PaneId(1), SplitDir::Horizontal);
+    layout.split_leaf(PaneId(1), PaneId(2), SplitDir::Vertical);
+    let snap = SessionSnap {
+        name: "restored".into(),
+        active_window: 0,
+        windows: vec![WindowSnap {
+            name: "win".into(),
+            layout,
+            panes: vec![
+                PaneSnap { layout_id: 0, shell: vec!["/bin/sh".into()], cwd: Some("/tmp".into()) },
+                PaneSnap { layout_id: 1, shell: vec!["/bin/bash".into()], cwd: None },
+                PaneSnap { layout_id: 2, shell: vec!["/bin/sh".into()], cwd: Some("/".into()) },
+            ],
+            active_pane: 1,
+            synchronized: true,
+            auto_rename: false,
+        }],
+    };
+    let mut srv = Server::new();
+    let (sid, spawns) = srv.restore_session(&snap).expect("restore");
+    // Three panes were rebuilt, each with its saved shell + cwd.
+    assert_eq!(spawns.len(), 3);
+    assert_eq!(spawns[0].shell, vec!["/bin/sh".to_string()]);
+    assert_eq!(spawns[0].cwd.as_deref(), Some("/tmp"));
+    assert_eq!(spawns[1].shell, vec!["/bin/bash".to_string()]);
+    // The session/window/layout structure matches the snapshot.
+    let s = srv.session(sid).unwrap();
+    assert_eq!(s.name, "restored");
+    assert_eq!(s.window_count(), 1);
+    let w = s.window(s.active_window()).unwrap();
+    assert_eq!(w.name, "win");
+    assert_eq!(w.pane_count(), 3);
+    assert_eq!(w.layout.pane_count(), 3, "exact split tree restored");
+    assert!(w.is_synchronized(), "sync flag restored");
+    assert!(!w.auto_rename(), "auto-rename flag restored");
+    // The active pane is the 2nd spawn (snapshot active_pane index 1).
+    assert_eq!(w.active_pane(), spawns[1].id);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn restore_empty_snapshot_is_none() {
+    use crate::persist::SessionSnap;
+    let mut srv = Server::new();
+    let snap = SessionSnap { name: "x".into(), windows: vec![], active_window: 0 };
+    assert!(srv.restore_session(&snap).is_none());
+}

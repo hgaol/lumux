@@ -64,6 +64,9 @@ pub struct Config {
     pub remain_on_exit: bool,
     /// Copy-mode key style (tmux `mode-keys`): "vi" (default) or "emacs".
     pub mode_keys: String,
+    /// When true, the daemon saves session structure to disk periodically and
+    /// rebuilds it on restart (tmux-resurrect/-continuum style). Off by default.
+    pub persist: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,6 +101,7 @@ impl Default for Config {
             pane_active_border_fg: "green".to_string(),
             remain_on_exit: false,
             mode_keys: "vi".to_string(),
+            persist: false,
         }
     }
 }
