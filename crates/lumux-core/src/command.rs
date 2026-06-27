@@ -40,6 +40,8 @@ pub enum ParsedCommand {
     /// `synchronize-panes [on|off]`; None toggles.
     SynchronizePanes(Option<bool>),
     DisplayPanes,
+    /// `capture-pane`: copy the active pane's visible text into a paste buffer.
+    CapturePane,
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -128,6 +130,7 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             ParsedCommand::SynchronizePanes(state)
         }
         "display-panes" | "displayp" => ParsedCommand::DisplayPanes,
+        "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "detach-client" | "detach" => ParsedCommand::Detach,
         other => ParsedCommand::Unknown(other.to_string()),
     }
@@ -249,5 +252,11 @@ mod tests {
             parse_command("frobnicate everything"),
             Some(ParsedCommand::Unknown("frobnicate".to_string()))
         );
+    }
+
+    #[test]
+    fn capture_pane_and_aliases() {
+        assert_eq!(parse_command("capture-pane"), Some(ParsedCommand::CapturePane));
+        assert_eq!(parse_command("capturep"), Some(ParsedCommand::CapturePane));
     }
 }

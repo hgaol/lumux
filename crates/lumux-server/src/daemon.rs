@@ -687,6 +687,18 @@ impl<S: PtySystem> Daemon<S> {
         true
     }
 
+    /// Capture the active pane's visible text into a new paste buffer (tmux
+    /// capture-pane). Trailing blank lines are dropped. Returns the buffer name,
+    /// or None if there's no active pane / nothing to capture.
+    pub fn capture_pane(&mut self, session: SessionId) -> Option<String> {
+        let pid = self.active_pane(session)?;
+        let lines = self.panes.get(&pid)?.grid.screen_text();
+        // Trim trailing blank lines so the buffer ends at real content.
+        let last = lines.iter().rposition(|l| !l.trim().is_empty())?;
+        let text = lines[..=last].join("\n");
+        self.buffers.push(text)
+    }
+
     /// Open the paste-buffer chooser for a client (tmux prefix `=`). Returns
     /// false (and opens nothing) when there are no buffers.
     pub fn open_buffer_chooser(&mut self, client_id: u64) -> bool {

@@ -1063,6 +1063,10 @@ where
                 }
             }
             ParsedCommand::DisplayPanes => self.daemon.show_pane_numbers(client_id),
+            ParsedCommand::CapturePane => match self.daemon.capture_pane(session) {
+                Some(name) => self.daemon.flash_message(client_id, format!("captured to {name}")),
+                None => self.daemon.flash_message(client_id, "nothing to capture"),
+            },
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);

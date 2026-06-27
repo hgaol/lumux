@@ -1265,6 +1265,38 @@ fn command_prompt_join_pane_merges_windows() {
 }
 
 #[test]
+fn capture_pane_saves_screen_to_a_buffer() {
+    // tmux capture-pane: ":capture-pane" copies the pane's visible text into a
+    // paste buffer. We print a marker, capture, then open the buffer chooser
+    // (prefix =) and confirm the captured marker shows in the preview.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cap".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(b"printf 'CAPTURED_WW\\n'\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Capture the pane via the command prompt.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"capture-pane\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Open the buffer chooser; the captured text must appear (it includes the
+    // marker plus the shell prompt lines).
+    c.send(&ClientMsg::Input(vec![0x02, b'=']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("-- BUFFERS --") && vt.contains("CAPTURED_WW"),
+        "capture-pane should put the screen text into a buffer; got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();
