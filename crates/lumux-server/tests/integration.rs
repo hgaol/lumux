@@ -1174,6 +1174,97 @@ fn find_window_switches_to_named_window() {
 }
 
 #[test]
+fn command_prompt_runs_a_split() {
+    // tmux command-prompt (prefix :): typing "split-window -h" and Enter splits
+    // the active window. We confirm a second pane appears (a vertical divider is
+    // drawn) where there was none before.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cmd".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Open the command prompt (Ctrl-b :) and type the split command.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    // The prompt row should echo ":" as we start typing.
+    c.send(&ClientMsg::Input(b"split-window -h\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains('│'),
+        "command-prompt split-window -h should draw a vertical divider; got:\n{vt}"
+    );
+}
+
+#[test]
+fn command_prompt_unknown_command_flashes() {
+    // An unrecognized verb flashes a message rather than doing nothing silently.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cmd2".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"frobnicate\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("unknown command") && vt.contains("frobnicate"),
+        "unknown command should flash a message; got:\n{vt}"
+    );
+}
+
+#[test]
+fn command_prompt_join_pane_merges_windows() {
+    // tmux join-pane via the command prompt: with two windows, "join-pane -h"
+    // pulls the previous window's pane into the active window. The single-pane
+    // source window then closes, so the window list shrinks from two to one while
+    // the active window gains a divider.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("jp".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Create a second window (now two windows: 0 and 1, with 1 active).
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        before.contains("0:") && before.contains("1:"),
+        "precondition: two windows; got:\n{before}"
+    );
+    // Join the other window's pane into this one (-h side by side).
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"join-pane -h\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    // Source window (single pane) closed → only one window remains; active window
+    // now has two panes (a divider).
+    assert!(
+        after.contains("0:") && !after.contains("1:"),
+        "join-pane should close the emptied source window; got:\n{after}"
+    );
+    assert!(
+        after.contains('│'),
+        "the active window should now have two panes; got:\n{after}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

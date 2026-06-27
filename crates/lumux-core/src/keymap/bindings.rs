@@ -65,6 +65,8 @@ pub enum Action {
     ToggleSync,
     /// Open a prompt to find/switch to a window by name (tmux prefix `f`).
     FindWindow,
+    /// Open the command-prompt to type a command (tmux prefix `:`).
+    CommandPrompt,
     /// Paste the most-recent paste buffer into the active pane (tmux prefix ]).
     PasteBuffer,
     /// Open the paste-buffer chooser (tmux prefix =).
@@ -112,6 +114,7 @@ impl Action {
             Action::SwapWindowRight => "move this window right in the list",
             Action::ToggleSync => "toggle synchronize-panes",
             Action::FindWindow => "find a window by name",
+            Action::CommandPrompt => "open the command prompt",
             Action::PasteBuffer => "paste the most recent buffer",
             Action::ChooseBuffer => "choose a paste buffer",
             Action::SendPrefix => "send the prefix key to the shell",
@@ -162,6 +165,8 @@ impl Bindings {
         table.insert(Key::char('S'), Action::ToggleSync);
         // Find/switch to a window by name (tmux prefix f).
         table.insert(Key::char('f'), Action::FindWindow);
+        // Command-prompt (tmux prefix :).
+        table.insert(Key::char(':'), Action::CommandPrompt);
         // Paste buffers (tmux prefix ] pastes the top buffer; = opens the chooser).
         table.insert(Key::char(']'), Action::PasteBuffer);
         table.insert(Key::char('='), Action::ChooseBuffer);

@@ -531,6 +531,10 @@ where
                 self.daemon
                     .open_prompt(client_id, session, crate::daemon::PromptTarget::FindWindow);
             }
+            Action::CommandPrompt => {
+                self.daemon
+                    .open_prompt(client_id, session, crate::daemon::PromptTarget::Command);
+            }
             Action::KillPane => {
                 if let Some(pid) = self.active_pane(session) {
                     let result = self.daemon.close_pane(session, pid);
@@ -977,11 +981,13 @@ where
 
     /// Drive an open rename prompt: edit the buffer, or commit/cancel it.
     fn handle_prompt_key(&mut self, client_id: u64, session: SessionId, pk: PromptKey) {
+        let mut command_line = None;
         match pk {
             PromptKey::Char(c) => self.daemon.prompt_push(client_id, c),
             PromptKey::Backspace => self.daemon.prompt_backspace(client_id),
             PromptKey::Cancel => self.daemon.prompt_cancel(client_id),
-            PromptKey::Confirm => self.daemon.prompt_confirm(client_id, session),
+            // Confirm may return a command-prompt line for us to dispatch.
+            PromptKey::Confirm => command_line = self.daemon.prompt_confirm(client_id, session),
         }
         // Reset the keymap out of Prompt mode once the prompt closes.
         if matches!(pk, PromptKey::Confirm | PromptKey::Cancel) {
@@ -989,6 +995,85 @@ where
                 k.reset();
             }
         }
+        if let Some(line) = command_line {
+            self.dispatch_command_line(client_id, session, &line);
+        }
+    }
+
+    /// Parse and run a tmux command-prompt line (prefix `:`). Reuses the same
+    /// action paths as the keybindings so behavior is identical.
+    fn dispatch_command_line(&mut self, client_id: u64, session: SessionId, line: &str) {
+        use lumux_core::command::{parse_command, Dir, ParsedCommand};
+        let dir_to_split = |d: Dir| match d {
+            Dir::Horizontal => SplitDir::Horizontal,
+            Dir::Vertical => SplitDir::Vertical,
+        };
+        let Some(cmd) = parse_command(line) else {
+            return; // empty line
+        };
+        match cmd {
+            ParsedCommand::SplitWindow(d) => self.do_split(session, dir_to_split(d)),
+            ParsedCommand::NewWindow => self.do_new_window(session),
+            ParsedCommand::KillPane => self.apply_action(client_id, session, Action::KillPane),
+            ParsedCommand::KillWindow => self.do_kill_window(session),
+            ParsedCommand::NextWindow => self.apply_action(client_id, session, Action::NextWindow),
+            ParsedCommand::PrevWindow => self.apply_action(client_id, session, Action::PrevWindow),
+            ParsedCommand::LastWindow => self.apply_action(client_id, session, Action::LastWindow),
+            ParsedCommand::LastPane => self.apply_action(client_id, session, Action::LastPane),
+            ParsedCommand::SelectWindow(n) => self.select_window_by_number(session, n),
+            ParsedCommand::RenameWindow(name) => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    let wid = s.active_window();
+                    if let Some(w) = s.window_mut(wid) {
+                        w.name = name;
+                    }
+                }
+            }
+            ParsedCommand::RenameSession(name) => {
+                if let Some(s) = self.daemon.server.session_mut(session) {
+                    s.name = name;
+                }
+            }
+            ParsedCommand::FindWindow(q) => {
+                let target = self.daemon.server.session(session).and_then(|s| {
+                    let needle = q.to_lowercase();
+                    s.window_ids().into_iter().find(|&wid| {
+                        s.window(wid)
+                            .map(|w| w.name.to_lowercase().contains(&needle))
+                            .unwrap_or(false)
+                    })
+                });
+                match target {
+                    Some(wid) => {
+                        if let Some(s) = self.daemon.server.session_mut(session) {
+                            s.focus_window(wid);
+                        }
+                    }
+                    None => self.daemon.flash_message(client_id, format!("no window matching \"{q}\"")),
+                }
+            }
+            ParsedCommand::BreakPane => self.do_break_pane(session),
+            ParsedCommand::SwapPane { next } => self.do_swap_pane(session, next),
+            ParsedCommand::JoinPane { dir, src } => self.do_join_pane(client_id, session, dir_to_split(dir), src),
+            ParsedCommand::SynchronizePanes(state) => {
+                let on_now = self.daemon.is_synchronized(session);
+                let want = state.unwrap_or(!on_now);
+                if want != on_now {
+                    self.daemon.toggle_sync(client_id, session);
+                }
+            }
+            ParsedCommand::DisplayPanes => self.daemon.show_pane_numbers(client_id),
+            ParsedCommand::Detach => {
+                if let Some(h) = self.clients.get(&client_id) {
+                    let _ = h.out.send(ServerMsg::Detached);
+                }
+            }
+            ParsedCommand::BadArgs(usage) => self.daemon.flash_message(client_id, usage),
+            ParsedCommand::Unknown(verb) => {
+                self.daemon.flash_message(client_id, format!("unknown command: {verb}"));
+            }
+        }
+        self.render_session(session);
     }
     /// q/Escape quits.
     fn handle_copy_key(&mut self, client_id: u64, session: SessionId, ck: CopyKey) {
@@ -1096,6 +1181,47 @@ where
                 .unwrap_or(PtySize::new(80, 24));
             self.daemon.resize_session(session, size);
             self.invalidate_session(session);
+        }
+    }
+
+    /// Join a pane from a source window into the active window (tmux join-pane).
+    /// `src` is a window index (base-index offset); None means the previously-
+    /// active window. The moved pane keeps its PTY/grid; if the source window
+    /// empties it is closed. Re-fits all windows since two changed.
+    fn do_join_pane(&mut self, client_id: u64, session: SessionId, dir: SplitDir, src: Option<u32>) {
+        // Resolve the source window id.
+        let src_wid = {
+            let Some(s) = self.daemon.server.session(session) else {
+                return;
+            };
+            match src {
+                Some(n) => {
+                    let base = self.daemon.base_index();
+                    let idx = n.saturating_sub(base) as usize;
+                    s.window_ids().get(idx).copied()
+                }
+                // No -s given: tmux uses the last (previously-active) window.
+                None => s
+                    .window_ids()
+                    .into_iter()
+                    .find(|&w| w != s.active_window()),
+            }
+        };
+        let Some(src_wid) = src_wid else {
+            self.daemon.flash_message(client_id, "join-pane: no source window");
+            return;
+        };
+        match self.daemon.server.join_pane(session, src_wid, dir) {
+            Some(_) => {
+                let size = self
+                    .daemon
+                    .server
+                    .effective_size(session)
+                    .unwrap_or(PtySize::new(80, 24));
+                self.daemon.resize_all_windows(session, size);
+                self.invalidate_session(session);
+            }
+            None => { /* self-join or unknown window: ignore */ }
         }
     }
 

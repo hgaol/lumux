@@ -83,6 +83,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `Space` | cycle preset layouts (even-horizontal/vertical, main, tiled) |
 | `,` | rename the current window |
 | `$` | rename the current session |
+| `:` | command prompt (split-window, join-pane, find-window, …) |
 | `x` | kill the active pane |
 | `d` | detach (session keeps running) |
 | `[` | enter copy-mode |

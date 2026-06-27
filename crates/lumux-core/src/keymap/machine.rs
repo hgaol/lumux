@@ -304,7 +304,8 @@ impl Keymap {
                         Some(
                             action @ (Action::RenameWindow
                             | Action::RenameSession
-                            | Action::FindWindow),
+                            | Action::FindWindow
+                            | Action::CommandPrompt),
                         ) => {
                             // Open a text prompt; the daemon seeds the buffer and
                             // renders the input line. Subsequent keys edit it.

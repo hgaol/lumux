@@ -656,3 +656,49 @@ fn synchronize_panes_toggles_per_window() {
     assert!(w.is_synchronized());
     assert!(!w.toggle_synchronized(), "second toggle turns it off");
 }
+
+// ----- join-pane -----
+
+#[test]
+fn join_pane_moves_pane_into_active_window() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    // A second window with two panes (so taking one doesn't close it).
+    let w1 = srv.new_window(sid, "src", sh()).unwrap();
+    srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    // Switch back to w0 (the destination) and join from w1.
+    srv.session_mut(sid).unwrap().focus_window(w0);
+    let before = srv.session(sid).unwrap().window(w0).unwrap().pane_count();
+    let res = srv.join_pane(sid, w1, SplitDir::Vertical);
+    assert_eq!(res, Some(CascadeResult::PaneClosed), "source kept a pane");
+    // Destination gained a pane; source lost one.
+    assert_eq!(srv.session(sid).unwrap().window(w0).unwrap().pane_count(), before + 1);
+    assert_eq!(srv.session(sid).unwrap().window(w1).unwrap().pane_count(), 1);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn join_last_pane_closes_source_window() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let w1 = srv.new_window(sid, "src", sh()).unwrap(); // single pane
+    srv.session_mut(sid).unwrap().focus_window(w0);
+    let res = srv.join_pane(sid, w1, SplitDir::Horizontal);
+    assert_eq!(res, Some(CascadeResult::WindowClosed), "source emptied and closed");
+    assert_eq!(srv.session(sid).unwrap().window_count(), 1);
+    assert_eq!(srv.session(sid).unwrap().window(w0).unwrap().pane_count(), 2);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn join_pane_rejects_self_and_unknown() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    // Joining the active window to itself is rejected.
+    assert_eq!(srv.join_pane(sid, w0, SplitDir::Vertical), None);
+    // Unknown window id is rejected.
+    assert_eq!(srv.join_pane(sid, WindowId(99999), SplitDir::Vertical), None);
+}

@@ -155,6 +155,9 @@ pub enum PromptTarget {
     /// Search window names for the typed query and switch to the first match
     /// (tmux find-window). Seeded empty rather than with the current name.
     FindWindow,
+    /// The tmux command-prompt (prefix `:`): the typed line is parsed and
+    /// dispatched by the event loop. Seeded empty.
+    Command,
 }
 
 impl<S: PtySystem> Daemon<S> {
@@ -463,6 +466,8 @@ impl<S: PtySystem> Daemon<S> {
             }),
             // find-window starts from an empty query, not the current name.
             PromptTarget::FindWindow => Some(String::new()),
+            // The command-prompt starts empty.
+            PromptTarget::Command => Some(String::new()),
         }
         .unwrap_or_default();
         self.prompt.insert(
@@ -510,12 +515,14 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
-    /// Commit a client's prompt: apply the typed name to the window or session.
-    /// An empty name is ignored (keeps the existing one, matching tmux).
-    pub fn prompt_confirm(&mut self, client_id: u64, session: SessionId) {
-        let Some(p) = self.prompt.remove(&client_id) else {
-            return;
-        };
+    /// Commit a client's prompt: apply the typed name to the window or session,
+    /// run a find, or — for the command-prompt — return the typed line for the
+    /// event loop to parse and dispatch. An empty name is ignored (keeps the
+    /// existing one, matching tmux). Returns `Some(line)` only for the
+    /// command-prompt target.
+    pub fn prompt_confirm(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        let p = self.prompt.remove(&client_id)?;
+        let mut command_line = None;
         let name = p.buffer.trim().to_string();
         if !name.is_empty() {
             match p.target {
@@ -552,11 +559,14 @@ impl<S: PtySystem> Daemon<S> {
                         None => self.flash_message(client_id, format!("no window matching \"{name}\"")),
                     }
                 }
+                // The event loop owns command dispatch (it can spawn PTYs etc.).
+                PromptTarget::Command => command_line = Some(p.buffer.trim().to_string()),
             }
         }
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();
         }
+        command_line
     }
 
     /// Open a copy-mode search input for `client_id` in `dir` (tmux `/` forward,
@@ -1285,12 +1295,13 @@ impl<S: PtySystem> Daemon<S> {
 
         // An open rename prompt takes over the whole row (tmux's command prompt).
         if let Some(p) = self.prompt.get(&client_id) {
-            let label = match p.target {
-                PromptTarget::Window => "rename-window",
-                PromptTarget::Session => "rename-session",
-                PromptTarget::FindWindow => "find-window",
+            // The command-prompt shows a bare ":" prefix; the others name the op.
+            let line = match p.target {
+                PromptTarget::Command => format!(":{}", p.buffer),
+                PromptTarget::Window => format!("(rename-window) {}", p.buffer),
+                PromptTarget::Session => format!("(rename-session) {}", p.buffer),
+                PromptTarget::FindWindow => format!("(find-window) {}", p.buffer),
             };
-            let line = format!("({label}) {}", p.buffer);
             screen.status_line(screen.dimensions().1.saturating_sub(1), &line);
             return;
         }

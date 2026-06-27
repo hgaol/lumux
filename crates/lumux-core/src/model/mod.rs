@@ -187,6 +187,13 @@ impl Window {
         Some(pane)
     }
 
+    /// Insert an existing [`Pane`] into this window by splitting the active pane
+    /// (tmux join-pane). The joined pane keeps its id (so its grid follows it)
+    /// and becomes active.
+    fn join_pane(&mut self, pane: Pane, dir: SplitDir) {
+        self.split(pane, dir);
+    }
+
     pub fn pane_ids(&self) -> Vec<PaneId> {
         self.layout.pane_ids()
     }
@@ -565,6 +572,37 @@ impl Server {
         let window = Window::new(wid, name, pane);
         session.add_window(window);
         Some(wid)
+    }
+
+    /// Join the active pane of the source window `src_wid` into the active window,
+    /// splitting in `dir` (tmux join-pane). The moved pane keeps its id/grid and
+    /// becomes active in the destination. If that empties the source window, the
+    /// source window is closed (and if that empties the session... it can't here,
+    /// because the destination window still exists). Returns the cascade outcome:
+    /// `PaneClosed` if the source kept panes, `WindowClosed` if the source window
+    /// closed. None if `src_wid` is unknown, is the active window, or doesn't
+    /// exist. Single-pane source windows ARE allowed (unlike break-pane).
+    pub fn join_pane(&mut self, sid: SessionId, src_wid: WindowId, dir: SplitDir) -> Option<CascadeResult> {
+        let session = self.sessions.get_mut(&sid)?;
+        let dest_wid = session.active_window();
+        if src_wid == dest_wid {
+            return None; // can't join a window to itself
+        }
+        // Pull the active pane out of the source window.
+        let src = session.window_mut(src_wid)?;
+        let pane_id = src.active_pane();
+        let pane = src.pane(pane_id)?.clone();
+        let src_now_empty = src.remove_pane(pane_id);
+        // Join it into the destination (active) window.
+        if let Some(dest) = session.window_mut(dest_wid) {
+            dest.join_pane(pane, dir);
+        }
+        if src_now_empty {
+            session.remove_window(src_wid);
+            Some(CascadeResult::WindowClosed)
+        } else {
+            Some(CascadeResult::PaneClosed)
+        }
     }
 
     /// Swap the active pane with another pane in the SAME window (tmux swap-pane;
