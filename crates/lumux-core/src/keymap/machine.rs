@@ -172,6 +172,17 @@ pub enum CopyKey {
 pub struct Keymap {
     bindings: Bindings,
     mode: Mode,
+    /// Which copy-mode key style to accept (tmux `mode-keys vi|emacs`). Arrow /
+    /// Page keys work in both; this selects the letter/ctrl bindings.
+    mode_keys: ModeKeys,
+}
+
+/// Copy-mode key style (tmux `mode-keys`). Vi is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ModeKeys {
+    #[default]
+    Vi,
+    Emacs,
 }
 
 impl Keymap {
@@ -179,11 +190,17 @@ impl Keymap {
         Self {
             bindings,
             mode: Mode::Normal,
+            mode_keys: ModeKeys::Vi,
         }
     }
 
     pub fn with_defaults() -> Self {
         Self::new(Bindings::default())
+    }
+
+    /// Select the copy-mode key style (tmux `mode-keys`).
+    pub fn set_mode_keys(&mut self, mk: ModeKeys) {
+        self.mode_keys = mk;
     }
 
     pub fn mode(&self) -> Mode {
@@ -328,7 +345,7 @@ impl Keymap {
                 }
                 Mode::Copy => {
                     flush_passthrough!();
-                    if let Some(ck) = copy_key(&key) {
+                    if let Some(ck) = copy_key(&key, self.mode_keys) {
                         match ck {
                             CopyKey::Quit => self.mode = Mode::Normal,
                             // Opening search switches to text-entry mode; the
@@ -512,10 +529,41 @@ fn search_key(key: &Key) -> Option<SearchKey> {
     Some(sk)
 }
 
-fn copy_key(key: &Key) -> Option<CopyKey> {
-    // Ctrl-v toggles rectangle (block) selection (tmux rectangle-toggle). Checked
-    // before the code match since it carries the ctrl modifier.
-    if key.ctrl && key.code == KeyCode::Char('v') {
+fn copy_key(key: &Key, mode_keys: ModeKeys) -> Option<CopyKey> {
+    // Emacs copy-mode bindings (tmux mode-keys emacs). Checked first since they
+    // are Ctrl/Alt-modified and would otherwise be swallowed by the code match.
+    // Arrow/Page/Home/End keys still work in both styles (handled below).
+    if mode_keys == ModeKeys::Emacs {
+        if key.ctrl {
+            match key.code {
+                KeyCode::Char('n') => return Some(CopyKey::Down),
+                KeyCode::Char('p') => return Some(CopyKey::Up),
+                KeyCode::Char('f') => return Some(CopyKey::Right),
+                KeyCode::Char('b') => return Some(CopyKey::Left),
+                KeyCode::Char('v') => return Some(CopyKey::PageDown),
+                KeyCode::Char('a') => return Some(CopyKey::Home),
+                KeyCode::Char('e') => return Some(CopyKey::End),
+                KeyCode::Char('s') => return Some(CopyKey::SearchForward),
+                KeyCode::Char('r') => return Some(CopyKey::SearchBackward),
+                KeyCode::Char('w') => return Some(CopyKey::Yank),
+                // Ctrl-Space / Ctrl-@ begins a selection (the set-mark binding).
+                KeyCode::Char(' ') | KeyCode::Char('@') => return Some(CopyKey::StartSelection),
+                KeyCode::Char('g') => return Some(CopyKey::Quit),
+                _ => {}
+            }
+        }
+        if key.alt {
+            match key.code {
+                KeyCode::Char('v') => return Some(CopyKey::PageUp),
+                KeyCode::Char('w') => return Some(CopyKey::Yank), // M-w copies
+                _ => {}
+            }
+        }
+    }
+    // Ctrl-v toggles rectangle (block) selection (tmux rectangle-toggle) in vi
+    // mode. (In emacs mode Ctrl-v is page-down, handled above.) Checked before
+    // the code match since it carries the ctrl modifier.
+    if mode_keys == ModeKeys::Vi && key.ctrl && key.code == KeyCode::Char('v') {
         return Some(CopyKey::RectangleToggle);
     }
     let ck = match key.code {

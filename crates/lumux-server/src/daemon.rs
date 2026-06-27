@@ -456,10 +456,14 @@ impl<S: PtySystem> Daemon<S> {
 
     /// Register a freshly attached client: give it a keymap and renderer.
     pub fn register_client(&mut self, client_id: u64) {
-        let keymap = match self.config.to_bindings() {
+        let mut keymap = match self.config.to_bindings() {
             Ok(b) => Keymap::new(b),
             Err(_) => Keymap::with_defaults(),
         };
+        // Apply the copy-mode key style (tmux mode-keys).
+        if self.config.mode_keys.eq_ignore_ascii_case("emacs") {
+            keymap.set_mode_keys(lumux_core::keymap::ModeKeys::Emacs);
+        }
         self.keymaps.insert(client_id, keymap);
         self.renderers.insert(client_id, ClientRenderer::new());
     }

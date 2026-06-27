@@ -59,6 +59,8 @@ pub struct Config {
     /// closing, so it can be inspected or respawned (tmux `remain-on-exit`). Off
     /// by default.
     pub remain_on_exit: bool,
+    /// Copy-mode key style (tmux `mode-keys`): "vi" (default) or "emacs".
+    pub mode_keys: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,6 +93,7 @@ impl Default for Config {
             // tmux's default: the active pane gets a green border.
             pane_active_border_fg: "green".to_string(),
             remain_on_exit: false,
+            mode_keys: "vi".to_string(),
         }
     }
 }

@@ -78,6 +78,27 @@ fn start_daemon_remain() -> std::path::PathBuf {
     path
 }
 
+/// Like [`start_daemon`] but with emacs copy-mode keys (`mode-keys emacs`).
+fn start_daemon_emacs() -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(3_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let cfg = lumux_core::config::Config {
+        mode_keys: "emacs".to_string(),
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
 /// A tiny framed client over a raw UnixStream (mirrors the real client wire
 /// behavior without a terminal).
 struct TestClient {
@@ -1386,6 +1407,44 @@ fn remain_on_exit_keeps_pane_then_respawns() {
     assert!(
         vt.contains("AFTER_RESPAWN_PP"),
         "respawn-pane should restart a working shell; got:\n{vt}"
+    );
+}
+
+#[test]
+fn emacs_mode_keys_scroll_copy_mode() {
+    // With mode-keys emacs, copy-mode accepts emacs motion: C-p scrolls up into
+    // history. We push a marker off-screen, enter copy-mode, and C-p repeatedly
+    // to bring it back — proving the emacs binding drives the scroll.
+    let path = start_daemon_emacs();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("em".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(
+        b"echo EMACS_HIST_MM; for i in $(seq 1 40); do echo .; done\n".to_vec(),
+    ));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    let (_d0, live) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !live.contains("EMACS_HIST_MM"),
+        "precondition: marker scrolled off; got:\n{live}"
+    );
+    // Enter copy-mode (Ctrl-b [), then C-p (0x10) many times to scroll up.
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    for _ in 0..45 {
+        c.send(&ClientMsg::Input(vec![0x10])); // C-p
+    }
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("EMACS_HIST_MM"),
+        "emacs C-p should scroll the marker back into view; got:\n{vt}"
     );
 }
 

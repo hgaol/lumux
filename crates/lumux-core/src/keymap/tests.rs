@@ -259,6 +259,40 @@ fn copy_mode_rectangle_toggle_keys() {
 }
 
 #[test]
+fn emacs_mode_keys_in_copy_mode() {
+    use crate::keymap::ModeKeys;
+    let mut k = km();
+    k.set_mode_keys(ModeKeys::Emacs);
+    k.feed(&[0x02, b'[']);
+    // Ctrl-n/p/f/b move; Ctrl-v pages down; Ctrl-a/e are line ends.
+    assert_eq!(k.feed(&[0x0e]), vec![Reaction::Copy(CopyKey::Down)]); // C-n
+    assert_eq!(k.feed(&[0x10]), vec![Reaction::Copy(CopyKey::Up)]); // C-p
+    assert_eq!(k.feed(&[0x06]), vec![Reaction::Copy(CopyKey::Right)]); // C-f
+    assert_eq!(k.feed(&[0x02]), vec![Reaction::Copy(CopyKey::Left)]); // C-b
+    assert_eq!(k.feed(&[0x16]), vec![Reaction::Copy(CopyKey::PageDown)]); // C-v
+    assert_eq!(k.feed(&[0x01]), vec![Reaction::Copy(CopyKey::Home)]); // C-a
+    assert_eq!(k.feed(&[0x05]), vec![Reaction::Copy(CopyKey::End)]); // C-e
+    // C-s / C-r open search.
+    assert_eq!(k.feed(&[0x13]), vec![Reaction::Copy(CopyKey::SearchForward)]); // C-s
+    assert_eq!(k.mode(), Mode::Search, "C-s opens the search input");
+    k.feed(b"\x1b"); // cancel search, back to copy
+    // C-w copies (yank). The keymap emits the Yank reaction; the daemon is what
+    // exits copy-mode on yank (via reset), so the keymap itself stays in Copy —
+    // same as vi `y`.
+    assert_eq!(k.feed(&[0x17]), vec![Reaction::Copy(CopyKey::Yank)]); // C-w
+}
+
+#[test]
+fn vi_keys_still_work_with_default_mode() {
+    // The default (vi) mode keeps hjkl working; emacs ctrl keys are NOT bound.
+    let mut k = km();
+    k.feed(&[0x02, b'[']);
+    assert_eq!(k.feed(b"j"), vec![Reaction::Copy(CopyKey::Down)]);
+    // Arrow keys work regardless of mode-keys.
+    assert_eq!(k.feed(b"\x1b[A"), vec![Reaction::Copy(CopyKey::Up)]);
+}
+
+#[test]
 fn buffer_chooser_opens_and_navigates() {
     use crate::keymap::BufferKey;
     let mut k = km();

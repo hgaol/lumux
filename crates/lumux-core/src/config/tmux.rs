@@ -201,10 +201,17 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
                 cfg.pane_active_border_fg = fg;
             }
         }
+        // Copy-mode key style: vi (default) or emacs.
+        "mode-keys" => {
+            let v = value.trim().to_lowercase();
+            if v == "vi" || v == "emacs" {
+                cfg.mode_keys = v;
+            }
+        }
         // Known-but-irrelevant to lumux: silently accept the common ones so a
         // typical tmux.conf doesn't spew warnings for things that are simply the
         // default behavior in lumux.
-        "mode-keys" | "status-keys" | "escape-time" | "status" | "status-interval"
+        "status-keys" | "escape-time" | "status" | "status-interval"
         | "renumber-windows" | "set-titles" | "status-left-length" | "status-right-length"
         | "aggressive-resize" | "default-terminal" | "focus-events" | "pane-border-style" => {}
         other => warnings.push(format!("unsupported option: {other}")),
@@ -438,6 +445,20 @@ mod tests {
         // pane-border-style is accepted (ignored) without a warning.
         let p = Config::from_tmux_verbose("set -g pane-border-style fg=grey").unwrap();
         assert!(p.warnings.is_empty(), "pane-border-style must be silently accepted");
+    }
+
+    #[test]
+    fn mode_keys_and_remain_on_exit_parse() {
+        let c = Config::from_tmux("setw -g mode-keys emacs").unwrap();
+        assert_eq!(c.mode_keys, "emacs");
+        // Default stays vi; an unknown value is ignored (keeps default).
+        assert_eq!(Config::default().mode_keys, "vi");
+        let c = Config::from_tmux("set -g mode-keys bogus").unwrap();
+        assert_eq!(c.mode_keys, "vi", "unknown mode-keys keeps the default");
+        // remain-on-exit toggles the flag and doesn't warn.
+        let p = Config::from_tmux_verbose("set -g remain-on-exit on").unwrap();
+        assert!(p.config.remain_on_exit);
+        assert!(p.warnings.is_empty());
     }
 
     #[test]
