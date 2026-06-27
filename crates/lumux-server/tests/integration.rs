@@ -613,6 +613,53 @@ fn wheel_is_forwarded_to_a_mouse_aware_app() {
 }
 
 #[test]
+fn split_wheel_sequence_across_frames_is_not_leaked_as_text() {
+    // Regression for "scroll over SSH messes up the pane": the client forwards
+    // whatever bytes a single stdin read() returned, and over SSH a TCP segment
+    // boundary can fall in the MIDDLE of one wheel event — so the daemon receives
+    // `\x1b[<64;10` in one Input frame and `;12M` in the next. The mouse parser
+    // must buffer the partial sequence across frames; if it doesn't, the leading
+    // bytes leak to the app as literal text (showing up as ^[[<64;10 in cat -v)
+    // and the wheel does nothing.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("splitwheel".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Alt-screen app with cat -v, so we can see exactly what bytes reach the app.
+    c.send(&ClientMsg::Input(b"printf '\\033[?1049h'; cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+
+    let mut seen = String::new();
+    for _ in 0..3 {
+        // Deliver one wheel-up event SPLIT across two frames, as SSH would.
+        c.send(&ClientMsg::Input(b"\x1b[<64;10".to_vec()));
+        let (_d, a) = c.collect_until(Duration::from_millis(120), |_| false);
+        seen.push_str(&a);
+        c.send(&ClientMsg::Input(b";12M".to_vec()));
+        let (_d, b) = c.collect_until(Duration::from_millis(120), |_| false);
+        seen.push_str(&b);
+    }
+    let (_done, tail) = c.collect_until(Duration::from_secs(1), |_| false);
+    seen.push_str(&tail);
+    // The wheel must be decoded and sent to the alt-screen app as an up-arrow.
+    assert!(
+        seen.contains("^[[A"),
+        "a wheel event split across frames must still scroll the app; got:\n{seen}"
+    );
+    // And NONE of the raw sequence may leak to the app as text.
+    assert!(
+        !seen.contains("[<64;"),
+        "split wheel bytes must not leak to the app as literal text; got:\n{seen}"
+    );
+}
+
+#[test]
 fn copy_mode_scroll_is_incremental_not_a_clear() {
     // Regression: scrolling in copy-mode used to invalidate the renderer every
     // step, forcing a full repaint that clears the screen (ESC[2J) each wheel

@@ -146,6 +146,25 @@ pub const ENABLE: &str = "\x1b[?1002h\x1b[?1006h";
 /// older build (or another program) left any-motion tracking on.
 pub const DISABLE: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l";
 
+/// Whether `bytes` is the *start* of an SGR mouse report (`ESC [ <`) that hasn't
+/// yet reached its `M`/`m` terminator — i.e. a report truncated at a read
+/// boundary. The daemon uses this to hold the partial bytes until the rest
+/// arrives in the next frame, instead of leaking them to the app as text.
+///
+/// Only the unambiguous `CSI <` introducer is treated as partial. A lone `ESC`
+/// or `ESC [` is deliberately NOT held: those are also the start of a real
+/// Escape key or an arrow/function key, and buffering them would delay those
+/// keystrokes (e.g. Escape in vim). So a split that lands exactly inside the
+/// 3-byte `ESC [ <` introducer isn't reassembled — far rarer than a split in the
+/// numeric body, which this does handle.
+pub fn is_partial(bytes: &[u8]) -> bool {
+    bytes.len() >= 3
+        && bytes[0] == 0x1b
+        && bytes[1] == b'['
+        && bytes[2] == b'<'
+        && !bytes.iter().any(|&b| b == b'M' || b == b'm')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -254,5 +273,24 @@ mod tests {
         // build that left it on.
         assert!(DISABLE.contains("1002l") && DISABLE.contains("1006l"));
         assert!(DISABLE.contains("1003l"), "disable must clear 1003 too");
+    }
+
+    #[test]
+    fn is_partial_detects_truncated_sgr_reports() {
+        // A report split anywhere in its numeric body is partial.
+        assert!(is_partial(b"\x1b[<64;10"));
+        assert!(is_partial(b"\x1b[<0;5;3")); // no terminator yet
+        assert!(is_partial(b"\x1b[<"));
+        // A complete report is NOT partial (it has its M/m terminator).
+        assert!(!is_partial(b"\x1b[<64;10;12M"));
+        assert!(!is_partial(b"\x1b[<0;5;3m"));
+        // A lone ESC or ESC[ is NOT treated as a partial mouse report: those are
+        // also a real Escape / arrow-key prefix, and holding them would delay the
+        // keystroke. Only the unambiguous CSI < introducer is buffered.
+        assert!(!is_partial(b"\x1b"));
+        assert!(!is_partial(b"\x1b["));
+        // Ordinary text is never partial.
+        assert!(!is_partial(b"hello"));
+        assert!(!is_partial(b""));
     }
 }

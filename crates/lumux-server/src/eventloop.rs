@@ -58,6 +58,10 @@ pub enum Msg {
 struct ClientHandle {
     out: Sender<ServerMsg>,
     session: SessionId,
+    /// Bytes of an SGR mouse report that arrived truncated at a frame boundary
+    /// (SSH/TCP can split one report across reads). Held here and prepended to
+    /// the next frame so the report is reassembled instead of leaking as text.
+    pending_mouse: Vec<u8>,
 }
 
 /// State owned exclusively by the control loop.
@@ -196,8 +200,14 @@ where
                 lumux_core::mouse::ENABLE.as_bytes().to_vec(),
             ));
         }
-        self.clients
-            .insert(client_id, ClientHandle { out, session });
+        self.clients.insert(
+            client_id,
+            ClientHandle {
+                out,
+                session,
+                pending_mouse: Vec::new(),
+            },
+        );
         let _ = reply.send(client_id);
         self.render_client(client_id);
     }
@@ -540,10 +550,27 @@ where
         bytes: &[u8],
     ) -> Vec<u8> {
         use lumux_core::mouse::{self, MouseKind};
+        // Prepend any mouse-report prefix held back from the previous frame (an
+        // SGR report split across reads, e.g. over SSH). Taken out of the handle
+        // so we don't borrow self.clients across the &mut self calls below.
+        let mut input: Vec<u8> = Vec::new();
+        if let Some(h) = self.clients.get_mut(&client_id) {
+            if !h.pending_mouse.is_empty() {
+                input.append(&mut h.pending_mouse);
+            }
+        }
+        let combined: &[u8] = if input.is_empty() {
+            bytes
+        } else {
+            input.extend_from_slice(bytes);
+            &input
+        };
+
         let mut rest = Vec::new();
+        let mut pending: Vec<u8> = Vec::new();
         let mut i = 0;
-        while i < bytes.len() {
-            if let Some((ev, used)) = mouse::parse(&bytes[i..]) {
+        while i < combined.len() {
+            if let Some((ev, used)) = mouse::parse(&combined[i..]) {
                 // If the app in the pane under the pointer enabled mouse
                 // reporting, forward the raw event to it (pane-relative) and skip
                 // lumux's own handling — so the wheel/clicks work inside vim,
@@ -568,10 +595,18 @@ where
                     MouseKind::Move => {}
                 }
                 i += used;
+            } else if mouse::is_partial(&combined[i..]) {
+                // An SGR report truncated at this frame's end: hold it for the
+                // next frame instead of leaking the bytes to the app as text.
+                pending.extend_from_slice(&combined[i..]);
+                break;
             } else {
-                rest.push(bytes[i]);
+                rest.push(combined[i]);
                 i += 1;
             }
+        }
+        if let Some(h) = self.clients.get_mut(&client_id) {
+            h.pending_mouse = pending;
         }
         rest
     }
