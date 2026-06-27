@@ -702,3 +702,23 @@ fn join_pane_rejects_self_and_unknown() {
     // Unknown window id is rejected.
     assert_eq!(srv.join_pane(sid, WindowId(99999), SplitDir::Vertical), None);
 }
+
+// ----- automatic-rename -----
+
+#[test]
+fn auto_rename_tracks_title_until_manual_rename() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w = srv.session_mut(sid).unwrap().active_window_mut();
+    assert!(w.auto_rename(), "on by default");
+    // A title update renames the window.
+    assert!(w.apply_auto_title("vim"));
+    assert_eq!(w.name, "vim");
+    // Same title again is a no-op (no change).
+    assert!(!w.apply_auto_title("vim"));
+    // A manual rename sticks and disables auto-rename.
+    w.set_name_manual("mine".to_string());
+    assert!(!w.auto_rename());
+    assert!(!w.apply_auto_title("htop"), "auto-rename is off after manual");
+    assert_eq!(w.name, "mine");
+}

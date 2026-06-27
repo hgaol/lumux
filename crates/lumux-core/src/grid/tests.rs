@@ -421,3 +421,15 @@ fn tracks_app_mouse_mode() {
     assert!(g.wants_mouse());
 }
 
+
+#[test]
+fn captures_osc_window_title() {
+    let mut g = grid();
+    assert_eq!(g.title(), None);
+    // OSC 2 sets the window title: ESC ] 2 ; <title> BEL.
+    g.feed(b"\x1b]2;my-title\x07");
+    assert_eq!(g.title(), Some("my-title"));
+    // OSC 0 (icon + title) also updates it.
+    g.feed(b"\x1b]0;next\x07");
+    assert_eq!(g.title(), Some("next"));
+}

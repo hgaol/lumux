@@ -1297,6 +1297,36 @@ fn capture_pane_saves_screen_to_a_buffer() {
 }
 
 #[test]
+fn automatic_rename_follows_osc_title() {
+    // tmux automatic-rename: a window's name tracks the active pane's OSC title.
+    // Emit OSC 2 from the shell and confirm the new title shows in the status
+    // bar's window list (which renders "<idx>:<name>").
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("ar".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Set the window title via OSC 2 (ESC ] 2 ; TITLE BEL).
+    c.send(&ClientMsg::Input(b"printf '\\033]2;TITLE_RR\\007'\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Clear the screen so the echoed printf command line is gone; the title can
+    // now only appear via the status-bar window list (driven by window state).
+    c.send(&ClientMsg::Input(b"clear\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains(":TITLE_RR"),
+        "automatic-rename should show the OSC title in the window list; got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

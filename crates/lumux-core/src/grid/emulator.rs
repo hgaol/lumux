@@ -65,6 +65,9 @@ pub struct Grid {
     /// coordinates) instead of using them for its own scroll/copy-mode — matching
     /// tmux, so the wheel/clicks work inside a TUI like vim or Claude Code.
     mouse_tracking: bool,
+    /// The most recent window title set by the app via OSC 0/2 (`ESC]2;…BEL`).
+    /// Used by the daemon for automatic-rename. None until the app sets one.
+    title: Option<String>,
 }
 
 /// The primary-screen state stashed while the alternate screen is shown.
@@ -110,6 +113,7 @@ impl Grid {
             scroll_bottom: height - 1,
             last_print: None,
             mouse_tracking: false,
+            title: None,
         }
     }
 
@@ -192,6 +196,11 @@ impl Grid {
         self.rows.iter().map(|r| r.to_trimmed_string()).collect()
     }
 
+    /// The most recent OSC window title the app set, if any (for automatic-rename).
+    pub fn title(&self) -> Option<&str> {
+        self.title.as_deref()
+    }
+
     /// Feed raw PTY output bytes. Partial sequences are retained internally.
     pub fn feed(&mut self, bytes: &[u8]) {
         // Collect actions first to avoid borrowing self in the parser closure.
@@ -213,8 +222,20 @@ impl Grid {
             Action::Control(c) => self.control(c),
             Action::CSI(csi) => self.csi(csi),
             Action::Esc(esc) => self.esc(esc),
-            // Ignored for v1: device control, OSC (title handled minimally),
-            // sixel, kitty images, xtgettcap.
+            // Capture window-title OSC (0 = icon+title, 2 = title) for tmux-style
+            // automatic-rename; other OSCs and DCS/sixel/kitty are ignored.
+            Action::OperatingSystemCommand(osc) => {
+                use termwiz::escape::OperatingSystemCommand as Osc;
+                match *osc {
+                    Osc::SetWindowTitle(t)
+                    | Osc::SetIconNameAndWindowTitle(t)
+                    | Osc::SetWindowTitleSun(t) => {
+                        self.title = Some(t);
+                    }
+                    _ => {}
+                }
+            }
+            // Ignored for v1: device control, sixel, kitty images, xtgettcap.
             _ => {}
         }
     }

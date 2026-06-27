@@ -408,7 +408,7 @@ where
                 if let Some(s) = self.daemon.server.session_mut(session) {
                     let wid = s.active_window();
                     if let Some(w) = s.window_mut(wid) {
-                        w.name = name;
+                        w.set_name_manual(name);
                     }
                 }
                 self.render_session(session);
@@ -1025,7 +1025,7 @@ where
                 if let Some(s) = self.daemon.server.session_mut(session) {
                     let wid = s.active_window();
                     if let Some(w) = s.window_mut(wid) {
-                        w.name = name;
+                        w.set_name_manual(name);
                     }
                 }
             }

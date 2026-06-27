@@ -334,9 +334,33 @@ impl<S: PtySystem> Daemon<S> {
             if !responses.is_empty() {
                 let _ = p.writer.write_input(&responses);
             }
-            p.grid.take_bell()
+            let bell = p.grid.take_bell();
+            // automatic-rename: if the app set an OSC title and this pane is the
+            // active pane of its window (with auto-rename on), adopt it as the
+            // window name.
+            if let Some(title) = p.grid.title().map(str::to_string) {
+                self.apply_auto_title(id, &title);
+            }
+            bell
         } else {
             false
+        }
+    }
+
+    /// Update the window owning `pid` to `title` when that pane is the window's
+    /// active pane and automatic-rename is on. Searches all sessions for the
+    /// pane's window (panes are keyed globally, windows aren't indexed by pane).
+    fn apply_auto_title(&mut self, pid: PaneId, title: &str) {
+        for sid in self.server.session_ids() {
+            let Some(s) = self.server.session_mut(sid) else { continue };
+            for wid in s.window_ids() {
+                if let Some(w) = s.window_mut(wid) {
+                    if w.active_pane() == pid {
+                        w.apply_auto_title(title);
+                        return;
+                    }
+                }
+            }
         }
     }
 
@@ -535,7 +559,7 @@ impl<S: PtySystem> Daemon<S> {
                     if let Some(s) = self.server.session_mut(session) {
                         let wid = s.active_window();
                         if let Some(w) = s.window_mut(wid) {
-                            w.name = name;
+                            w.set_name_manual(name);
                         }
                     }
                 }

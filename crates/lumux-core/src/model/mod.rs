@@ -51,6 +51,9 @@ pub struct Window {
     /// When true, input typed into any pane of this window is broadcast to all
     /// of them (tmux `synchronize-panes`).
     synchronized: bool,
+    /// When true, the window name tracks the active pane's OSC title (tmux
+    /// `automatic-rename`, on by default). A manual rename turns it off.
+    auto_rename: bool,
 }
 
 impl Window {
@@ -69,6 +72,7 @@ impl Window {
             layout_kind: None,
             zoomed: None,
             synchronized: false,
+            auto_rename: true,
         }
     }
 
@@ -124,6 +128,29 @@ impl Window {
     pub fn toggle_synchronized(&mut self) -> bool {
         self.synchronized = !self.synchronized;
         self.synchronized
+    }
+
+    /// Whether the window name auto-tracks the active pane's title.
+    pub fn auto_rename(&self) -> bool {
+        self.auto_rename
+    }
+
+    /// Manually set the window name (tmux rename-window), which turns OFF
+    /// automatic-rename so the chosen name sticks — matching tmux.
+    pub fn set_name_manual(&mut self, name: String) {
+        self.name = name;
+        self.auto_rename = false;
+    }
+
+    /// If automatic-rename is on, update the window name to `title` (the active
+    /// pane's OSC title). Returns true if the name actually changed. Empty or
+    /// unchanged titles are ignored.
+    pub fn apply_auto_title(&mut self, title: &str) -> bool {
+        if !self.auto_rename || title.is_empty() || self.name == title {
+            return false;
+        }
+        self.name = title.to_string();
+        true
     }
 
     /// Adjust the divider nearest the active pane (tmux resize-pane). `axis` picks
