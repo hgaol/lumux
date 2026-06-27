@@ -99,6 +99,31 @@ fn start_daemon_emacs() -> std::path::PathBuf {
     path
 }
 
+/// Daemon with remain-on-exit on AND a `pane-exited` hook that respawns the
+/// pane — so a shell that exits is automatically restarted.
+fn start_daemon_respawn_hook() -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(4_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let mut hooks = std::collections::BTreeMap::new();
+    hooks.insert("pane-exited".to_string(), "respawn-pane".to_string());
+    let cfg = lumux_core::config::Config {
+        remain_on_exit: true,
+        hooks,
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
 /// A tiny framed client over a raw UnixStream (mirrors the real client wire
 /// behavior without a terminal).
 struct TestClient {
@@ -1472,6 +1497,35 @@ fn run_shell_captures_output_to_a_buffer() {
     assert!(
         vt.contains("-- BUFFERS --") && vt.contains("RUNSHELL_OUT_TT"),
         "run-shell output should land in a paste buffer; got:\n{vt}"
+    );
+}
+
+#[test]
+fn pane_exited_hook_respawns_the_pane() {
+    // tmux set-hook: a `pane-exited` hook of `respawn-pane` (with remain-on-exit)
+    // automatically restarts a shell when it exits. We exit the shell, then —
+    // without manually respawning — run a fresh command and see it echo, proving
+    // the hook respawned a working shell.
+    let path = start_daemon_respawn_hook();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("hook".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Exit the shell — the pane-exited hook should respawn it.
+    c.send(&ClientMsg::Input(b"exit\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Run a fresh command in the (auto-respawned) shell.
+    c.send(&ClientMsg::Input(b"echo HOOK_RESPAWN_VV\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("HOOK_RESPAWN_VV"),
+        "pane-exited hook should respawn a working shell; got:\n{vt}"
     );
 }
 

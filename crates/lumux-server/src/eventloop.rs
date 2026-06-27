@@ -158,28 +158,14 @@ where
             }
             Msg::PaneExited { pane } => {
                 if let Some(&sid) = self.pane_session.get(&pane) {
-                    // With remain-on-exit, the pane stays (dead) — keep its
-                    // mapping so it can be respawned. Otherwise cascade-close.
-                    match self.daemon.pane_exited(sid, pane) {
-                        Some(result) => {
-                            self.pane_session.remove(&pane);
-                            self.on_pane_exit(sid, pane, result);
-                        }
-                        None => self.render_session(sid),
-                    }
+                    self.handle_pane_exited(sid, pane);
                 }
             }
             Msg::Tick => {
                 // Reap children that exited without the reader seeing EOF (ConPTY).
                 for pane in self.daemon.reap_exited_panes() {
                     if let Some(&sid) = self.pane_session.get(&pane) {
-                        match self.daemon.pane_exited(sid, pane) {
-                            Some(result) => {
-                                self.pane_session.remove(&pane);
-                                self.on_pane_exit(sid, pane, result);
-                            }
-                            None => self.render_session(sid),
-                        }
+                        self.handle_pane_exited(sid, pane);
                     }
                 }
             }
@@ -1340,6 +1326,27 @@ where
         // correct). Pass a representative pane id for the exit event payload.
         let representative = panes.first().copied().unwrap_or(PaneId(0));
         self.on_pane_exit(session, representative, result);
+    }
+
+    /// A pane's child exited: apply remain-on-exit (keep dead) or cascade-close,
+    /// then fire any `pane-exited` hook. With remain-on-exit the dead pane still
+    /// exists, so a hook like `respawn-pane` can act on it.
+    fn handle_pane_exited(&mut self, session: SessionId, pane: PaneId) {
+        match self.daemon.pane_exited(session, pane) {
+            Some(result) => {
+                self.pane_session.remove(&pane);
+                self.on_pane_exit(session, pane, result);
+            }
+            None => self.render_session(session),
+        }
+        // Fire the pane-exited hook if the session still exists.
+        if self.daemon.server.session(session).is_some() {
+            if let Some(cmd) = self.daemon.hook_command("pane-exited") {
+                if let Some(client) = self.session_clients(session).first().copied() {
+                    self.dispatch_command_line(client, session, &cmd);
+                }
+            }
+        }
     }
 
     fn on_pane_exit(&mut self, session: SessionId, pane: PaneId, result: CascadeResult) {

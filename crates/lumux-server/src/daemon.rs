@@ -1181,6 +1181,11 @@ impl<S: PtySystem> Daemon<S> {
         self.config.remain_on_exit
     }
 
+    /// The command line registered for `event` via set-hook, if any (tmux hooks).
+    pub fn hook_command(&self, event: &str) -> Option<String> {
+        self.config.hooks.get(event).cloned()
+    }
+
     /// Handle a pane's child exiting. With remain-on-exit OFF this is the normal
     /// cascade-close ([`close_pane`]). With it ON, the pane is marked dead but
     /// KEPT (its last screen stays visible) so it can be inspected or respawned;

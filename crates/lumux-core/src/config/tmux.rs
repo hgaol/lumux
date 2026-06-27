@@ -145,6 +145,11 @@ fn apply_directive(
             warnings.push(format!("unbind not applied: {}", tokens.join(" ")));
             Ok(())
         }
+        // set-hook [-g] <event> <command>: store a command to run on an event.
+        "set-hook" | "set-hooks" => {
+            apply_set_hook(cfg, &tokens[1..], warnings);
+            Ok(())
+        }
         // if-shell <cmd> <then> [else]: run <cmd>; on success apply <then> as a
         // directive, else <else>. The then/else are quoted command strings (the
         // tokenizer has already unquoted them).
@@ -164,6 +169,24 @@ fn apply_directive(
             warnings.push(format!("unsupported command: {other}"));
             Ok(())
         }
+    }
+}
+
+/// Handle `set-hook [-g] <event> <command>`: store the command line to run when
+/// `<event>` fires. Flags (-g global, -a append, -u unset) are tolerated; -u
+/// removes the hook. The command is a single (usually quoted) token.
+fn apply_set_hook(cfg: &mut Config, rest: &[String], _warnings: &mut [String]) {
+    // -u (possibly combined, e.g. -gu) unsets the hook.
+    let unset = rest.iter().any(|t| t.starts_with('-') && t.contains('u'));
+    let args: Vec<&String> = rest.iter().filter(|t| !t.starts_with('-')).collect();
+    let Some(event) = args.first() else { return };
+    let event = event.trim_end_matches("[]").to_string();
+    if unset {
+        cfg.hooks.remove(&event);
+        return;
+    }
+    if let Some(command) = args.get(1) {
+        cfg.hooks.insert(event, command.to_string());
     }
 }
 
@@ -515,6 +538,18 @@ mod tests {
         // False test with no else → nothing happens (mouse stays default off).
         let c = Config::from_tmux(r#"if-shell "false" "set -g mouse on""#).unwrap();
         assert!(!c.mouse);
+    }
+
+    #[test]
+    fn set_hook_stores_and_unsets() {
+        let c = Config::from_tmux(r#"set-hook -g pane-exited "respawn-pane""#).unwrap();
+        assert_eq!(c.hooks.get("pane-exited").map(String::as_str), Some("respawn-pane"));
+        // -u removes a previously-set hook.
+        let c = Config::from_tmux(
+            "set-hook -g pane-exited \"respawn-pane\"\nset-hook -gu pane-exited",
+        )
+        .unwrap();
+        assert!(!c.hooks.contains_key("pane-exited"));
     }
 
     #[test]

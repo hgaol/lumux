@@ -30,6 +30,9 @@ pub struct Config {
     pub bindings: BTreeMap<String, String>,
     /// Root (no-prefix) key bindings (tmux `bind -n`): key -> action name.
     pub root_bindings: BTreeMap<String, String>,
+    /// Event hooks (tmux `set-hook`): event name -> command line to run when the
+    /// event fires. e.g. "pane-exited" -> "respawn-pane".
+    pub hooks: BTreeMap<String, String>,
     /// Status bar format string (supports #S session, #W window, #H host).
     pub status_format: String,
     /// Lowest window/pane index shown to the user (tmux base-index). tmux's
@@ -78,6 +81,7 @@ impl Default for Config {
             shells: Vec::new(),
             bindings: BTreeMap::new(),
             root_bindings: BTreeMap::new(),
+            hooks: BTreeMap::new(),
             status_format: "[#S] #W".to_string(),
             base_index: 0,
             mouse: false,
