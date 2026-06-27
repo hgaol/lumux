@@ -299,9 +299,9 @@ where
                 for r in reactions {
                     match r {
                         Reaction::PassThrough(data) => {
-                            if let Some(pid) = self.active_pane(session) {
-                                let _ = self.daemon.write_pane(pid, &data);
-                            }
+                            // Broadcast to all panes when synchronize-panes is on
+                            // for the active window; otherwise just the active pane.
+                            self.daemon.write_input(session, &data);
                         }
                         Reaction::Do(Action::EnterCopyMode) => {
                             self.daemon.enter_copy_mode(client_id, session);
@@ -543,6 +543,9 @@ where
             Action::DisplayPanes => self.daemon.show_pane_numbers(client_id),
             Action::SwapWindowLeft => self.do_move_window(session, -1),
             Action::SwapWindowRight => self.do_move_window(session, 1),
+            Action::ToggleSync => {
+                self.daemon.toggle_sync(client_id, session);
+            }
             Action::PasteBuffer => {
                 if !self.daemon.paste_buffer(session) {
                     self.daemon.flash_message(client_id, "no buffers");

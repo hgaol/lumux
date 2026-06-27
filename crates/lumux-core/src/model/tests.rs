@@ -643,3 +643,16 @@ fn move_window_single_window_is_noop() {
     let sid = srv.new_session("s", sh());
     assert!(!srv.session_mut(sid).unwrap().move_active_window(1));
 }
+
+// ----- synchronize-panes -----
+
+#[test]
+fn synchronize_panes_toggles_per_window() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w = srv.session_mut(sid).unwrap().active_window_mut();
+    assert!(!w.is_synchronized(), "off by default");
+    assert!(w.toggle_synchronized(), "first toggle turns it on");
+    assert!(w.is_synchronized());
+    assert!(!w.toggle_synchronized(), "second toggle turns it off");
+}

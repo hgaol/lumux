@@ -371,6 +371,59 @@ impl<S: PtySystem> Daemon<S> {
         Ok(())
     }
 
+    /// Write user input to the active pane, OR — when the active window has
+    /// synchronize-panes on (tmux) — to every pane in that window. Returns true
+    /// if input was broadcast (so the caller knows multiple panes changed).
+    pub fn write_input(&mut self, session: SessionId, bytes: &[u8]) -> bool {
+        let (synced, pane_ids, active) = {
+            let Some(s) = self.server.session(session) else {
+                return false;
+            };
+            let Some(w) = s.window(s.active_window()) else {
+                return false;
+            };
+            (w.is_synchronized(), w.pane_ids(), w.active_pane())
+        };
+        if synced {
+            for pid in pane_ids {
+                let _ = self.write_pane(pid, bytes);
+            }
+            true
+        } else {
+            let _ = self.write_pane(active, bytes);
+            false
+        }
+    }
+
+    /// Toggle synchronize-panes for the active window (tmux). Returns the new
+    /// state. Flashes a confirmation and forces a repaint so the status reflects it.
+    pub fn toggle_sync(&mut self, client_id: u64, session: SessionId) -> bool {
+        let on = self
+            .server
+            .session_mut(session)
+            .map(|s| s.active_window_mut().toggle_synchronized())
+            .unwrap_or(false);
+        self.flash_message(
+            client_id,
+            if on {
+                "synchronize-panes: on"
+            } else {
+                "synchronize-panes: off"
+            },
+        );
+        on
+    }
+
+    /// Whether the active window of `session` has synchronize-panes on (for the
+    /// status indicator).
+    pub fn is_synchronized(&self, session: SessionId) -> bool {
+        self.server
+            .session(session)
+            .and_then(|s| s.window(s.active_window()))
+            .map(|w| w.is_synchronized())
+            .unwrap_or(false)
+    }
+
     /// Register a freshly attached client: give it a keymap and renderer.
     pub fn register_client(&mut self, client_id: u64) {
         let keymap = match self.config.to_bindings() {

@@ -48,6 +48,9 @@ pub struct Window {
     /// fullscreen (tmux prefix z). Cleared on toggle, on focus change, and when
     /// the zoomed pane goes away.
     zoomed: Option<PaneId>,
+    /// When true, input typed into any pane of this window is broadcast to all
+    /// of them (tmux `synchronize-panes`).
+    synchronized: bool,
 }
 
 impl Window {
@@ -65,6 +68,7 @@ impl Window {
             last_pane: None,
             layout_kind: None,
             zoomed: None,
+            synchronized: false,
         }
     }
 
@@ -109,6 +113,17 @@ impl Window {
             self.zoomed = Some(self.active_pane);
         }
         self.zoomed.is_some()
+    }
+
+    /// Whether input is broadcast to all panes (tmux synchronize-panes).
+    pub fn is_synchronized(&self) -> bool {
+        self.synchronized
+    }
+
+    /// Toggle synchronize-panes for this window. Returns the new state.
+    pub fn toggle_synchronized(&mut self) -> bool {
+        self.synchronized = !self.synchronized;
+        self.synchronized
     }
 
     /// Adjust the divider nearest the active pane (tmux resize-pane). `axis` picks

@@ -61,6 +61,8 @@ pub enum Action {
     SwapWindowLeft,
     /// Move the active window one slot later in the window list (prefix `>`).
     SwapWindowRight,
+    /// Toggle synchronize-panes for the active window (lumux: prefix `S`).
+    ToggleSync,
     /// Paste the most-recent paste buffer into the active pane (tmux prefix ]).
     PasteBuffer,
     /// Open the paste-buffer chooser (tmux prefix =).
@@ -106,6 +108,7 @@ impl Action {
             Action::DisplayPanes => "show pane numbers (then press one)",
             Action::SwapWindowLeft => "move this window left in the list",
             Action::SwapWindowRight => "move this window right in the list",
+            Action::ToggleSync => "toggle synchronize-panes",
             Action::PasteBuffer => "paste the most recent buffer",
             Action::ChooseBuffer => "choose a paste buffer",
             Action::SendPrefix => "send the prefix key to the shell",
@@ -152,6 +155,8 @@ impl Bindings {
         // Reorder the active window in the list (lumux: prefix < / >).
         table.insert(Key::char('<'), Action::SwapWindowLeft);
         table.insert(Key::char('>'), Action::SwapWindowRight);
+        // Toggle synchronize-panes (lumux: prefix S).
+        table.insert(Key::char('S'), Action::ToggleSync);
         // Paste buffers (tmux prefix ] pastes the top buffer; = opens the chooser).
         table.insert(Key::char(']'), Action::PasteBuffer);
         table.insert(Key::char('='), Action::ChooseBuffer);

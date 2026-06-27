@@ -167,15 +167,21 @@ fn size() -> WireSize {
     WireSize { cols: 80, rows: 24 }
 }
 
-/// The 1-based screen column where `needle` begins, by replaying the VT byte
+/// The 1-based screen column where `needle` first begins (see [`columns_of`]).
+fn column_of(vt: &str, needle: &str) -> Option<usize> {
+    columns_of(vt, needle).into_iter().next()
+}
+
+/// Every 1-based screen column where `needle` is drawn, by replaying the VT byte
 /// stream as a cursor would: cursor-position escapes (`ESC[row;colH`) set the
 /// column, other escapes are skipped, and printable bytes advance it. The
 /// renderer writes a whole row after a single CUP, so the column must be tracked
-/// per character (not read from the CUP). Returns None if the needle isn't
-/// drawn. Used to assert pane *positions* (left vs right) in layout tests.
-fn column_of(vt: &str, needle: &str) -> Option<usize> {
+/// per character (not read from the CUP). Used to assert pane *positions* (left
+/// vs right) and presence-in-multiple-panes in layout tests.
+fn columns_of(vt: &str, needle: &str) -> Vec<usize> {
     let nb = needle.as_bytes();
     let b = vt.as_bytes();
+    let mut out = Vec::new();
     let mut col: usize = 1;
     let mut matched = 0usize; // how many needle bytes matched at `start_col`
     let mut start_col = 1usize;
@@ -213,7 +219,8 @@ fn column_of(vt: &str, needle: &str) -> Option<usize> {
             }
             matched += 1;
             if matched == nb.len() {
-                return Some(start_col);
+                out.push(start_col);
+                matched = 0;
             }
         } else {
             matched = if b[i] == nb[0] { 1 } else { 0 };
@@ -224,7 +231,7 @@ fn column_of(vt: &str, needle: &str) -> Option<usize> {
         col += 1;
         i += 1;
     }
-    None
+    out
 }
 
 #[test]
@@ -1085,6 +1092,49 @@ fn swap_window_reorders_the_status_list() {
     assert!(
         a1 < cc1 && cc1 < b1,
         "after moving left, CCC should sit before BBB; got:\n{after}"
+    );
+}
+
+#[test]
+fn synchronize_panes_broadcasts_input_to_all_panes() {
+    // tmux synchronize-panes (lumux: prefix S): with sync on, a keystroke goes to
+    // every pane in the window, not just the active one. Both panes run `cat -v`
+    // (echoes input). After enabling sync and typing a marker, the marker must
+    // appear TWICE on screen — once echoed by each pane.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("sync".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Left pane runs cat -v.
+    c.send(&ClientMsg::Input(b"cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Split right; the new pane also runs cat -v.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Enable synchronize-panes (Ctrl-b S).
+    c.send(&ClientMsg::Input(vec![0x02, b'S']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Type a marker; with sync on, BOTH cat -v panes echo it.
+    c.send(&ClientMsg::Input(b"SYNCED_QQ\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The marker must appear in BOTH panes: one occurrence in the left half
+    // (col < 40) and one in the right half (col >= 40). A non-synced write would
+    // only reach the active (right) pane, leaving the left half without it.
+    let cols = columns_of(&vt, "SYNCED_QQ");
+    let in_left = cols.iter().any(|&c| c < 40);
+    let in_right = cols.iter().any(|&c| c >= 40);
+    assert!(
+        in_left && in_right,
+        "sync should echo the marker in BOTH panes (cols {cols:?}); got:\n{vt}"
     );
 }
 
