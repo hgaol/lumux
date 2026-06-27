@@ -301,7 +301,11 @@ impl Keymap {
                             self.mode = Mode::DisplayPanes;
                             reactions.push(Reaction::Do(Action::DisplayPanes));
                         }
-                        Some(action @ (Action::RenameWindow | Action::RenameSession)) => {
+                        Some(
+                            action @ (Action::RenameWindow
+                            | Action::RenameSession
+                            | Action::FindWindow),
+                        ) => {
                             // Open a text prompt; the daemon seeds the buffer and
                             // renders the input line. Subsequent keys edit it.
                             self.mode = Mode::Prompt;

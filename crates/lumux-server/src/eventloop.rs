@@ -527,6 +527,10 @@ where
                 self.daemon
                     .open_prompt(client_id, session, crate::daemon::PromptTarget::Session);
             }
+            Action::FindWindow => {
+                self.daemon
+                    .open_prompt(client_id, session, crate::daemon::PromptTarget::FindWindow);
+            }
             Action::KillPane => {
                 if let Some(pid) = self.active_pane(session) {
                     let result = self.daemon.close_pane(session, pid);

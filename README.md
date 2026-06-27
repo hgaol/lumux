@@ -68,6 +68,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `c` | new window |
 | `n` / `p` | next / previous window |
 | `l` | last (previously-active) window |
+| `f` | find a window by name and switch to it |
 | `0`–`9` | select window by index |
 | `<` / `>` | move the active window left / right in the list |
 | `&` | kill the active window |

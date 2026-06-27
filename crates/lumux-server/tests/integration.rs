@@ -1139,6 +1139,41 @@ fn synchronize_panes_broadcasts_input_to_all_panes() {
 }
 
 #[test]
+fn find_window_switches_to_named_window() {
+    // tmux find-window (prefix f): type a query, jump to the matching window. We
+    // make windows AAA/BBB/CCC (CCC active), then find "AAA" and confirm the
+    // active-window marker (*) moves onto AAA in the status list.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("fw".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b',']));
+    c.send(&ClientMsg::Input(b"AAA\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.send(&ClientMsg::Input(vec![0x02, b',']));
+    c.send(&ClientMsg::Input(b"CCC\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // CCC is active. Find-window for AAA.
+    c.send(&ClientMsg::Input(vec![0x02, b'f']));
+    c.send(&ClientMsg::Input(b"AAA\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The active marker (*) should now sit on the AAA entry, not CCC. The window
+    // list renders "<idx>:<name>" with the active one marked, e.g. "0:AAA*".
+    assert!(
+        vt.contains("AAA*") || vt.contains("AAA *"),
+        "find-window should switch to AAA (marked active); got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

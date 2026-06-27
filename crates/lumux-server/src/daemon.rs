@@ -147,11 +147,14 @@ pub struct SearchInput {
     pub dir: lumux_core::copymode::SearchDir,
 }
 
-/// What an open prompt will rename when confirmed.
+/// What an open prompt does when confirmed.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum PromptTarget {
     Window,
     Session,
+    /// Search window names for the typed query and switch to the first match
+    /// (tmux find-window). Seeded empty rather than with the current name.
+    FindWindow,
 }
 
 impl<S: PtySystem> Daemon<S> {
@@ -458,6 +461,8 @@ impl<S: PtySystem> Daemon<S> {
             PromptTarget::Window => self.server.session(session).and_then(|s| {
                 s.window(s.active_window()).map(|w| w.name.clone())
             }),
+            // find-window starts from an empty query, not the current name.
+            PromptTarget::FindWindow => Some(String::new()),
         }
         .unwrap_or_default();
         self.prompt.insert(
@@ -525,6 +530,26 @@ impl<S: PtySystem> Daemon<S> {
                         if let Some(w) = s.window_mut(wid) {
                             w.name = name;
                         }
+                    }
+                }
+                PromptTarget::FindWindow => {
+                    // Switch to the first window whose name contains the query
+                    // (case-insensitive). Flash if nothing matches.
+                    let needle = name.to_lowercase();
+                    let target = self.server.session(session).and_then(|s| {
+                        s.window_ids().into_iter().find(|&wid| {
+                            s.window(wid)
+                                .map(|w| w.name.to_lowercase().contains(&needle))
+                                .unwrap_or(false)
+                        })
+                    });
+                    match target {
+                        Some(wid) => {
+                            if let Some(s) = self.server.session_mut(session) {
+                                s.focus_window(wid);
+                            }
+                        }
+                        None => self.flash_message(client_id, format!("no window matching \"{name}\"")),
                     }
                 }
             }
@@ -1263,6 +1288,7 @@ impl<S: PtySystem> Daemon<S> {
             let label = match p.target {
                 PromptTarget::Window => "rename-window",
                 PromptTarget::Session => "rename-session",
+                PromptTarget::FindWindow => "find-window",
             };
             let line = format!("({label}) {}", p.buffer);
             screen.status_line(screen.dimensions().1.saturating_sub(1), &line);
