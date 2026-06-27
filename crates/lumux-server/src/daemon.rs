@@ -122,6 +122,11 @@ pub struct Daemon<S: PtySystem> {
     /// Clients mid-divider-drag: the path to the divider grabbed on mouse-press,
     /// so subsequent drag motion moves that same divider (even off its line).
     dragging: BTreeMap<u64, Vec<bool>>,
+    /// Server-global paste buffers (tmux paste-buffer stack), shared by all
+    /// sessions and clients. Yanks push here; prefix `]`/`=` read from it.
+    buffers: lumux_core::buffers::PasteBuffers,
+    /// Per-client highlighted index in the open paste-buffer chooser.
+    choosing_buffer: BTreeMap<u64, usize>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -167,6 +172,8 @@ impl<S: PtySystem> Daemon<S> {
             prompt: BTreeMap::new(),
             search: BTreeMap::new(),
             dragging: BTreeMap::new(),
+            buffers: lumux_core::buffers::PasteBuffers::new(),
+            choosing_buffer: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -379,6 +386,7 @@ impl<S: PtySystem> Daemon<S> {
         self.help.remove(&client_id);
         self.help_offset.remove(&client_id);
         self.choosing.remove(&client_id);
+        self.choosing_buffer.remove(&client_id);
         self.prompt.remove(&client_id);
         self.search.remove(&client_id);
         self.dragging.remove(&client_id);
@@ -573,6 +581,96 @@ impl<S: PtySystem> Daemon<S> {
             None => true,
         }
     }
+
+    /// Paste the most-recent buffer's text into the active pane (tmux prefix `]`
+    /// / `paste-buffer`). Returns false if there are no buffers (caller flashes a
+    /// message). The bytes go straight to the pane's PTY, like typed input.
+    pub fn paste_buffer(&mut self, session: SessionId) -> bool {
+        let Some(text) = self.buffers.top().map(str::to_string) else {
+            return false;
+        };
+        if let Some(pid) = self.active_pane(session) {
+            let _ = self.write_pane(pid, text.as_bytes());
+        }
+        true
+    }
+
+    /// Open the paste-buffer chooser for a client (tmux prefix `=`). Returns
+    /// false (and opens nothing) when there are no buffers.
+    pub fn open_buffer_chooser(&mut self, client_id: u64) -> bool {
+        if self.buffers.is_empty() {
+            return false;
+        }
+        self.choosing_buffer.insert(client_id, 0);
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        true
+    }
+
+    pub fn in_buffer_chooser(&self, client_id: u64) -> bool {
+        self.choosing_buffer.contains_key(&client_id)
+    }
+
+    /// Move the buffer-chooser selection (delta -1/+1, or absolute `to`), clamped
+    /// to the buffer list.
+    pub fn buffer_chooser_move(&mut self, client_id: u64, delta: i32, to: Option<usize>) {
+        let n = self.buffers.len();
+        if n == 0 {
+            return;
+        }
+        if let Some(sel) = self.choosing_buffer.get_mut(&client_id) {
+            *sel = match to {
+                Some(i) => i.min(n - 1),
+                None => (*sel as i32 + delta).clamp(0, n as i32 - 1) as usize,
+            };
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Confirm the chooser: paste the highlighted buffer into the active pane and
+    /// close the chooser.
+    pub fn buffer_chooser_confirm(&mut self, client_id: u64, session: SessionId) {
+        let Some(sel) = self.choosing_buffer.remove(&client_id) else {
+            return;
+        };
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        let text = self.buffers.get(sel).map(|b| b.text.clone());
+        if let (Some(text), Some(pid)) = (text, self.active_pane(session)) {
+            let _ = self.write_pane(pid, text.as_bytes());
+        }
+    }
+
+    /// Delete the highlighted buffer, keeping the chooser open (the selection
+    /// clamps to the new length). Closes the chooser if it empties the stack.
+    pub fn buffer_chooser_delete(&mut self, client_id: u64) {
+        let Some(&sel) = self.choosing_buffer.get(&client_id) else {
+            return;
+        };
+        self.buffers.delete(sel);
+        if self.buffers.is_empty() {
+            self.choosing_buffer.remove(&client_id);
+        } else if let Some(s) = self.choosing_buffer.get_mut(&client_id) {
+            *s = (*s).min(self.buffers.len() - 1);
+        }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    /// Close the buffer chooser without pasting.
+    pub fn buffer_chooser_cancel(&mut self, client_id: u64) {
+        if self.choosing_buffer.remove(&client_id).is_some() {
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
     pub fn toggle_help(&mut self, client_id: u64) {
         if !self.help.remove(&client_id) {
             self.help.insert(client_id);
@@ -804,6 +902,9 @@ impl<S: PtySystem> Daemon<S> {
         if text.is_empty() {
             return None;
         }
+        // Push onto the paste-buffer stack (tmux: a copy-mode yank becomes the
+        // newest buffer) as well as the system/OSC-52 clipboard.
+        self.buffers.push(text.clone());
         let _ = self.clipboard.set_text(&text);
         Some(text)
     }
@@ -948,6 +1049,10 @@ impl<S: PtySystem> Daemon<S> {
         // The session switcher likewise takes over the screen.
         if self.choosing.contains_key(&client_id) {
             return self.render_chooser(client_id, session);
+        }
+        // The paste-buffer chooser is a full-screen overlay too.
+        if self.choosing_buffer.contains_key(&client_id) {
+            return self.render_buffer_chooser(client_id, session);
         }
         // Copy-mode clients see the scrolled history view instead of live panes.
         if self.copy.contains_key(&client_id) {
@@ -1333,9 +1438,69 @@ impl<S: PtySystem> Daemon<S> {
         Some(renderer.render(screen))
     }
 
-    /// Paint a stacked, labeled preview of every window in `preview_sid` into the
-    /// region at column `x`, width `w`, height `h`. Each window gets a one-row
-    /// header (`index:name`, active marked `*`) and the remaining rows show a
+    /// Render the paste-buffer chooser (tmux prefix `=`). A left list of buffers
+    /// (`index: <preview>`) with the highlighted one reversed, and a right pane
+    /// previewing the highlighted buffer's full text (clipped to the region).
+    fn render_buffer_chooser(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        use lumux_core::render::Screen;
+        let size = self.server.effective_size(session)?;
+        let cols = size.cols as usize;
+        let rows = size.rows as usize;
+        let mut screen = Screen::new(cols, rows);
+        let sel = *self.choosing_buffer.get(&client_id)?;
+
+        let list_w = (cols / 3).clamp(20, 40).min(cols.saturating_sub(2));
+        let max_y = rows.saturating_sub(1);
+
+        screen.write_plain(0, 0, "choose a paste buffer");
+        for (i, buf) in self.buffers.iter().enumerate() {
+            let y = 2 + i;
+            if y >= max_y {
+                break;
+            }
+            // One-line preview: first line, control chars shown as spaces.
+            let preview = first_line_preview(&buf.text);
+            let mut line = format!("{i}: {preview}");
+            if line.chars().count() > list_w {
+                line = line.chars().take(list_w).collect();
+            }
+            if i == sel {
+                screen.status_line_width(y, &line, list_w);
+            } else {
+                screen.write_plain(0, y, &line);
+            }
+        }
+
+        // Divider + full preview of the highlighted buffer.
+        let div_x = list_w;
+        let preview_x = list_w + 1;
+        if preview_x < cols {
+            screen.vline(div_x, 0, max_y, &Default::default());
+            if let Some(buf) = self.buffers.get(sel) {
+                let pw = cols - preview_x;
+                for (row, line) in buf.text.lines().enumerate() {
+                    if row >= max_y {
+                        break;
+                    }
+                    let clipped: String = line
+                        .chars()
+                        .map(|c| if c.is_control() { ' ' } else { c })
+                        .take(pw)
+                        .collect();
+                    screen.write_plain(preview_x, row, &clipped);
+                }
+            }
+        }
+
+        screen.status_line(
+            max_y,
+            "-- BUFFERS --  Up/Down or digit, Enter/p pastes, d deletes, Esc cancels",
+        );
+        screen.set_cursor(None);
+
+        let renderer = self.renderers.get_mut(&client_id)?;
+        Some(renderer.render(screen))
+    }
     /// clipped live view of that window's active pane. The height is split as
     /// evenly as possible across the windows.
     fn render_session_preview(
@@ -1517,6 +1682,17 @@ fn window_index(session: &lumux_core::model::Session, wid: lumux_core::model::Wi
         .iter()
         .position(|&w| w == wid)
         .unwrap_or(0) as u32
+}
+
+/// A one-line, control-char-free preview of a buffer's text for the chooser
+/// list: the first non-empty line, with control characters shown as spaces.
+fn first_line_preview(text: &str) -> String {
+    let line = text.lines().find(|l| !l.trim().is_empty()).unwrap_or("");
+    line.chars()
+        .map(|c| if c.is_control() { ' ' } else { c })
+        .collect::<String>()
+        .trim()
+        .to_string()
 }
 
 /// Local hostname for the `#H` token.

@@ -248,6 +248,43 @@ fn copy_mode_repeat_search_keys() {
 }
 
 #[test]
+fn buffer_chooser_opens_and_navigates() {
+    use crate::keymap::BufferKey;
+    let mut k = km();
+    // Prefix = opens the buffer chooser (emits the action AND switches mode).
+    let r = k.feed(&[0x02, b'=']);
+    assert_eq!(r, vec![Reaction::Do(Action::ChooseBuffer)]);
+    assert_eq!(k.mode(), Mode::ChooseBuffer);
+    // Navigation keys become Buffer reactions; the chooser stays open.
+    assert_eq!(k.feed(b"j"), vec![Reaction::Buffer(BufferKey::Down)]);
+    assert_eq!(k.feed(b"k"), vec![Reaction::Buffer(BufferKey::Up)]);
+    assert_eq!(k.feed(b"2"), vec![Reaction::Buffer(BufferKey::Index(2))]);
+    assert_eq!(k.feed(b"d"), vec![Reaction::Buffer(BufferKey::Delete)]);
+    assert_eq!(k.mode(), Mode::ChooseBuffer, "delete keeps the chooser open");
+    // Enter pastes and closes.
+    assert_eq!(k.feed(b"\r"), vec![Reaction::Buffer(BufferKey::Confirm)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
+fn buffer_chooser_cancel_closes() {
+    use crate::keymap::BufferKey;
+    let mut k = km();
+    k.feed(&[0x02, b'=']);
+    assert_eq!(k.feed(b"\x1b"), vec![Reaction::Buffer(BufferKey::Cancel)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
+fn paste_buffer_action_binding() {
+    let mut k = km();
+    // Prefix ] is a one-shot action (paste); no mode change.
+    let r = k.feed(&[0x02, b']']);
+    assert_eq!(r, vec![Reaction::Do(Action::PasteBuffer)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
 fn rebound_prefix_works() {
     let mut k = km();
     k.bindings_mut().set_prefix(Key::ctrl('a'));

@@ -21,6 +21,9 @@ pub enum Mode {
     Help,
     /// Showing the session switcher; navigation keys pick a session.
     ChooseSession,
+    /// Showing the paste-buffer chooser; navigation keys pick (or delete) a
+    /// buffer, Enter pastes it.
+    ChooseBuffer,
     /// Capturing text for a prompt (rename-window/-session): printable keys
     /// extend the buffer, Enter commits, Escape cancels.
     Prompt,
@@ -62,6 +65,8 @@ pub enum Reaction {
     /// A copy-mode search edit key (text entry for `/`/`?`), with the direction
     /// chosen when search was opened.
     Search(SearchKey),
+    /// A paste-buffer chooser key (move the selection / paste / delete / cancel).
+    Buffer(BufferKey),
 }
 
 /// Keys handled while a text prompt is open (rename-window/-session).
@@ -87,6 +92,21 @@ pub enum SearchKey {
     /// Run the search with the typed query (Enter).
     Confirm,
     /// Abandon search, returning to copy-mode navigation (Escape).
+    Cancel,
+}
+
+/// Keys handled while the paste-buffer chooser is open (tmux prefix `=`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BufferKey {
+    Up,
+    Down,
+    /// Jump to the Nth buffer in the list (digit key).
+    Index(u32),
+    /// Paste the highlighted buffer into the active pane (Enter / p).
+    Confirm,
+    /// Delete the highlighted buffer (d / x).
+    Delete,
+    /// Close the chooser without pasting (q / Escape).
     Cancel,
 }
 
@@ -262,6 +282,12 @@ impl Keymap {
                             self.mode = Mode::ChooseSession;
                             reactions.push(Reaction::Do(Action::ChooseSession));
                         }
+                        Some(Action::ChooseBuffer) => {
+                            // Opens the buffer chooser overlay; the daemon decides
+                            // whether there's anything to show.
+                            self.mode = Mode::ChooseBuffer;
+                            reactions.push(Reaction::Do(Action::ChooseBuffer));
+                        }
                         Some(action @ (Action::RenameWindow | Action::RenameSession)) => {
                             // Open a text prompt; the daemon seeds the buffer and
                             // renders the input line. Subsequent keys edit it.
@@ -321,6 +347,18 @@ impl Keymap {
                     }
                     // Other keys are ignored while the switcher is open.
                 }
+                Mode::ChooseBuffer => {
+                    flush_passthrough!();
+                    if let Some(bk) = buffer_key(&key) {
+                        // Confirm (paste) and Cancel close the chooser; Delete
+                        // leaves it open so several buffers can be pruned in a row.
+                        if matches!(bk, BufferKey::Confirm | BufferKey::Cancel) {
+                            self.mode = Mode::Normal;
+                        }
+                        reactions.push(Reaction::Buffer(bk));
+                    }
+                    // Other keys are ignored while the chooser is open.
+                }
                 Mode::Help => {
                     // tmux shows key bindings in a scrollable view: arrows / vi
                     // keys / paging scroll the list; q / Escape / ? close it.
@@ -373,6 +411,20 @@ fn session_key(key: &Key) -> Option<SessionKey> {
         _ => return None,
     };
     Some(sk)
+}
+
+/// Map a key to a paste-buffer chooser action while the chooser is open.
+fn buffer_key(key: &Key) -> Option<BufferKey> {
+    let bk = match key.code {
+        KeyCode::Up | KeyCode::Char('k') => BufferKey::Up,
+        KeyCode::Down | KeyCode::Char('j') => BufferKey::Down,
+        KeyCode::Enter | KeyCode::Char('p') => BufferKey::Confirm,
+        KeyCode::Char('d') | KeyCode::Char('x') => BufferKey::Delete,
+        KeyCode::Escape | KeyCode::Char('q') => BufferKey::Cancel,
+        KeyCode::Char(c) if c.is_ascii_digit() => BufferKey::Index(c.to_digit(10).unwrap()),
+        _ => return None,
+    };
+    Some(bk)
 }
 
 /// Map a key to a help-overlay action while the help overlay is open. Movement

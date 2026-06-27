@@ -49,6 +49,10 @@ pub enum Action {
     ShowHelp,
     /// Open the session switcher (tmux prefix s).
     ChooseSession,
+    /// Paste the most-recent paste buffer into the active pane (tmux prefix ]).
+    PasteBuffer,
+    /// Open the paste-buffer chooser (tmux prefix =).
+    ChooseBuffer,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
 }
@@ -84,6 +88,8 @@ impl Action {
             Action::ReloadConfig => "reload configuration",
             Action::ShowHelp => "show this help",
             Action::ChooseSession => "choose session",
+            Action::PasteBuffer => "paste the most recent buffer",
+            Action::ChooseBuffer => "choose a paste buffer",
             Action::SendPrefix => "send the prefix key to the shell",
         }
     }
@@ -123,6 +129,9 @@ impl Bindings {
         table.insert(Key::char('x'), Action::KillPane);
         table.insert(Key::char('?'), Action::ShowHelp);
         table.insert(Key::char('s'), Action::ChooseSession);
+        // Paste buffers (tmux prefix ] pastes the top buffer; = opens the chooser).
+        table.insert(Key::char(']'), Action::PasteBuffer);
+        table.insert(Key::char('='), Action::ChooseBuffer);
         // Prefixed directional pane selection (tmux default arrow bindings).
         table.insert(Key::plain(KeyCode::Left), Action::SelectPaneLeft);
         table.insert(Key::plain(KeyCode::Right), Action::SelectPaneRight);

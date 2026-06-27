@@ -6,6 +6,7 @@
 
 pub mod traits;
 
+pub mod buffers;
 pub mod config;
 pub mod copymode;
 pub mod grid;

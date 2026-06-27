@@ -770,6 +770,93 @@ fn copy_mode_search_prompt_is_shown_while_typing() {
 }
 
 #[test]
+fn yank_then_paste_round_trips_into_the_pane() {
+    // tmux paste buffers: a copy-mode yank becomes the newest buffer, and prefix
+    // `]` pastes it into the active pane. We prove the full round trip: select a
+    // line containing a unique marker, yank it, CLEAR the screen so the printed
+    // copy is gone, then paste — the only way the marker can reappear is via the
+    // paste reaching the shell (which echoes it onto the input line).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("paste".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Print a unique marker on its own line.
+    c.send(&ClientMsg::Input(b"printf 'YANKME_ZZ\\n'\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Enter copy-mode, search onto the marker row, select the whole line (Home,
+    // start selection, End), and yank (which exits copy-mode).
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"?YANKME\r".to_vec()));
+    c.send(&ClientMsg::Input(b"\x1b[H".to_vec())); // Home
+    c.send(&ClientMsg::Input(b" ".to_vec())); // Space starts selection
+    c.send(&ClientMsg::Input(b"\x1b[F".to_vec())); // End
+    c.send(&ClientMsg::Input(b"y".to_vec())); // yank + exit copy-mode
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Wipe the screen so the printed marker is gone from the live view.
+    c.send(&ClientMsg::Input(b"clear\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    let (_d, cleared) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !cleared.contains("YANKME_ZZ"),
+        "precondition: clear should wipe the printed marker; got:\n{cleared}"
+    );
+    // Paste the buffer (prefix ]). The shell receives "YANKME_ZZ" and echoes it
+    // onto the now-empty input line.
+    c.send(&ClientMsg::Input(vec![0x02, b']']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("YANKME_ZZ"),
+        "paste should inject the yanked marker into the pane; got:\n{vt}"
+    );
+}
+
+#[test]
+fn buffer_chooser_lists_a_yanked_buffer() {
+    // After a yank, prefix `=` opens the paste-buffer chooser, which lists the
+    // buffer with a preview of its text.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("bufchoose".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(b"printf 'CHOOSEME_QQ\\n'\n".to_vec()));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"?CHOOSEME\r".to_vec()));
+    c.send(&ClientMsg::Input(b"\x1b[H".to_vec()));
+    c.send(&ClientMsg::Input(b" ".to_vec()));
+    c.send(&ClientMsg::Input(b"\x1b[F".to_vec()));
+    c.send(&ClientMsg::Input(b"y".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Open the buffer chooser (prefix =).
+    c.send(&ClientMsg::Input(vec![0x02, b'=']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("-- BUFFERS --"),
+        "prefix = should open the buffer chooser; got:\n{vt}"
+    );
+    assert!(
+        vt.contains("CHOOSEME_QQ"),
+        "the chooser should preview the yanked buffer; got:\n{vt}"
+    );
+}
+
+#[test]
 fn send_keys_command_injects_into_pane() {
     use lumux_core::proto::Command;
     let path = start_daemon();

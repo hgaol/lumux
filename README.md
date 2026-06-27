@@ -80,6 +80,8 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `x` | kill the active pane |
 | `d` | detach (session keeps running) |
 | `[` | enter copy-mode |
+| `]` | paste the most recent copy buffer |
+| `=` | choose a paste buffer |
 | `?` | show the key-binding help |
 | `Ctrl-b` | send a literal `Ctrl-b` to the shell |
 
@@ -94,8 +96,10 @@ scrolls into copy-mode history, and dragging a divider resizes panes.
 **Copy-mode:** arrows / PageUp / PageDown / Home / End or vi keys (`hjkl`) to
 move; `u` / `d` half-page scroll; `/` searches forward and `?` backward, with
 `n` / `N` to jump to the next / previous match; `Space` or `v` starts a
-selection; `Enter` or `y` yanks (and copies to your local terminal's clipboard
-via OSC-52); `q` or `Escape` exits.
+selection; `Enter` or `y` yanks (copying to your local terminal's clipboard via
+OSC-52 **and** pushing onto the paste-buffer stack); `q` or `Escape` exits.
+Paste the most recent buffer with `prefix ]`, or pick an older one with
+`prefix =`.
 
 ## Configuration
 

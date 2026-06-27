@@ -18,7 +18,7 @@ use std::io::Read;
 use std::sync::mpsc::{channel, Sender};
 
 use lumux_core::copymode::osc52;
-use lumux_core::keymap::{Action, CopyKey, PromptKey, Reaction, SearchKey, SessionKey};
+use lumux_core::keymap::{Action, BufferKey, CopyKey, PromptKey, Reaction, SearchKey, SessionKey};
 use lumux_core::layout::Direction;
 use lumux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use lumux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
@@ -327,6 +327,9 @@ where
                         Reaction::Search(sk) => {
                             self.handle_search_key(client_id, session, sk);
                         }
+                        Reaction::Buffer(bk) => {
+                            self.handle_buffer_key(client_id, session, bk);
+                        }
                     }
                 }
                 self.render_session(session);
@@ -530,6 +533,16 @@ where
             Action::ReloadConfig => self.reload_config(client_id, session),
             Action::ShowHelp => self.daemon.toggle_help(client_id),
             Action::ChooseSession => self.daemon.open_chooser(client_id),
+            Action::PasteBuffer => {
+                if !self.daemon.paste_buffer(session) {
+                    self.daemon.flash_message(client_id, "no buffers");
+                }
+            }
+            Action::ChooseBuffer => {
+                if !self.daemon.open_buffer_chooser(client_id) {
+                    self.daemon.flash_message(client_id, "no buffers");
+                }
+            }
             Action::Detach => {
                 // Tell the client to detach; the session keeps running. The
                 // client's reader loop breaks on Detached and restores the
@@ -929,6 +942,19 @@ where
                 }
                 new_session
             }
+        }
+    }
+
+    /// Drive the open paste-buffer chooser (tmux prefix `=`): move the selection,
+    /// paste the highlighted buffer, delete it, or cancel.
+    fn handle_buffer_key(&mut self, client_id: u64, session: SessionId, bk: BufferKey) {
+        match bk {
+            BufferKey::Up => self.daemon.buffer_chooser_move(client_id, -1, None),
+            BufferKey::Down => self.daemon.buffer_chooser_move(client_id, 1, None),
+            BufferKey::Index(n) => self.daemon.buffer_chooser_move(client_id, 0, Some(n as usize)),
+            BufferKey::Delete => self.daemon.buffer_chooser_delete(client_id),
+            BufferKey::Cancel => self.daemon.buffer_chooser_cancel(client_id),
+            BufferKey::Confirm => self.daemon.buffer_chooser_confirm(client_id, session),
         }
     }
 
