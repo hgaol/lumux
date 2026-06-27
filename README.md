@@ -76,6 +76,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `z` | zoom / unzoom the active pane |
 | `!` | break the active pane into a new window |
 | `{` / `}` | swap the active pane with the previous / next one |
+| `q` | show pane numbers, then press one to focus it |
 | `Space` | cycle preset layouts (even-horizontal/vertical, main, tiled) |
 | `,` | rename the current window |
 | `$` | rename the current session |

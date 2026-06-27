@@ -330,6 +330,10 @@ where
                         Reaction::Buffer(bk) => {
                             self.handle_buffer_key(client_id, session, bk);
                         }
+                        Reaction::PaneNumber(pick) => match pick {
+                            Some(n) => self.daemon.pick_pane_number(client_id, session, n),
+                            None => self.daemon.hide_pane_numbers(client_id),
+                        },
                     }
                 }
                 self.render_session(session);
@@ -536,6 +540,7 @@ where
             Action::ReloadConfig => self.reload_config(client_id, session),
             Action::ShowHelp => self.daemon.toggle_help(client_id),
             Action::ChooseSession => self.daemon.open_chooser(client_id),
+            Action::DisplayPanes => self.daemon.show_pane_numbers(client_id),
             Action::PasteBuffer => {
                 if !self.daemon.paste_buffer(session) {
                     self.daemon.flash_message(client_id, "no buffers");

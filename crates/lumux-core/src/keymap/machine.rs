@@ -24,6 +24,9 @@ pub enum Mode {
     /// Showing the paste-buffer chooser; navigation keys pick (or delete) a
     /// buffer, Enter pastes it.
     ChooseBuffer,
+    /// Showing pane numbers (tmux prefix q): the next digit focuses that pane,
+    /// any other key (or timeout, which we don't model) dismisses the overlay.
+    DisplayPanes,
     /// Capturing text for a prompt (rename-window/-session): printable keys
     /// extend the buffer, Enter commits, Escape cancels.
     Prompt,
@@ -67,6 +70,9 @@ pub enum Reaction {
     Search(SearchKey),
     /// A paste-buffer chooser key (move the selection / paste / delete / cancel).
     Buffer(BufferKey),
+    /// The display-panes overlay is open and the user pressed a digit (focus that
+    /// pane) — `None` means a non-digit was pressed, dismissing the overlay.
+    PaneNumber(Option<u32>),
 }
 
 /// Keys handled while a text prompt is open (rename-window/-session).
@@ -290,6 +296,11 @@ impl Keymap {
                             self.mode = Mode::ChooseBuffer;
                             reactions.push(Reaction::Do(Action::ChooseBuffer));
                         }
+                        Some(Action::DisplayPanes) => {
+                            // Show pane numbers; the next digit picks a pane.
+                            self.mode = Mode::DisplayPanes;
+                            reactions.push(Reaction::Do(Action::DisplayPanes));
+                        }
                         Some(action @ (Action::RenameWindow | Action::RenameSession)) => {
                             // Open a text prompt; the daemon seeds the buffer and
                             // renders the input line. Subsequent keys edit it.
@@ -360,6 +371,17 @@ impl Keymap {
                         reactions.push(Reaction::Buffer(bk));
                     }
                     // Other keys are ignored while the chooser is open.
+                }
+                Mode::DisplayPanes => {
+                    // One keystroke: a digit focuses that pane, anything else just
+                    // dismisses the overlay. Always returns to Normal.
+                    flush_passthrough!();
+                    self.mode = Mode::Normal;
+                    let pick = match key.code {
+                        KeyCode::Char(c) if c.is_ascii_digit() => c.to_digit(10),
+                        _ => None,
+                    };
+                    reactions.push(Reaction::PaneNumber(pick));
                 }
                 Mode::Help => {
                     // tmux shows key bindings in a scrollable view: arrows / vi

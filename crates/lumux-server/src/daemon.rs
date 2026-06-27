@@ -127,6 +127,8 @@ pub struct Daemon<S: PtySystem> {
     buffers: lumux_core::buffers::PasteBuffers,
     /// Per-client highlighted index in the open paste-buffer chooser.
     choosing_buffer: BTreeMap<u64, usize>,
+    /// Clients showing the display-panes number overlay (tmux prefix q).
+    showing_panes: std::collections::BTreeSet<u64>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -174,6 +176,7 @@ impl<S: PtySystem> Daemon<S> {
             dragging: BTreeMap::new(),
             buffers: lumux_core::buffers::PasteBuffers::new(),
             choosing_buffer: BTreeMap::new(),
+            showing_panes: std::collections::BTreeSet::new(),
             clipboard,
             config: Config::default(),
         }
@@ -387,6 +390,7 @@ impl<S: PtySystem> Daemon<S> {
         self.help_offset.remove(&client_id);
         self.choosing.remove(&client_id);
         self.choosing_buffer.remove(&client_id);
+        self.showing_panes.remove(&client_id);
         self.prompt.remove(&client_id);
         self.search.remove(&client_id);
         self.dragging.remove(&client_id);
@@ -667,6 +671,48 @@ impl<S: PtySystem> Daemon<S> {
         if self.choosing_buffer.remove(&client_id).is_some() {
             if let Some(r) = self.renderers.get_mut(&client_id) {
                 r.invalidate();
+            }
+        }
+    }
+
+    /// Open the display-panes overlay for a client (tmux prefix q): pane numbers
+    /// are drawn over each pane until the next key picks one (or dismisses it).
+    pub fn show_pane_numbers(&mut self, client_id: u64) {
+        self.showing_panes.insert(client_id);
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    pub fn in_display_panes(&self, client_id: u64) -> bool {
+        self.showing_panes.contains(&client_id)
+    }
+
+    /// Close the display-panes overlay without changing focus.
+    pub fn hide_pane_numbers(&mut self, client_id: u64) {
+        if self.showing_panes.remove(&client_id) {
+            if let Some(r) = self.renderers.get_mut(&client_id) {
+                r.invalidate();
+            }
+        }
+    }
+
+    /// Pick the pane shown as `number` in the display-panes overlay (1-based as
+    /// drawn, offset by base-index), focusing it. Always closes the overlay.
+    pub fn pick_pane_number(&mut self, client_id: u64, session: SessionId, number: u32) {
+        self.showing_panes.remove(&client_id);
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        let base = self.base_index();
+        let idx = number.saturating_sub(base) as usize;
+        if let Some(s) = self.server.session_mut(session) {
+            let wid = s.active_window();
+            if let Some(w) = s.window_mut(wid) {
+                let ids = w.pane_ids();
+                if let Some(&pid) = ids.get(idx) {
+                    w.focus_pane(pid);
+                }
             }
         }
     }
@@ -1103,9 +1149,49 @@ impl<S: PtySystem> Daemon<S> {
             None,
             true,
         );
+        // Display-panes overlay (tmux prefix q): draw each pane's number centered
+        // in its rect, on top of the composed panes.
+        if self.showing_panes.contains(&client_id) {
+            self.overlay_pane_numbers(&mut screen, session, &layout, size);
+        }
         self.paint_status(&mut screen, client_id, session);
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
+    }
+
+    /// Paint big pane numbers (1-based, offset by base-index) centered in each
+    /// pane's rect for the display-panes overlay. Numbers are reverse-video so
+    /// they stay legible over pane content; the active pane is marked with a
+    /// trailing `*`.
+    fn overlay_pane_numbers(
+        &self,
+        screen: &mut lumux_core::render::Screen,
+        session: SessionId,
+        layout: &lumux_core::model::PaneNode,
+        size: PtySize,
+    ) {
+        use lumux_core::render::CellAttributes;
+        let Some(s) = self.server.session(session) else {
+            return;
+        };
+        let active = s.window(s.active_window()).map(|w| w.active_pane());
+        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        let rects = lumux_core::layout::compute(layout, viewport);
+        let base = self.base_index();
+        let mut attrs = CellAttributes::default();
+        attrs.set_reverse(true);
+        // Number panes by their traversal order so the digits match pick_pane_number.
+        for (i, pid) in layout.pane_ids().iter().enumerate() {
+            let Some(rect) = rects.get(pid) else { continue };
+            let label = if Some(*pid) == active {
+                format!(" {}* ", base as usize + i)
+            } else {
+                format!(" {} ", base as usize + i)
+            };
+            let cx = rect.x as usize + (rect.cols as usize / 2).saturating_sub(label.len() / 2);
+            let cy = rect.y as usize + rect.rows as usize / 2;
+            screen.write_str(cx, cy, &label, &attrs);
+        }
     }
 
     /// Paint the bottom status row: a transient flash message if one is pending,

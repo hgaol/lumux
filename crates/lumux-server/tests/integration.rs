@@ -951,6 +951,48 @@ fn break_pane_creates_a_new_window() {
 }
 
 #[test]
+fn display_panes_shows_numbers_and_picks_a_pane() {
+    // tmux display-panes (prefix q): overlays a number on each pane; pressing the
+    // digit focuses that pane. With two panes, the overlay shows "0" and "1"; the
+    // right (new) pane is active so it's marked. Picking 0 focuses the left pane —
+    // we then type a marker and confirm it lands in the LEFT pane (column 0-ish),
+    // proving focus actually moved.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("dp".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Two side-by-side panes (Ctrl-b %); the new right pane is active.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Show pane numbers (Ctrl-b q) and force a full repaint.
+    c.send(&ClientMsg::Input(vec![0x02, b'q']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, overlay) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        overlay.contains(" 0 ") && overlay.contains('1'),
+        "display-panes should overlay pane numbers; got:\n{overlay}"
+    );
+    // Pick pane 0 (the left pane), then type a unique marker.
+    c.send(&ClientMsg::Input(b"0".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"DPFOCUS_LL".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The marker echoes in the left pane: its column is in the left half.
+    let col = column_of(&after, "DPFOCUS_LL").expect("marker should echo after focusing pane 0");
+    assert!(
+        col < 40,
+        "picking pane 0 should focus the LEFT pane (marker col {col} should be < 40); got:\n{after}"
+    );
+}
+
+#[test]
 fn swap_pane_exchanges_pane_positions() {
     // tmux swap-pane (prefix {/}): swapping exchanges two panes' on-screen
     // positions. We mark the left and right panes, record which screen column

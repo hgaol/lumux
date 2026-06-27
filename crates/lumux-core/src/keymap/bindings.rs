@@ -55,6 +55,8 @@ pub enum Action {
     ShowHelp,
     /// Open the session switcher (tmux prefix s).
     ChooseSession,
+    /// Show pane numbers; the next digit focuses that pane (tmux prefix q).
+    DisplayPanes,
     /// Paste the most-recent paste buffer into the active pane (tmux prefix ]).
     PasteBuffer,
     /// Open the paste-buffer chooser (tmux prefix =).
@@ -97,6 +99,7 @@ impl Action {
             Action::ReloadConfig => "reload configuration",
             Action::ShowHelp => "show this help",
             Action::ChooseSession => "choose session",
+            Action::DisplayPanes => "show pane numbers (then press one)",
             Action::PasteBuffer => "paste the most recent buffer",
             Action::ChooseBuffer => "choose a paste buffer",
             Action::SendPrefix => "send the prefix key to the shell",
@@ -138,6 +141,8 @@ impl Bindings {
         table.insert(Key::char('x'), Action::KillPane);
         table.insert(Key::char('?'), Action::ShowHelp);
         table.insert(Key::char('s'), Action::ChooseSession);
+        // Show pane numbers; the next digit focuses that pane (tmux prefix q).
+        table.insert(Key::char('q'), Action::DisplayPanes);
         // Paste buffers (tmux prefix ] pastes the top buffer; = opens the chooser).
         table.insert(Key::char(']'), Action::PasteBuffer);
         table.insert(Key::char('='), Action::ChooseBuffer);
