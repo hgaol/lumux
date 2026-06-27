@@ -158,6 +158,30 @@ set -g default-command "powershell.exe -NoLogo"
 or in TOML via a named profile (`default_shell` + `[[shells]]`, see the example).
 On Windows, with nothing configured, lumux defaults to PowerShell.
 
+### Session persistence (survive a reboot)
+
+Out of the box, sessions survive **detach** — closing your terminal or a dropped
+SSH connection leaves the daemon (and your shells) running, and `lumux attach`
+drops you back in. They do **not** survive the daemon being killed, logout, or a
+reboot.
+
+Turn on `persist` for tmux-resurrect-style on-disk persistence:
+
+```
+set -g persist on          # tmux syntax
+```
+
+```toml
+persist = true             # native TOML
+```
+
+When enabled, the daemon periodically saves the session **structure** —
+sessions, windows, the pane split layout, and each pane's shell + working
+directory — to `<config-dir>/state.bin`, and rebuilds it when a fresh daemon
+starts. Save on demand any time with the command prompt: `prefix :` then
+`save-state`. Like tmux-resurrect, running programs are **not** resurrected —
+only the shell is relaunched in its saved directory.
+
 ```toml
 prefix = "C-a"            # change the prefix to Ctrl-a
 scrollback = 5000         # lines of history per pane
