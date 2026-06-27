@@ -55,6 +55,10 @@ pub struct Config {
     /// Foreground color of the active pane's border (tmux pane-active-border).
     /// A tmux color name or `colourN`. Empty disables the highlight.
     pub pane_active_border_fg: String,
+    /// When true, a pane whose process exits stays on screen (dead) instead of
+    /// closing, so it can be inspected or respawned (tmux `remain-on-exit`). Off
+    /// by default.
+    pub remain_on_exit: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +90,7 @@ impl Default for Config {
             status_fg: "white".to_string(),
             // tmux's default: the active pane gets a green border.
             pane_active_border_fg: "green".to_string(),
+            remain_on_exit: false,
         }
     }
 }

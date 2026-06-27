@@ -172,6 +172,7 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
         // tmux's `aggressive-resize`, which is about multi-client sizing policy
         // and stays ignored below.)
         "auto-resize" => cfg.auto_resize = on_off(value),
+        "remain-on-exit" => cfg.remain_on_exit = on_off(value),
         "history-limit" => {
             if let Ok(n) = value.parse() {
                 cfg.scrollback = n;

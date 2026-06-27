@@ -157,17 +157,29 @@ where
                 }
             }
             Msg::PaneExited { pane } => {
-                if let Some(sid) = self.pane_session.remove(&pane) {
-                    let result = self.daemon.close_pane(sid, pane);
-                    self.on_pane_exit(sid, pane, result);
+                if let Some(&sid) = self.pane_session.get(&pane) {
+                    // With remain-on-exit, the pane stays (dead) — keep its
+                    // mapping so it can be respawned. Otherwise cascade-close.
+                    match self.daemon.pane_exited(sid, pane) {
+                        Some(result) => {
+                            self.pane_session.remove(&pane);
+                            self.on_pane_exit(sid, pane, result);
+                        }
+                        None => self.render_session(sid),
+                    }
                 }
             }
             Msg::Tick => {
                 // Reap children that exited without the reader seeing EOF (ConPTY).
                 for pane in self.daemon.reap_exited_panes() {
-                    if let Some(sid) = self.pane_session.remove(&pane) {
-                        let result = self.daemon.close_pane(sid, pane);
-                        self.on_pane_exit(sid, pane, result);
+                    if let Some(&sid) = self.pane_session.get(&pane) {
+                        match self.daemon.pane_exited(sid, pane) {
+                            Some(result) => {
+                                self.pane_session.remove(&pane);
+                                self.on_pane_exit(sid, pane, result);
+                            }
+                            None => self.render_session(sid),
+                        }
                     }
                 }
             }
@@ -1067,6 +1079,7 @@ where
                 Some(name) => self.daemon.flash_message(client_id, format!("captured to {name}")),
                 None => self.daemon.flash_message(client_id, "nothing to capture"),
             },
+            ParsedCommand::RespawnPane => self.do_respawn_pane(client_id, session),
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);
@@ -1226,6 +1239,33 @@ where
                 self.invalidate_session(session);
             }
             None => { /* self-join or unknown window: ignore */ }
+        }
+    }
+
+    /// Respawn the active pane if it's dead (tmux respawn-pane, remain-on-exit).
+    /// Spawns a fresh PTY reusing the pane id, restarts the reader thread, and
+    /// re-fits the pane. No-op (with a flash) if the pane is still alive.
+    fn do_respawn_pane(&mut self, client_id: u64, session: SessionId) {
+        let Some(pane) = self.active_pane(session) else {
+            return;
+        };
+        if !self.daemon.is_pane_dead(pane) {
+            self.daemon.flash_message(client_id, "pane is not dead");
+            return;
+        }
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        match self.daemon.respawn_pane(session, pane, size) {
+            Ok(Some(reader)) => {
+                self.pane_session.insert(pane, session);
+                spawn_pane_reader(pane, reader, self.tx.clone());
+                self.daemon.resize_session(session, size);
+                self.invalidate_session(session);
+            }
+            _ => self.daemon.flash_message(client_id, "respawn failed"),
         }
     }
 

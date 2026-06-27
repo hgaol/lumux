@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use lumux_backend_unix::{UnixPtySystem, UnixSocketListener};
-use lumux_core::proto::{decode, encode, ClientMsg, ServerMsg, WireSize};
+use lumux_core::proto::{decode, encode, ClientMsg, Event, ServerMsg, WireSize};
 
 /// Spawn the daemon control loop on a throwaway socket, returning its path.
 fn start_daemon() -> std::path::PathBuf {
@@ -44,6 +44,28 @@ fn start_daemon_mouse() -> std::path::PathBuf {
     let listener = UnixSocketListener::bind(&path).expect("bind");
     let cfg = lumux_core::config::Config {
         mouse: true,
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
+/// Like [`start_daemon`] but with remain-on-exit enabled, so a pane whose child
+/// exits stays on screen (dead) instead of cascade-closing.
+fn start_daemon_remain() -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(2_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let cfg = lumux_core::config::Config {
+        remain_on_exit: true,
         ..Default::default()
     };
     std::thread::spawn(move || {
@@ -1323,6 +1345,47 @@ fn automatic_rename_follows_osc_title() {
     assert!(
         vt.contains(":TITLE_RR"),
         "automatic-rename should show the OSC title in the window list; got:\n{vt}"
+    );
+}
+
+#[test]
+fn remain_on_exit_keeps_pane_then_respawns() {
+    // tmux remain-on-exit + respawn-pane: when the shell exits, the pane stays
+    // (dead) instead of closing the session. ":respawn-pane" restarts a working
+    // shell in place — we prove it by running a command that echoes afterward.
+    let path = start_daemon_remain();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("ree".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Print a marker, then exit the shell. With remain-on-exit the session must
+    // NOT close — the client stays attached (no Detached/SessionClosed).
+    c.send(&ClientMsg::Input(b"echo BEFORE_EXIT_PP\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"exit\n".to_vec()));
+    // Give the child time to exit and the daemon to mark the pane dead.
+    let (closed, _v) = c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Detached | ServerMsg::Event(Event::SessionClosed))
+    });
+    assert!(
+        !closed,
+        "remain-on-exit must keep the session alive after the shell exits"
+    );
+    // Respawn the pane via the command prompt, then run a fresh command.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"respawn-pane\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"echo AFTER_RESPAWN_PP\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("AFTER_RESPAWN_PP"),
+        "respawn-pane should restart a working shell; got:\n{vt}"
     );
 }
 

@@ -42,6 +42,8 @@ pub enum ParsedCommand {
     DisplayPanes,
     /// `capture-pane`: copy the active pane's visible text into a paste buffer.
     CapturePane,
+    /// `respawn-pane`: restart the shell in a dead pane (remain-on-exit).
+    RespawnPane,
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -131,6 +133,7 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
         }
         "display-panes" | "displayp" => ParsedCommand::DisplayPanes,
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
+        "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
         "detach-client" | "detach" => ParsedCommand::Detach,
         other => ParsedCommand::Unknown(other.to_string()),
     }
@@ -258,5 +261,11 @@ mod tests {
     fn capture_pane_and_aliases() {
         assert_eq!(parse_command("capture-pane"), Some(ParsedCommand::CapturePane));
         assert_eq!(parse_command("capturep"), Some(ParsedCommand::CapturePane));
+    }
+
+    #[test]
+    fn respawn_pane_and_aliases() {
+        assert_eq!(parse_command("respawn-pane"), Some(ParsedCommand::RespawnPane));
+        assert_eq!(parse_command("respawnp"), Some(ParsedCommand::RespawnPane));
     }
 }

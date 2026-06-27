@@ -1140,6 +1140,66 @@ impl<S: PtySystem> Daemon<S> {
         self.server.kill_pane(session, pane)
     }
 
+    /// Whether dead panes are kept on screen (tmux remain-on-exit).
+    pub fn remain_on_exit(&self) -> bool {
+        self.config.remain_on_exit
+    }
+
+    /// Handle a pane's child exiting. With remain-on-exit OFF this is the normal
+    /// cascade-close ([`close_pane`]). With it ON, the pane is marked dead but
+    /// KEPT (its last screen stays visible) so it can be inspected or respawned;
+    /// returns `None` to signal "no close happened" so the caller leaves the
+    /// pane->session mapping and window/session intact.
+    pub fn pane_exited(&mut self, session: SessionId, pane: PaneId) -> Option<CascadeResult> {
+        if self.config.remain_on_exit {
+            if let Some(p) = self.panes.get_mut(&pane) {
+                p.dead = true;
+                // Repaint so the dead marker shows.
+                for r in self.renderers.values_mut() {
+                    r.invalidate();
+                }
+                return None;
+            }
+        }
+        Some(self.close_pane(session, pane))
+    }
+
+    /// Whether `pane` is a kept-dead pane (remain-on-exit). Used to gate respawn.
+    pub fn is_pane_dead(&self, pane: PaneId) -> bool {
+        self.panes.get(&pane).is_some_and(|p| p.dead)
+    }
+
+    /// Respawn a dead pane's shell in place (tmux respawn-pane), reusing the same
+    /// pane id (and thus its slot in the layout) so the grid is replaced by a
+    /// fresh one. Returns the new PTY reader for the event loop to pump, or None
+    /// if the pane isn't dead / doesn't exist. The shell argv is the pane's
+    /// original one (from the model).
+    pub fn respawn_pane(
+        &mut self,
+        session: SessionId,
+        pane: PaneId,
+        size: PtySize,
+    ) -> std::io::Result<Option<<S::Pty as Pty>::Reader>> {
+        if !self.is_pane_dead(pane) {
+            return Ok(None);
+        }
+        // Recover the pane's shell argv from the model.
+        let shell = self
+            .server
+            .session(session)
+            .and_then(|s| {
+                s.window_ids()
+                    .into_iter()
+                    .find_map(|wid| s.window(wid).and_then(|w| w.pane(pane).map(|p| p.shell.clone())))
+            })
+            .unwrap_or_else(|| self.config.shell_argv(None).unwrap_or_default());
+        let reader = self.spawn_pane(pane, &shell, size, None)?;
+        for r in self.renderers.values_mut() {
+            r.invalidate();
+        }
+        Ok(Some(reader))
+    }
+
     /// Kill the active window of `session` (tmux `kill-window`): drop all its
     /// panes' live PTYs and remove the window from the model. Returns the closed
     /// pane ids (so the event loop can drop their pane->session mappings) and the
