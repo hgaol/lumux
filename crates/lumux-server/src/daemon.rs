@@ -1641,6 +1641,41 @@ impl<S: PtySystem> Daemon<S> {
             r.invalidate();
         }
     }
+
+    /// Re-fit the panes of EVERY window in `session` to `size` (not just the
+    /// active one). Needed after break-pane, which changes two windows at once:
+    /// the new window the pane moved to, and the source window whose remaining
+    /// panes grew. A plain [`resize_session`] only refits the active window, so
+    /// the inactive source window's PTYs would stay mis-sized until refocused.
+    pub fn resize_all_windows(&mut self, session: SessionId, size: PtySize) {
+        let Some(s) = self.server.session(session) else {
+            return;
+        };
+        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        // Collect (pane, rect) for every window first to avoid borrow conflicts.
+        let mut fits: Vec<(PaneId, lumux_core::layout::Rect)> = Vec::new();
+        for wid in s.window_ids() {
+            if let Some(w) = s.window(wid) {
+                let layout = match w.zoomed_pane() {
+                    Some(pid) => lumux_core::model::PaneNode::leaf(pid),
+                    None => w.layout.clone(),
+                };
+                for (pid, rect) in lumux_core::layout::compute(&layout, viewport) {
+                    fits.push((pid, rect));
+                }
+            }
+        }
+        for (pid, rect) in fits {
+            if let Some(p) = self.panes.get_mut(&pid) {
+                let psz = PtySize::new(rect.cols.max(1), rect.rows.max(1));
+                let _ = p.writer.resize(psz);
+                p.grid.resize(psz.cols as usize, psz.rows as usize);
+            }
+        }
+        for r in self.renderers.values_mut() {
+            r.invalidate();
+        }
+    }
 }
 
 /// A clipboard that discards writes. Used when no system/OSC-52 clipboard is

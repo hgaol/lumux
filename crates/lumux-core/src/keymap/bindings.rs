@@ -32,6 +32,12 @@ pub enum Action {
     ResizePaneDown,
     /// Toggle zoom on the active pane (tmux prefix z).
     ZoomPane,
+    /// Break the active pane out into its own new window (tmux break-pane, `!`).
+    BreakPane,
+    /// Swap the active pane with the previous one in the window (tmux `{`).
+    SwapPanePrev,
+    /// Swap the active pane with the next one in the window (tmux `}`).
+    SwapPaneNext,
     /// Cycle to the next preset layout (tmux `next-layout`, prefix Space).
     NextLayout,
     /// Jump to the previously-active pane (tmux `last-pane`, prefix `;`).
@@ -78,6 +84,9 @@ impl Action {
             Action::ResizePaneUp => "resize pane up",
             Action::ResizePaneDown => "resize pane down",
             Action::ZoomPane => "zoom/unzoom the active pane",
+            Action::BreakPane => "break the pane into a new window",
+            Action::SwapPanePrev => "swap with the previous pane",
+            Action::SwapPaneNext => "swap with the next pane",
             Action::NextLayout => "cycle preset layouts",
             Action::LastPane => "last (previous) pane",
             Action::RenameWindow => "rename the current window",
@@ -139,6 +148,10 @@ impl Bindings {
         table.insert(Key::plain(KeyCode::Down), Action::SelectPaneDown);
         // Zoom the active pane (tmux prefix z).
         table.insert(Key::char('z'), Action::ZoomPane);
+        // Break the active pane to a new window; swap panes (tmux !, {, }).
+        table.insert(Key::char('!'), Action::BreakPane);
+        table.insert(Key::char('{'), Action::SwapPanePrev);
+        table.insert(Key::char('}'), Action::SwapPaneNext);
         // Cycle preset layouts (tmux prefix Space / next-layout).
         table.insert(Key::plain(KeyCode::Space), Action::NextLayout);
         // Directional resize on the real tmux keys: Ctrl+arrows and Alt+arrows

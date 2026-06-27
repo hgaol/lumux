@@ -285,6 +285,16 @@ fn paste_buffer_action_binding() {
 }
 
 #[test]
+fn break_and_swap_pane_bindings() {
+    let mut k = km();
+    // Prefix ! breaks the pane out; {/} swap with prev/next. All one-shot.
+    assert_eq!(k.feed(&[0x02, b'!']), vec![Reaction::Do(Action::BreakPane)]);
+    assert_eq!(k.feed(&[0x02, b'{']), vec![Reaction::Do(Action::SwapPanePrev)]);
+    assert_eq!(k.feed(&[0x02, b'}']), vec![Reaction::Do(Action::SwapPaneNext)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
 fn rebound_prefix_works() {
     let mut k = km();
     k.bindings_mut().set_prefix(Key::ctrl('a'));

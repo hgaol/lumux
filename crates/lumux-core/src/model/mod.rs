@@ -141,6 +141,37 @@ impl Window {
         self.apply_layout(next);
     }
 
+    /// Swap the active pane with pane `other` in this window's layout (tmux
+    /// swap-pane). Both panes keep their ids (and thus their grids); only their
+    /// positions in the tree exchange. The active pane stays active but moves to
+    /// `other`'s old slot. No-op (false) if `other` isn't in this window or is
+    /// the active pane itself.
+    pub fn swap_with_active(&mut self, other: PaneId) -> bool {
+        let active = self.active_pane;
+        if self.layout.swap_ids(active, other) {
+            // Focus follows the pane (it kept its id), so active_pane is unchanged.
+            self.zoomed = None;
+            self.layout_kind = None;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Remove the active pane from this window WITHOUT discarding it, returning
+    /// the [`Pane`] so it can be re-homed in another window (tmux break-pane).
+    /// Returns None when this is the only pane — break-pane on a lone pane is a
+    /// no-op in tmux, since moving an only-child to a new window changes nothing.
+    fn take_active_pane(&mut self) -> Option<Pane> {
+        if self.pane_count() == 1 {
+            return None;
+        }
+        let id = self.active_pane;
+        let pane = self.panes.get(&id)?.clone();
+        self.remove_pane(id);
+        Some(pane)
+    }
+
     pub fn pane_ids(&self) -> Vec<PaneId> {
         self.layout.pane_ids()
     }
@@ -481,6 +512,48 @@ impl Server {
         let pane = Pane::new(pid, shell);
         session.active_window_mut().split(pane, dir);
         Some(pid)
+    }
+
+    /// Break the active pane of the active window out into a brand-new window
+    /// (tmux break-pane, prefix `!`). The pane keeps its id (and grid); a new
+    /// window is created to hold it, named after the pane's shell, and becomes
+    /// active. No-op (returns None) when the active window has only one pane —
+    /// there's nothing to break out, matching tmux. Returns the new window id.
+    pub fn break_active_pane(&mut self, sid: SessionId) -> Option<WindowId> {
+        let session = self.sessions.get_mut(&sid)?;
+        // Don't break a lone pane (would just move an only-child to a new window).
+        let pane = session.active_window_mut().take_active_pane()?;
+        let wid = WindowId::alloc();
+        let name = resolve_window_name(String::new(), &pane.shell);
+        let window = Window::new(wid, name, pane);
+        session.add_window(window);
+        Some(wid)
+    }
+
+    /// Swap the active pane with another pane in the SAME window (tmux swap-pane;
+    /// here used for prefix `{`/`}` swapping with the previous/next pane). Returns
+    /// false if `other` isn't a valid distinct pane in the active window.
+    pub fn swap_active_pane(&mut self, sid: SessionId, other: PaneId) -> bool {
+        match self.sessions.get_mut(&sid) {
+            Some(session) => session.active_window_mut().swap_with_active(other),
+            None => false,
+        }
+    }
+
+    /// The pane that comes before/after the active pane in the active window's
+    /// traversal order (wraps), or None for a single-pane window. Used to pick
+    /// the swap target for prefix `{` (previous) and `}` (next).
+    pub fn sibling_pane(&self, sid: SessionId, next: bool) -> Option<PaneId> {
+        let session = self.sessions.get(&sid)?;
+        let w = session.window(session.active_window())?;
+        let ids = w.pane_ids();
+        if ids.len() < 2 {
+            return None;
+        }
+        let pos = ids.iter().position(|&i| i == w.active_pane())?;
+        let n = ids.len();
+        let idx = if next { (pos + 1) % n } else { (pos + n - 1) % n };
+        Some(ids[idx])
     }
 
     /// Kill a pane anywhere in a session, cascading: emptying a window closes

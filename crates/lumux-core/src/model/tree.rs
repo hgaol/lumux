@@ -123,6 +123,39 @@ impl PaneNode {
         }
     }
 
+    /// Swap the positions of leaves `a` and `b` in the tree (tmux swap-pane).
+    /// Pane ids are kept (so each pane's grid follows it); only their slots in
+    /// the layout exchange. Returns true only if BOTH leaves were found.
+    pub fn swap_ids(&mut self, a: PaneId, b: PaneId) -> bool {
+        if a == b {
+            return false;
+        }
+        // Two passes: a swap needs both present. Check first, then mutate.
+        if !(self.contains(a) && self.contains(b)) {
+            return false;
+        }
+        self.relabel(a, b);
+        true
+    }
+
+    /// Replace every leaf equal to `a` with `b` and vice-versa. Caller guarantees
+    /// both exist (each appears exactly once, since pane ids are unique).
+    fn relabel(&mut self, a: PaneId, b: PaneId) {
+        match self {
+            PaneNode::Leaf(id) => {
+                if *id == a {
+                    *id = b;
+                } else if *id == b {
+                    *id = a;
+                }
+            }
+            PaneNode::Split { first, second, .. } => {
+                first.relabel(a, b);
+                second.relabel(a, b);
+            }
+        }
+    }
+
     /// Remove pane `target`, collapsing its parent split so the sibling takes
     /// the split's place. Returns:
     /// - `Removed::Gone` if the whole subtree was just that leaf (caller must
@@ -347,6 +380,28 @@ mod tests {
         let mut t = PaneNode::leaf(p(1));
         t.split_leaf(p(1), p(2), SplitDir::Horizontal);
         assert_eq!(t.remove_pane(p(42)), Removed::NotFound);
+        assert_eq!(t.pane_ids(), vec![p(1), p(2)]);
+    }
+
+    #[test]
+    fn swap_ids_exchanges_two_leaves() {
+        // [1 | [2 / 3]] — swapping 1 and 3 exchanges their slots, keeping ids.
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal); // [1|2]
+        t.split_leaf(p(2), p(3), SplitDir::Vertical); // [1 | [2/3]]
+        assert!(t.swap_ids(p(1), p(3)));
+        // Traversal order was [1,2,3]; after swapping 1<->3 it's [3,2,1].
+        assert_eq!(t.pane_ids(), vec![p(3), p(2), p(1)]);
+    }
+
+    #[test]
+    fn swap_ids_requires_both_present_and_distinct() {
+        let mut t = PaneNode::leaf(p(1));
+        t.split_leaf(p(1), p(2), SplitDir::Horizontal);
+        // Self-swap is a no-op false.
+        assert!(!t.swap_ids(p(1), p(1)));
+        // Missing partner: nothing changes.
+        assert!(!t.swap_ids(p(1), p(99)));
         assert_eq!(t.pane_ids(), vec![p(1), p(2)]);
     }
 

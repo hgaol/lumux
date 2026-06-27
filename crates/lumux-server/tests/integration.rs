@@ -167,6 +167,66 @@ fn size() -> WireSize {
     WireSize { cols: 80, rows: 24 }
 }
 
+/// The 1-based screen column where `needle` begins, by replaying the VT byte
+/// stream as a cursor would: cursor-position escapes (`ESC[row;colH`) set the
+/// column, other escapes are skipped, and printable bytes advance it. The
+/// renderer writes a whole row after a single CUP, so the column must be tracked
+/// per character (not read from the CUP). Returns None if the needle isn't
+/// drawn. Used to assert pane *positions* (left vs right) in layout tests.
+fn column_of(vt: &str, needle: &str) -> Option<usize> {
+    let nb = needle.as_bytes();
+    let b = vt.as_bytes();
+    let mut col: usize = 1;
+    let mut matched = 0usize; // how many needle bytes matched at `start_col`
+    let mut start_col = 1usize;
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == 0x1b {
+            // Skip an escape sequence. CSI is ESC '[' ... final-byte in @-~.
+            if i + 1 < b.len() && b[i + 1] == b'[' {
+                let params_start = i + 2;
+                let mut j = params_start;
+                while j < b.len() && !(0x40..=0x7e).contains(&b[j]) {
+                    j += 1;
+                }
+                if j < b.len() && b[j] == b'H' {
+                    // CUP: parse "row;col". Missing col defaults to 1.
+                    let body = &vt[params_start..j];
+                    col = body
+                        .split(';')
+                        .nth(1)
+                        .and_then(|c| c.parse().ok())
+                        .unwrap_or(1);
+                }
+                i = j + 1;
+                matched = 0;
+                continue;
+            }
+            i += 1;
+            matched = 0;
+            continue;
+        }
+        // A printable byte at column `col`.
+        if b[i] == nb[matched] {
+            if matched == 0 {
+                start_col = col;
+            }
+            matched += 1;
+            if matched == nb.len() {
+                return Some(start_col);
+            }
+        } else {
+            matched = if b[i] == nb[0] { 1 } else { 0 };
+            if matched == 1 {
+                start_col = col;
+            }
+        }
+        col += 1;
+        i += 1;
+    }
+    None
+}
+
 #[test]
 fn attach_creates_session_and_acks() {
     let path = start_daemon();
@@ -853,6 +913,85 @@ fn buffer_chooser_lists_a_yanked_buffer() {
     assert!(
         vt.contains("CHOOSEME_QQ"),
         "the chooser should preview the yanked buffer; got:\n{vt}"
+    );
+}
+
+#[test]
+fn break_pane_creates_a_new_window() {
+    // tmux break-pane (prefix !): with two panes in one window, breaking the
+    // active pane out leaves two windows (the source + the new one). We observe
+    // the window list in the status bar growing from one entry to two.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("brk".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // One window so far: the status list has "0:" but no "1:".
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        before.contains("0:") && !before.contains("1:"),
+        "precondition: exactly one window; got:\n{before}"
+    );
+    // Split into two panes (Ctrl-b %), then break the active pane out (Ctrl-b !).
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'!']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        after.contains("0:") && after.contains("1:"),
+        "break-pane should create a second window; got:\n{after}"
+    );
+}
+
+#[test]
+fn swap_pane_exchanges_pane_positions() {
+    // tmux swap-pane (prefix {/}): swapping exchanges two panes' on-screen
+    // positions. We mark the left and right panes, record which screen column
+    // each marker sits in, then swap and assert the markers traded sides (left
+    // marker moved right and vice-versa) — proving the swap actually happened,
+    // not just that both panes survived.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("swp".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Left pane prints LEFT_PANE_AA.
+    c.send(&ClientMsg::Input(b"printf 'LEFT_PANE_AA\\n'\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Split right (Ctrl-b %); the new right pane prints RIGHT_PANE_BB.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"printf 'RIGHT_PANE_BB\\n'\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    let left_before = column_of(&before, "LEFT_PANE_AA").expect("left marker visible");
+    let right_before = column_of(&before, "RIGHT_PANE_BB").expect("right marker visible");
+    assert!(
+        left_before < right_before,
+        "precondition: LEFT marker should start left of RIGHT; got {left_before} vs {right_before}\n{before}"
+    );
+    // Swap with the previous pane (Ctrl-b {).
+    c.send(&ClientMsg::Input(vec![0x02, b'{']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    let left_after = column_of(&after, "LEFT_PANE_AA").expect("left marker still visible");
+    let right_after = column_of(&after, "RIGHT_PANE_BB").expect("right marker still visible");
+    assert!(
+        left_after > right_after,
+        "swap should trade the panes' sides (LEFT now right of RIGHT); got {left_after} vs {right_after}\n{after}"
     );
 }
 

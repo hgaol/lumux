@@ -511,6 +511,9 @@ where
             Action::ResizePaneUp => self.resize_pane(session, SplitDir::Vertical, -RESIZE_STEP),
             Action::ResizePaneDown => self.resize_pane(session, SplitDir::Vertical, RESIZE_STEP),
             Action::ZoomPane => self.zoom_pane(session),
+            Action::BreakPane => self.do_break_pane(session),
+            Action::SwapPanePrev => self.do_swap_pane(session, false),
+            Action::SwapPaneNext => self.do_swap_pane(session, true),
             Action::NextLayout => self.next_layout(session),
             Action::RenameWindow => {
                 self.daemon
@@ -1040,6 +1043,51 @@ where
             }
         }
         self.render_client(client_id);
+    }
+
+    /// Break the active pane out into its own new window (tmux break-pane, `!`).
+    /// The pane keeps its PTY/grid (both keyed by pane id in the daemon) and its
+    /// session, so no spawn/teardown is needed — only the layout changes. The new
+    /// window becomes active; we re-fit so the moved pane fills it.
+    fn do_break_pane(&mut self, session: SessionId) {
+        if self.daemon.server.break_active_pane(session).is_none() {
+            return; // single-pane window: nothing to break out (tmux no-op).
+        }
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        // The moved pane now fills a fresh full-size window; re-fit BOTH the new
+        // window and the source window (whose remaining panes grew), then repaint.
+        self.daemon.resize_all_windows(session, size);
+        self.invalidate_session(session);
+    }
+
+    /// Swap the active pane with its previous (`{`) or next (`}`) sibling in the
+    /// same window (tmux swap-pane). Pure layout change — panes keep their grids.
+    fn do_swap_pane(&mut self, session: SessionId, next: bool) {
+        let Some(other) = self.daemon.server.sibling_pane(session, next) else {
+            return; // single pane: nothing to swap with.
+        };
+        if self.daemon.server.swap_active_pane(session, other) {
+            let size = self
+                .daemon
+                .server
+                .effective_size(session)
+                .unwrap_or(PtySize::new(80, 24));
+            self.daemon.resize_session(session, size);
+            self.invalidate_session(session);
+        }
+    }
+
+    /// Force a full repaint for every client of `session`. Used after structural
+    /// layout changes (break/swap pane) where an incremental diff against the old
+    /// screen would be wrong.
+    fn invalidate_session(&mut self, session: SessionId) {
+        for id in self.session_clients(session) {
+            self.daemon.invalidate_client(id);
+        }
     }
 
     fn do_split(&mut self, session: SessionId, dir: SplitDir) {

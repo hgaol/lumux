@@ -525,3 +525,84 @@ fn new_session_and_window_get_shell_derived_names() {
         .unwrap();
     assert_eq!(srv.session(sid).unwrap().window(wid).unwrap().name, "powershell");
 }
+
+// ----- break-pane / swap-pane -----
+
+#[test]
+fn break_pane_moves_active_pane_to_a_new_window() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    // Split so the window has two panes; the new (second) pane is active.
+    let p2 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    let s = srv.session(sid).unwrap();
+    let w0 = s.active_window();
+    assert_eq!(s.window(w0).unwrap().pane_count(), 2);
+
+    // Break the active pane (p2) out into its own window.
+    let new_wid = srv.break_active_pane(sid).expect("break should succeed");
+    let s = srv.session(sid).unwrap();
+    assert_eq!(s.window_count(), 2);
+    // Original window kept the other pane; new window holds p2 and is active.
+    assert_eq!(s.window(w0).unwrap().pane_count(), 1);
+    assert_eq!(s.window(new_wid).unwrap().pane_count(), 1);
+    assert_eq!(s.window(new_wid).unwrap().pane_ids(), vec![p2]);
+    assert_eq!(s.active_window(), new_wid);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn break_pane_on_single_pane_window_is_a_noop() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    // One window, one pane: nothing to break out.
+    assert_eq!(srv.break_active_pane(sid), None);
+    assert_eq!(srv.session(sid).unwrap().window_count(), 1);
+}
+
+#[test]
+fn swap_pane_exchanges_positions_keeping_ids() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let p1 = srv.session(sid).unwrap().window(srv.session(sid).unwrap().active_window()).unwrap().active_pane();
+    let p2 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    // Layout is [p1 | p2]; p2 is active.
+    let w = srv.session(sid).unwrap();
+    let wid = w.active_window();
+    assert_eq!(w.window(wid).unwrap().pane_ids(), vec![p1, p2]);
+
+    // Swap active (p2) with the previous sibling (p1).
+    let prev = srv.sibling_pane(sid, false).unwrap();
+    assert_eq!(prev, p1);
+    assert!(srv.swap_active_pane(sid, prev));
+    // Positions exchanged: order is now [p2, p1]; ids preserved.
+    let w = srv.session(sid).unwrap();
+    assert_eq!(w.window(wid).unwrap().pane_ids(), vec![p2, p1]);
+    // Active pane still p2 (focus follows the pane it owns).
+    assert_eq!(w.window(wid).unwrap().active_pane(), p2);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn sibling_pane_wraps_and_is_none_for_single_pane() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    // Single pane: no sibling either way.
+    assert_eq!(srv.sibling_pane(sid, true), None);
+    assert_eq!(srv.sibling_pane(sid, false), None);
+    let p1 = srv.session(sid).unwrap().window(srv.session(sid).unwrap().active_window()).unwrap().active_pane();
+    let p2 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    // Active is p2; next wraps to p1, prev wraps to p1 (only two panes).
+    assert_eq!(srv.sibling_pane(sid, true), Some(p1));
+    assert_eq!(srv.sibling_pane(sid, false), Some(p1));
+    let _ = p2;
+}
+
+#[test]
+fn swap_pane_with_unknown_or_self_is_noop() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let p1 = srv.session(sid).unwrap().window(srv.session(sid).unwrap().active_window()).unwrap().active_pane();
+    // Swapping with itself or a non-existent pane fails.
+    assert!(!srv.swap_active_pane(sid, p1));
+    assert!(!srv.swap_active_pane(sid, PaneId(9999)));
+}
