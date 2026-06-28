@@ -199,14 +199,21 @@ impl Window {
         self.auto_rename = false;
     }
 
-    /// If automatic-rename is on, update the window name to `title` (the active
-    /// pane's OSC title). Returns true if the name actually changed. Empty or
-    /// unchanged titles are ignored.
+    /// If automatic-rename is on, update the window name to the OSC `title` (the
+    /// active pane's window title), after sanitizing it via
+    /// [`sanitize_window_title`] so a noisy full-path title (common on Windows,
+    /// e.g. `Administrator: C:\Windows\system32\cmd.exe`) becomes a short name
+    /// (`cmd`). Returns true if the name actually changed. Empty or unchanged
+    /// results are ignored.
     pub fn apply_auto_title(&mut self, title: &str) -> bool {
-        if !self.auto_rename || title.is_empty() || self.name == title {
+        if !self.auto_rename {
             return false;
         }
-        self.name = title.to_string();
+        let clean = sanitize_window_title(title);
+        if clean.is_empty() || self.name == clean {
+            return false;
+        }
+        self.name = clean;
         true
     }
 
@@ -897,6 +904,40 @@ fn remap_snapshot_layout(
             second: Box::new(remap_snapshot_layout(second, id_map, fallback)),
         },
     }
+}
+
+/// Reduce a raw OSC window title to a short, status-bar-friendly name for
+/// automatic-rename. Terminals (especially on Windows) often set verbose,
+/// path-bearing titles like `Administrator: C:\Windows\system32\cmd.exe`; left
+/// as-is these overflow the status bar and bury the rest of the window list.
+///
+/// Rule: if any whitespace-separated token contains a path separator, take the
+/// *last* such token and reduce it to its executable basename-stem (so
+/// `…\cmd.exe` → `cmd`). Otherwise keep the title as-is. Either way the result is
+/// bounded to a sane length so one window can't dominate the bar.
+pub fn sanitize_window_title(title: &str) -> String {
+    const MAX: usize = 32;
+    let title = title.trim();
+    // Find the last token that looks like a path (has a / or \).
+    let path_tok = title
+        .split_whitespace()
+        .rev()
+        .find(|t| t.contains('/') || t.contains('\\'));
+    let name = if let Some(tok) = path_tok {
+        let base = tok.rsplit(['/', '\\']).next().unwrap_or(tok);
+        // Strip a trailing .exe/.com/.bat/.cmd (case-insensitive), like
+        // resolve_window_name does for the shell argv.
+        base.rsplit_once('.')
+            .filter(|(_, ext)| {
+                matches!(ext.to_ascii_lowercase().as_str(), "exe" | "com" | "bat" | "cmd")
+            })
+            .map(|(stem, _)| stem)
+            .unwrap_or(base)
+            .to_string()
+    } else {
+        title.to_string()
+    };
+    name.chars().take(MAX).collect::<String>().trim().to_string()
 }
 
 /// Pick a window name: use `name` if non-empty, otherwise derive a tmux-style

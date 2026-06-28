@@ -723,6 +723,43 @@ fn auto_rename_tracks_title_until_manual_rename() {
     assert_eq!(w.name, "mine");
 }
 
+#[test]
+fn sanitize_window_title_shortens_path_titles() {
+    // Windows shells emit verbose, path-bearing titles — reduce to the exe stem.
+    assert_eq!(
+        sanitize_window_title(r"Administrator: C:\Windows\system32\cmd.exe"),
+        "cmd"
+    );
+    assert_eq!(
+        sanitize_window_title(r"C:\Program Files\PowerShell\7\pwsh.exe"),
+        "pwsh"
+    );
+    // The exact verbose PowerShell title Windows ConPTY emits (from CI).
+    assert_eq!(
+        sanitize_window_title(
+            r"Administrator: C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"
+        ),
+        "powershell"
+    );
+    assert_eq!(sanitize_window_title("/usr/bin/vim"), "vim");
+    // A plain, already-short title is kept as-is.
+    assert_eq!(sanitize_window_title("vim"), "vim");
+    assert_eq!(sanitize_window_title("htop"), "htop");
+    // Over-long titles are bounded.
+    let long = "x".repeat(100);
+    assert!(sanitize_window_title(&long).len() <= 32);
+}
+
+#[test]
+fn auto_title_uses_sanitized_name() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w = srv.session_mut(sid).unwrap().active_window_mut();
+    // A full-path OSC title renames the window to just the exe stem.
+    assert!(w.apply_auto_title(r"Administrator: C:\Windows\system32\cmd.exe"));
+    assert_eq!(w.name, "cmd", "window name is the short stem, not the path");
+}
+
 // ----- restore from snapshot -----
 
 #[test]
