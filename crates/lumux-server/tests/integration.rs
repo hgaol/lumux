@@ -786,6 +786,55 @@ fn wheel_is_forwarded_to_a_mouse_aware_app() {
 }
 
 #[test]
+fn clicking_a_mouse_aware_pane_focuses_it() {
+    // Regression: clicking a pane that runs a mouse-aware app (Claude Code / vim)
+    // forwarded the click to the app but never switched lumux's focus to that
+    // pane — so you couldn't select it by clicking. A press must select the pane
+    // first (tmux behavior), then forward. Both panes run `cat -v` (echo input).
+    // We focus the LEFT pane by keyboard, click the RIGHT pane, then type a plain
+    // marker: it must echo in the RIGHT pane (proving focus moved there).
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("clickfocus".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Left pane: mouse-aware cat -v.
+    c.send(&ClientMsg::Input(b"printf '\\033[?1002h\\033[?1006h'; cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Split right; the new right pane (active) also runs mouse-aware cat -v.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"printf '\\033[?1002h\\033[?1006h'; cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Focus the LEFT pane with the keyboard (Ctrl-b Left).
+    c.send(&ClientMsg::Input(vec![0x02]));
+    c.send(&ClientMsg::Input(b"\x1b[D".to_vec())); // Left arrow
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Click the RIGHT pane (column 60 is in the right half of an 80-col split).
+    c.send(&ClientMsg::Input(b"\x1b[<0;60;5M".to_vec())); // left-button press
+    c.send(&ClientMsg::Input(b"\x1b[<0;60;5m".to_vec())); // release
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Now type a plain marker; it must reach the RIGHT pane (now focused).
+    c.send(&ClientMsg::Input(b"RIGHTFOCUS_KK".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    let cols = columns_of(&vt, "RIGHTFOCUS_KK");
+    assert!(
+        cols.iter().any(|&col| col >= 40),
+        "after clicking the right pane, typed input must land there (col >= 40); got cols {cols:?}\n{vt}"
+    );
+    assert!(
+        !cols.iter().any(|&col| col < 40),
+        "input must NOT land in the left pane after clicking right; got cols {cols:?}\n{vt}"
+    );
+}
+
+#[test]
 fn split_wheel_sequence_across_frames_is_not_leaked_as_text() {
     // Regression for "scroll over SSH messes up the pane": the client forwards
     // whatever bytes a single stdin read() returned, and over SSH a TCP segment

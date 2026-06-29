@@ -676,6 +676,17 @@ where
         let mut i = 0;
         while i < combined.len() {
             if let Some((ev, used)) = mouse::parse(&combined[i..]) {
+                // A mouse *press* selects the pane under the pointer first, even
+                // when that pane is a mouse-aware app — otherwise clicking into a
+                // pane running Claude Code / vim / htop forwards the click but
+                // never switches lumux's focus to it (tmux selects on press too).
+                // It also hit-tests the status bar (window-list clicks) and arms a
+                // possible divider drag. Scroll/drag/motion do NOT change focus, so
+                // hover-to-scroll over an unfocused pane keeps working.
+                if matches!(ev.kind, MouseKind::Down(_)) {
+                    self.mouse_select_pane(session, ev.col, ev.row);
+                    self.daemon.begin_drag(client_id, session, ev.col, ev.row);
+                }
                 // If the app in the pane under the pointer enabled mouse
                 // reporting, forward the raw event to it (pane-relative) and skip
                 // lumux's own handling — so the wheel/clicks work inside vim,
@@ -685,12 +696,9 @@ where
                     continue;
                 }
                 match ev.kind {
-                    MouseKind::Down(_) => {
-                        // A press both focuses the pane under the cursor and, if
-                        // it landed on a divider, arms a drag-resize for it.
-                        self.mouse_select_pane(session, ev.col, ev.row);
-                        self.daemon.begin_drag(client_id, session, ev.col, ev.row);
-                    }
+                    // The press already selected the pane + armed a divider drag
+                    // above; nothing more to do for a non-mouse-aware pane.
+                    MouseKind::Down(_) => {}
                     MouseKind::ScrollUp => self.mouse_scroll(client_id, session, ev.col, ev.row, true),
                     MouseKind::ScrollDown => self.mouse_scroll(client_id, session, ev.col, ev.row, false),
                     MouseKind::Drag(_) => self.mouse_drag(client_id, session, ev.col, ev.row),
