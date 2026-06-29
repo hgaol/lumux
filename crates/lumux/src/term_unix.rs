@@ -11,15 +11,22 @@ use std::os::fd::AsRawFd;
 
 use lumux_core::traits::PtySize;
 
-/// VT emitted on teardown to restore the outer terminal. We reset more than just
-/// the alt screen because some emulators (notably over SSH) apply DECSTBM scroll
-/// regions and SGR to the primary screen buffer too:
-///   ESC[0m  reset pen (no leftover color/reverse)
-///   ESC[r   reset scroll region to the full screen
-///   ESC[?7h re-enable autowrap (an app in a pane may have turned it off)
-///   ESC[?1049l  leave the alternate screen (restores the pre-attach view)
+/// VT emitted on teardown to restore the outer terminal.
+///
+/// We reset more than just the alt screen because some emulators apply DECSTBM
+/// scroll regions and SGR to the primary screen buffer too, and because mosh's
+/// terminal emulator does NOT reliably honor the alternate screen (`1049`): under
+/// mosh, lumux renders onto the *primary* screen, so leaving the alt screen on
+/// exit restores nothing and lumux's layout (dividers, dead-pane text) stays on
+/// screen. To leave a clean prompt on every transport (real terminals over ssh
+/// AND mosh), we clear the screen after leaving the alt screen.
+///   ESC[0m      reset pen (no leftover color/reverse)
+///   ESC[r       reset scroll region to the full screen
+///   ESC[?7h     re-enable autowrap (an app in a pane may have turned it off)
+///   ESC[?1049l  leave the alternate screen (a no-op under mosh)
+///   ESC[H ESC[2J  home, then clear — wipes any layout mosh left on the primary
 ///   ESC[?25h    show the cursor
-pub const RESTORE: &[u8] = b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[?25h";
+pub const RESTORE: &[u8] = b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[H\x1b[2J\x1b[?25h";
 
 pub struct RawTerminal {
     fd: i32,
@@ -81,14 +88,18 @@ mod tests {
 
     #[test]
     fn restore_resets_all_leaky_modes() {
-        // The teardown must reset pen, scroll region, and autowrap, and leave the
-        // alt screen with the cursor shown — in that order — so nothing bleeds
-        // onto the user's shell after exit (esp. over SSH).
-        assert_eq!(RESTORE, b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[?25h");
-        // SGR/scroll-region/autowrap reset must come BEFORE leaving the alt
-        // screen, since some terminals apply them to the primary buffer too.
+        // The teardown must reset pen, scroll region, and autowrap, leave the alt
+        // screen, then clear — so nothing bleeds onto the user's shell after exit,
+        // even under mosh (whose emulator ignores the 1049 alt screen, leaving
+        // lumux's layout on the primary buffer otherwise).
+        assert_eq!(RESTORE, b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[H\x1b[2J\x1b[?25h");
         let s = std::str::from_utf8(RESTORE).unwrap();
+        // SGR/scroll-region reset must come BEFORE leaving the alt screen.
         assert!(s.find("\x1b[r").unwrap() < s.find("\x1b[?1049l").unwrap());
         assert!(s.find("\x1b[0m").unwrap() < s.find("\x1b[?1049l").unwrap());
+        // The clear must come AFTER leaving the alt screen (so on a real terminal
+        // it clears the restored primary buffer, and under mosh it clears the
+        // leftover layout).
+        assert!(s.find("\x1b[2J").unwrap() > s.find("\x1b[?1049l").unwrap());
     }
 }
