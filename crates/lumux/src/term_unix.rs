@@ -11,6 +11,16 @@ use std::os::fd::AsRawFd;
 
 use lumux_core::traits::PtySize;
 
+/// VT emitted on teardown to restore the outer terminal. We reset more than just
+/// the alt screen because some emulators (notably over SSH) apply DECSTBM scroll
+/// regions and SGR to the primary screen buffer too:
+///   ESC[0m  reset pen (no leftover color/reverse)
+///   ESC[r   reset scroll region to the full screen
+///   ESC[?7h re-enable autowrap (an app in a pane may have turned it off)
+///   ESC[?1049l  leave the alternate screen (restores the pre-attach view)
+///   ESC[?25h    show the cursor
+pub const RESTORE: &[u8] = b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[?25h";
+
 pub struct RawTerminal {
     fd: i32,
     original: libc::termios,
@@ -55,12 +65,30 @@ impl RawTerminal {
 
 impl Drop for RawTerminal {
     fn drop(&mut self) {
-        // Leave alt screen, show cursor, restore termios.
+        // Restore the terminal cleanly; see RESTORE for the rationale and order.
         let mut out = io::stdout();
-        let _ = out.write_all(b"\x1b[?1049l\x1b[?25h");
+        let _ = out.write_all(RESTORE);
         let _ = out.flush();
         unsafe {
             libc::tcsetattr(self.fd, libc::TCSANOW, &self.original);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RESTORE;
+
+    #[test]
+    fn restore_resets_all_leaky_modes() {
+        // The teardown must reset pen, scroll region, and autowrap, and leave the
+        // alt screen with the cursor shown — in that order — so nothing bleeds
+        // onto the user's shell after exit (esp. over SSH).
+        assert_eq!(RESTORE, b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[?25h");
+        // SGR/scroll-region/autowrap reset must come BEFORE leaving the alt
+        // screen, since some terminals apply them to the primary buffer too.
+        let s = std::str::from_utf8(RESTORE).unwrap();
+        assert!(s.find("\x1b[r").unwrap() < s.find("\x1b[?1049l").unwrap());
+        assert!(s.find("\x1b[0m").unwrap() < s.find("\x1b[?1049l").unwrap());
     }
 }

@@ -92,8 +92,11 @@ impl RawTerminal {
 
 impl Drop for RawTerminal {
     fn drop(&mut self) {
+        // Reset pen + scroll region + autowrap before leaving the alt screen, so
+        // no leftover SGR/geometry bleeds onto the restored primary screen. Same
+        // sequence as the Unix backend's RESTORE constant.
         let mut out = io::stdout();
-        let _ = out.write_all(b"\x1b[?1049l\x1b[?25h");
+        let _ = out.write_all(b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[?25h");
         let _ = out.flush();
         unsafe {
             SetConsoleMode(self.in_handle, self.orig_in);
