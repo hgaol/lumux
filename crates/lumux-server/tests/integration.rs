@@ -1977,6 +1977,89 @@ fn prefix_s_switches_session() {
 }
 
 #[test]
+fn chooser_expand_reveals_windows_and_jumps_to_one() {
+    // tmux choose-tree: expand a session (Right) to reveal its windows, navigate
+    // to a specific window row, and Enter jumps straight to that window. We make
+    // two windows each running a distinct marker command; window 1 is active
+    // after creation. Open the chooser, expand, move UP to window 0's row, and
+    // Enter — the live view must then show window 0.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("tree".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Window 0 marker.
+    c.send(&ClientMsg::Input(b"echo WINZERO_TT\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // New window 1 (now active) with its own marker.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"echo WINONE_TT\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Open the chooser; cursor starts on the session row.
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Expand the session (Right arrow) → window rows appear.
+    c.send(&ClientMsg::Input(b"\x1b[C".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 100, rows: 30 }));
+    let (_d0, expanded) = c.collect_until(Duration::from_secs(1), |_| false);
+    // The list should now show both window rows as nested (indented) entries.
+    assert!(
+        expanded.contains("    0:") && expanded.contains("    1:"),
+        "expanding should reveal the indented window rows; got:\n{expanded}"
+    );
+    // Cursor is on the session row (0). Down → window 0 row; Enter selects it.
+    c.send(&ClientMsg::Input(b"\x1b[B".to_vec())); // Down to window 0
+    c.send(&ClientMsg::Input(b"\r".to_vec())); // Enter: jump to window 0
+    // Drain the transition, then force a fresh full repaint to capture the final
+    // state (the accumulated stream includes pre-Enter chooser frames).
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 100, rows: 30 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The live view now shows window 0's content and its status bar marks window
+    // 0 active ("0:sh*") — proving the Enter jumped to window 0, not window 1.
+    assert!(
+        after.contains("WINZERO_TT"),
+        "Enter on the window-0 row should show window 0's content; got:\n{after}"
+    );
+    assert!(
+        after.contains("0:sh*"),
+        "after the jump, window 0 must be the active window; got:\n{after}"
+    );
+}
+
+#[test]
+fn chooser_collapse_hides_windows() {
+    // Left/collapse on an expanded session hides its window rows again.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("coll".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(vec![0x02, b'c'])); // 2nd window
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.send(&ClientMsg::Input(b"\x1b[C".to_vec())); // expand
+    c.send(&ClientMsg::Resize(WireSize { cols: 100, rows: 30 }));
+    let (_d0, expanded) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(expanded.contains("    1:"), "precondition: expanded shows windows; got:\n{expanded}");
+    // Collapse (Left) → the nested window rows disappear.
+    c.send(&ClientMsg::Input(b"\x1b[D".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 100, rows: 30 }));
+    let (_d1, collapsed) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !collapsed.contains("    1:"),
+        "collapsing should hide the indented window rows; got:\n{collapsed}"
+    );
+}
+
+#[test]
 fn chooser_preview_shows_all_panes_of_a_window() {
     // Regression: the session-chooser preview showed only each window's active
     // pane. It must render the window's WHOLE split layout — every pane plus the

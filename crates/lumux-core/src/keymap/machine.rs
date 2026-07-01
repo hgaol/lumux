@@ -116,13 +116,18 @@ pub enum BufferKey {
     Cancel,
 }
 
-/// Keys handled while the session switcher is open.
+/// Keys handled while the session switcher (choose-tree) is open.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SessionKey {
     Up,
     Down,
     /// Jump to the Nth session in the list (digit key).
     Index(u32),
+    /// Expand the highlighted session to reveal its windows (Right / `l`).
+    Expand,
+    /// Collapse the highlighted session, or a window row back to its session
+    /// (Left / `h`).
+    Collapse,
     Confirm,
     Cancel,
 }
@@ -451,6 +456,8 @@ fn session_key(key: &Key) -> Option<SessionKey> {
     let sk = match key.code {
         KeyCode::Up | KeyCode::Char('k') => SessionKey::Up,
         KeyCode::Down | KeyCode::Char('j') => SessionKey::Down,
+        KeyCode::Right | KeyCode::Char('l') => SessionKey::Expand,
+        KeyCode::Left | KeyCode::Char('h') => SessionKey::Collapse,
         KeyCode::Enter => SessionKey::Confirm,
         KeyCode::Escape | KeyCode::Char('q') => SessionKey::Cancel,
         KeyCode::Char(c) if c.is_ascii_digit() => SessionKey::Index(c.to_digit(10).unwrap()),

@@ -11,7 +11,7 @@ use lumux_core::config::Config;
 use lumux_core::copymode::CopyMode;
 use lumux_core::grid::Grid;
 use lumux_core::keymap::{CopyKey, Keymap};
-use lumux_core::model::{CascadeResult, PaneId, Server, SessionId, SplitDir};
+use lumux_core::model::{CascadeResult, PaneId, Server, SessionId, SplitDir, WindowId};
 use lumux_core::render::{compose, ClientRenderer, WindowView};
 use lumux_core::traits::{Clipboard, Pty, PtySize, PtySystem, PtyWriter, ShellCommand};
 
@@ -111,8 +111,8 @@ pub struct Daemon<S: PtySystem> {
     help: std::collections::BTreeSet<u64>,
     /// Per-client scroll offset (first visible binding row) for the help overlay.
     help_offset: BTreeMap<u64, usize>,
-    /// Clients in the session switcher, with their current highlighted index.
-    choosing: BTreeMap<u64, usize>,
+    /// Clients in the session switcher (choose-tree), with their tree state.
+    choosing: BTreeMap<u64, ChooseTree>,
     /// Clients with an open text prompt (rename-window/-session): the target and
     /// the buffer typed so far.
     prompt: BTreeMap<u64, Prompt>,
@@ -158,6 +158,33 @@ pub enum PromptTarget {
     /// The tmux command-prompt (prefix `:`): the typed line is parsed and
     /// dispatched by the event loop. Seeded empty.
     Command,
+}
+
+/// State of an open choose-tree (session switcher, prefix `s`): which sessions
+/// are expanded to reveal their windows, and where the cursor sits in the
+/// flattened list of visible rows.
+#[derive(Clone, Default)]
+pub struct ChooseTree {
+    /// Sessions currently expanded to show their windows.
+    expanded: std::collections::BTreeSet<SessionId>,
+    /// Index into the flattened visible-row list (see [`Daemon::tree_rows`]).
+    cursor: usize,
+}
+
+/// One visible row in the choose-tree: a session, or a window nested under one.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum TreeRow {
+    Session(SessionId),
+    Window(SessionId, WindowId),
+}
+
+/// What the choose-tree selected when confirmed (Enter).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ChooserPick {
+    /// Switch to this session (its active window).
+    Session(SessionId),
+    /// Switch to this session AND focus this specific window (tmux choose-tree).
+    Window(SessionId, WindowId),
 }
 
 impl<S: PtySystem> Daemon<S> {
@@ -1009,10 +1036,14 @@ impl<S: PtySystem> Daemon<S> {
     pub fn open_chooser(&mut self, client_id: u64) {
         let sessions = self.server.session_ids();
         let current = self.client_session(client_id);
-        let start = current
-            .and_then(|sid| sessions.iter().position(|&s| s == sid))
+        // Start the cursor on the client's current session row (all collapsed).
+        let tree = ChooseTree::default();
+        let rows = self.tree_rows(&tree);
+        let cursor = current
+            .and_then(|sid| rows.iter().position(|r| matches!(r, TreeRow::Session(s) if *s == sid)))
             .unwrap_or(0);
-        self.choosing.insert(client_id, start);
+        let _ = sessions; // (kept for clarity; rows already reflects the session list)
+        self.choosing.insert(client_id, ChooseTree { cursor, ..tree });
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();
         }
@@ -1020,6 +1051,30 @@ impl<S: PtySystem> Daemon<S> {
 
     pub fn in_chooser(&self, client_id: u64) -> bool {
         self.choosing.contains_key(&client_id)
+    }
+
+    /// Flatten the sessions (and, for expanded ones, their windows) into the
+    /// ordered list of visible choose-tree rows.
+    fn tree_rows(&self, tree: &ChooseTree) -> Vec<TreeRow> {
+        let mut rows = Vec::new();
+        for sid in self.server.session_ids() {
+            rows.push(TreeRow::Session(sid));
+            if tree.expanded.contains(&sid) {
+                if let Some(s) = self.server.session(sid) {
+                    for wid in s.window_ids() {
+                        rows.push(TreeRow::Window(sid, wid));
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    /// The row the cursor is currently on, if any.
+    fn tree_cursor_row(&self, client_id: u64) -> Option<TreeRow> {
+        let tree = self.choosing.get(&client_id)?;
+        let rows = self.tree_rows(tree);
+        rows.get(tree.cursor.min(rows.len().saturating_sub(1))).copied()
     }
 
     /// Force a client's next render to be a full repaint (e.g. after switching
@@ -1030,38 +1085,112 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
-    /// Move the switcher selection. `delta` of -1/+1 = up/down; absolute index
-    /// via `to`. Clamped to the session list.
+    /// Move the choose-tree cursor. `delta` of -1/+1 = up/down over the flattened
+    /// rows; `to` jumps to the Nth top-level SESSION (digit key), regardless of
+    /// expansion. Clamped to the visible rows.
     pub fn chooser_move(&mut self, client_id: u64, delta: i32, to: Option<usize>) {
-        let n = self.server.session_ids().len();
-        if n == 0 {
+        let Some(tree) = self.choosing.get(&client_id) else {
+            return;
+        };
+        let rows = self.tree_rows(tree);
+        if rows.is_empty() {
             return;
         }
-        if let Some(sel) = self.choosing.get_mut(&client_id) {
-            let next = match to {
-                Some(i) => i.min(n - 1),
-                None => {
-                    let cur = *sel as i32 + delta;
-                    cur.clamp(0, n as i32 - 1) as usize
+        let next = match to {
+            // A digit selects the Nth session row (skip window rows).
+            Some(n) => rows
+                .iter()
+                .enumerate()
+                .filter(|(_, r)| matches!(r, TreeRow::Session(_)))
+                .nth(n)
+                .map(|(idx, _)| idx)
+                .unwrap_or_else(|| tree.cursor.min(rows.len() - 1)),
+            None => {
+                let cur = tree.cursor as i32 + delta;
+                cur.clamp(0, rows.len() as i32 - 1) as usize
+            }
+        };
+        if let Some(tree) = self.choosing.get_mut(&client_id) {
+            tree.cursor = next;
+        }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
+    /// Expand the session on the cursor row to reveal its windows (tmux
+    /// choose-tree Right/`l`). No-op on a window row or an already-expanded
+    /// session.
+    pub fn chooser_expand(&mut self, client_id: u64) {
+        let Some(row) = self.tree_cursor_row(client_id) else {
+            return;
+        };
+        if let TreeRow::Session(sid) = row {
+            if let Some(tree) = self.choosing.get_mut(&client_id) {
+                if tree.expanded.insert(sid) {
+                    if let Some(r) = self.renderers.get_mut(&client_id) {
+                        r.invalidate();
+                    }
                 }
-            };
-            *sel = next;
-            if let Some(r) = self.renderers.get_mut(&client_id) {
-                r.invalidate();
             }
         }
     }
 
-    /// Confirm the switcher: move the client to the highlighted session. Returns
-    /// the new session id if it changed.
-    pub fn chooser_confirm(&mut self, client_id: u64) -> Option<SessionId> {
-        let sel = self.choosing.remove(&client_id)?;
+    /// Collapse (tmux choose-tree Left/`h`): on an expanded session row, hide its
+    /// windows; on a window row, collapse the parent session and move the cursor
+    /// to it.
+    pub fn chooser_collapse(&mut self, client_id: u64) {
+        let Some(row) = self.tree_cursor_row(client_id) else {
+            return;
+        };
+        let target_sid = match row {
+            TreeRow::Session(sid) => sid,
+            TreeRow::Window(sid, _) => sid,
+        };
+        if let Some(tree) = self.choosing.get_mut(&client_id) {
+            tree.expanded.remove(&target_sid);
+        }
+        // Re-point the cursor at the (now collapsed) session row.
+        if let Some(tree) = self.choosing.get(&client_id) {
+            let rows = self.tree_rows(tree);
+            if let Some(idx) = rows
+                .iter()
+                .position(|r| matches!(r, TreeRow::Session(s) if *s == target_sid))
+            {
+                if let Some(tree) = self.choosing.get_mut(&client_id) {
+                    tree.cursor = idx;
+                }
+            }
+        }
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();
         }
-        let target = *self.server.session_ids().get(sel)?;
-        if self.server.set_client_session(client_id, target) {
-            Some(target)
+    }
+
+    /// Confirm the choose-tree: pick the cursor row. A session row switches to
+    /// that session; a window row switches AND targets that window (the event
+    /// loop focuses it). Returns the pick so the caller can update its state.
+    pub fn chooser_confirm(&mut self, client_id: u64) -> Option<ChooserPick> {
+        let row = self.tree_cursor_row(client_id)?;
+        self.choosing.remove(&client_id);
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+        let pick = match row {
+            TreeRow::Session(sid) => ChooserPick::Session(sid),
+            TreeRow::Window(sid, wid) => ChooserPick::Window(sid, wid),
+        };
+        let sid = match pick {
+            ChooserPick::Session(s) | ChooserPick::Window(s, _) => s,
+        };
+        if self.server.set_client_session(client_id, sid) {
+            // For a window pick, focus that window in the session.
+            if let ChooserPick::Window(sid, wid) = pick {
+                if let Some(s) = self.server.session_mut(sid) {
+                    s.focus_window(wid);
+                }
+            }
+            Some(pick)
         } else {
             None
         }
@@ -1802,19 +1931,19 @@ impl<S: PtySystem> Daemon<S> {
         Some(renderer.render(screen))
     }
 
-    /// Render the session switcher overlay (tmux prefix s): a list of sessions
-    /// on the left, and on the right a live preview of *every window* in the
-    /// highlighted session (tmux's choose-tree). Each window gets a header
-    /// (`index:name`, the active one marked `*`) and a clipped live view of its
-    /// active pane, stacked top to bottom and sharing the preview height.
+    /// Render the session switcher / choose-tree overlay (tmux prefix s): a tree
+    /// of sessions (expandable to their windows) on the left, and on the right a
+    /// live preview that follows the cursor — every window of a session row, or a
+    /// single window when the cursor is on a window row.
     fn render_chooser(&mut self, client_id: u64, session: SessionId) -> Option<String> {
         use lumux_core::render::Screen;
         let size = self.server.effective_size(session)?;
         let cols = size.cols as usize;
         let rows = size.rows as usize;
         let mut screen = Screen::new(cols, rows);
-        let sel = *self.choosing.get(&client_id)?;
-        let sids = self.server.session_ids();
+        let tree = self.choosing.get(&client_id)?.clone();
+        let tree_rows = self.tree_rows(&tree);
+        let cursor = tree.cursor.min(tree_rows.len().saturating_sub(1));
 
         // Left list column: about a third of the width, clamped to a sane range
         // (but never wider than the screen, leaving room for a divider+preview).
@@ -1822,50 +1951,128 @@ impl<S: PtySystem> Daemon<S> {
         let max_y = rows.saturating_sub(1);
 
         screen.write_plain(0, 0, "choose a session");
-        for (i, sid) in sids.iter().enumerate() {
-            let y = 2 + i;
+        // Scroll the list so the cursor row stays visible.
+        let list_rows = max_y.saturating_sub(2); // rows [2, max_y)
+        let max_first = tree_rows.len().saturating_sub(list_rows.max(1));
+        let first = cursor.saturating_sub(list_rows.saturating_sub(1)).min(max_first);
+        let mut session_ordinal = 0usize;
+        for (i, row) in tree_rows.iter().enumerate() {
+            // Count session ordinals across the WHOLE list (for the digit label),
+            // even rows scrolled out of view.
+            let this_session_ord = session_ordinal;
+            if matches!(row, TreeRow::Session(_)) {
+                session_ordinal += 1;
+            }
+            if i < first {
+                continue;
+            }
+            let y = 2 + (i - first);
             if y >= max_y {
                 break;
             }
-            let Some(s) = self.server.session(*sid) else {
-                continue;
+            let line = match row {
+                TreeRow::Session(sid) => {
+                    let Some(s) = self.server.session(*sid) else { continue };
+                    let marker = if tree.expanded.contains(sid) { "▾" } else { "▸" };
+                    let count = format!("{}w", s.window_count());
+                    let prefix = format!("{marker} {this_session_ord}: ");
+                    let name_room = list_w
+                        .saturating_sub(prefix.chars().count())
+                        .saturating_sub(count.chars().count())
+                        .saturating_sub(1);
+                    let name: String = s.name.chars().take(name_room).collect();
+                    let used =
+                        prefix.chars().count() + name.chars().count() + count.chars().count();
+                    let pad = list_w.saturating_sub(used);
+                    format!("{prefix}{name}{}{count}", " ".repeat(pad))
+                }
+                TreeRow::Window(sid, wid) => {
+                    let Some(s) = self.server.session(*sid) else { continue };
+                    let Some(w) = s.window(*wid) else { continue };
+                    let active = w.id == s.active_window();
+                    let idx = window_index(s, *wid) + self.config.base_index;
+                    let mark = if active { "*" } else { "" };
+                    let mut line = format!("    {idx}:{}{mark}", w.name);
+                    if line.chars().count() > list_w {
+                        line = line.chars().take(list_w).collect();
+                    }
+                    line
+                }
             };
-            // Build the row as "<i>: <name>" plus a RIGHT-ALIGNED window count
-            // ("3w"), so a long session name truncates the NAME, never the count.
-            let count = format!("{}w", s.window_count());
-            let prefix = format!("{i}: ");
-            // Space available for the name = list_w - prefix - count - 1 gap.
-            let name_room = list_w
-                .saturating_sub(prefix.chars().count())
-                .saturating_sub(count.chars().count())
-                .saturating_sub(1);
-            let name: String = s.name.chars().take(name_room).collect();
-            // Pad so the count sits flush at the right edge of the list column.
-            let used = prefix.chars().count() + name.chars().count() + count.chars().count();
-            let pad = list_w.saturating_sub(used);
-            let line = format!("{prefix}{name}{}{count}", " ".repeat(pad));
-            if i == sel {
+            if i == cursor {
                 screen.status_line_width(y, &line, list_w);
             } else {
                 screen.write_plain(0, y, &line);
             }
         }
 
-        // Divider + live preview of every window in the highlighted session.
+        // Divider + preview that follows the cursor row.
         let div_x = list_w;
         let preview_x = list_w + 1;
         if preview_x < cols {
             screen.vline(div_x, 0, max_y, &Default::default());
             let pw = cols - preview_x;
             let ph = max_y; // preview area height (bottom row is the mode line)
-            self.render_session_preview(&mut screen, sids.get(sel).copied(), preview_x, pw, ph);
+            match tree_rows.get(cursor) {
+                Some(TreeRow::Session(sid)) => {
+                    self.render_session_preview(&mut screen, Some(*sid), preview_x, pw, ph);
+                }
+                Some(TreeRow::Window(sid, wid)) => {
+                    self.render_window_preview(&mut screen, *sid, *wid, preview_x, pw, ph);
+                }
+                None => {}
+            }
         }
 
-        screen.status_line(max_y, "-- SESSIONS --  Up/Down or digit, Enter selects, Esc cancels");
+        screen.status_line(
+            max_y,
+            "-- TREE --  ↑/↓ move, →/← expand/collapse, Enter selects, Esc cancels",
+        );
         screen.set_cursor(None);
 
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
+    }
+
+    /// Preview a single window's full split layout, filling the whole preview
+    /// region (used when the choose-tree cursor is on a window row).
+    fn render_window_preview(
+        &self,
+        screen: &mut lumux_core::render::Screen,
+        sid: SessionId,
+        wid: WindowId,
+        x: usize,
+        w: usize,
+        h: usize,
+    ) {
+        let Some(s) = self.server.session(sid) else { return };
+        let Some(win) = s.window(wid) else { return };
+        if h == 0 {
+            return;
+        }
+        let base_idx = self.config.base_index;
+        let idx = window_index(s, wid) + base_idx;
+        let marker = if win.id == s.active_window() { "*" } else { "" };
+        let header = format!("{idx}:{}{marker}", win.name);
+        screen.label_segment(x, 0, w, &header);
+        let content_h = h.saturating_sub(1);
+        if content_h > 0 {
+            let mut grids = std::collections::BTreeMap::new();
+            for pid in win.pane_ids() {
+                if let Some(p) = self.panes.get(&pid) {
+                    grids.insert(pid, &p.grid);
+                }
+            }
+            lumux_core::render::blit_window_layout(
+                screen,
+                x,
+                1,
+                w,
+                content_h,
+                &win.layout,
+                &grids,
+            );
+        }
     }
 
     /// Render the paste-buffer chooser (tmux prefix `=`). A left list of buffers

@@ -89,6 +89,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `[` | enter copy-mode |
 | `]` | paste the most recent copy buffer |
 | `=` | choose a paste buffer |
+| `s` | choose-tree: pick a session (→/← expand/collapse into windows) |
 | `?` | show the key-binding help |
 | `Ctrl-b` | send a literal `Ctrl-b` to the shell |
 

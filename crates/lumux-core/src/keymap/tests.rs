@@ -464,6 +464,20 @@ fn session_switcher_cancel_returns_to_normal() {
 }
 
 #[test]
+fn session_switcher_expand_collapse_keys() {
+    use crate::keymap::SessionKey;
+    let mut k = km();
+    k.feed(&[0x02, b's']);
+    // Right / l expand the highlighted session; Left / h collapse. The chooser
+    // stays open (only Enter/Esc close it).
+    assert_eq!(k.feed(b"\x1b[C"), vec![Reaction::Session(SessionKey::Expand)]); // Right
+    assert_eq!(k.feed(b"l"), vec![Reaction::Session(SessionKey::Expand)]);
+    assert_eq!(k.feed(b"\x1b[D"), vec![Reaction::Session(SessionKey::Collapse)]); // Left
+    assert_eq!(k.feed(b"h"), vec![Reaction::Session(SessionKey::Collapse)]);
+    assert_eq!(k.mode(), Mode::ChooseSession, "expand/collapse keep the chooser open");
+}
+
+#[test]
 fn prefix_comma_opens_rename_window_prompt() {
     use crate::keymap::PromptKey;
     let mut k = km();

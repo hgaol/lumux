@@ -1023,21 +1023,32 @@ where
                 self.daemon.chooser_move(client_id, 0, Some(n as usize));
                 None
             }
+            SessionKey::Expand => {
+                self.daemon.chooser_expand(client_id);
+                None
+            }
+            SessionKey::Collapse => {
+                self.daemon.chooser_collapse(client_id);
+                None
+            }
             SessionKey::Cancel => {
                 self.daemon.chooser_cancel(client_id);
                 None
             }
             SessionKey::Confirm => {
-                let new_session = self.daemon.chooser_confirm(client_id);
-                if let Some(sid) = new_session {
-                    // Update the event-loop's client->session mapping and force a
-                    // full repaint of the newly-shown session.
-                    if let Some(h) = self.clients.get_mut(&client_id) {
-                        h.session = sid;
-                    }
-                    self.daemon.invalidate_client(client_id);
+                // A pick may be a session or a specific window (choose-tree). The
+                // daemon already switched the client's session (and focused the
+                // window for a window pick); we just sync the loop's mapping.
+                let pick = self.daemon.chooser_confirm(client_id)?;
+                let sid = match pick {
+                    crate::daemon::ChooserPick::Session(s)
+                    | crate::daemon::ChooserPick::Window(s, _) => s,
+                };
+                if let Some(h) = self.clients.get_mut(&client_id) {
+                    h.session = sid;
                 }
-                new_session
+                self.daemon.invalidate_client(client_id);
+                Some(sid)
             }
         }
     }
