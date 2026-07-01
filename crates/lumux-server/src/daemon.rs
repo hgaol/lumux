@@ -1718,6 +1718,16 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
+    /// Whether `client_id` has the prefix armed (pressed the prefix and is
+    /// awaiting the next command key). Drives the `#{?client_prefix,…}` status
+    /// token.
+    fn client_prefix_armed(&self, client_id: u64) -> bool {
+        self.keymaps
+            .get(&client_id)
+            .map(|k| k.mode() == lumux_core::keymap::Mode::AwaitingCommand)
+            .unwrap_or(false)
+    }
+
     /// Paint the bottom status row: a transient flash message if one is pending,
     /// otherwise the configured styled status bar.
     fn paint_status(
@@ -1763,6 +1773,7 @@ impl<S: PtySystem> Daemon<S> {
             pane_index: base_idx,
             host: hostname(),
             flags: String::new(),
+            client_prefix: self.client_prefix_armed(client_id),
             time: now_parts(),
         };
 
@@ -1831,6 +1842,9 @@ impl<S: PtySystem> Daemon<S> {
             pane_index: base_idx,
             host: hostname(),
             flags: String::new(),
+            // Hit-testing only needs geometry; prefix state can't shift the
+            // window-list columns, so it's irrelevant here.
+            client_prefix: false,
             time: now_parts(),
         };
         let base = StyledStatus::base_attrs(&self.config.status_bg, &self.config.status_fg);

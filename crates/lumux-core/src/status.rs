@@ -86,6 +86,7 @@ pub fn window_list_formatted(
             session: ctx.session.clone(),
             host: ctx.host.clone(),
             pane_index: ctx.pane_index,
+            client_prefix: ctx.client_prefix,
             time: ctx.time.clone(),
         };
         let fmt = if e.active { current_fmt } else { inactive_fmt };
@@ -143,6 +144,9 @@ pub struct StatusContext {
     /// Window flags for `#F` (e.g. `*` current, `-` last). Empty for the plain
     /// status segments; filled per-entry when formatting the window list.
     pub flags: String,
+    /// Whether the client has the prefix armed (tmux `#{?client_prefix,…}`): the
+    /// prefix key was pressed and lumux is awaiting the next command key.
+    pub client_prefix: bool,
     /// Broken-out local time for strftime tokens (so core stays clock-free).
     pub time: TimeParts,
 }
@@ -208,6 +212,31 @@ pub fn format(fmt: &str, ctx: &StatusContext) -> Vec<Span> {
                     chars.next();
                     cur.push('#');
                 }
+                Some('{') => {
+                    // Format block: #{...}. Read to the matching '}' (braces may
+                    // nest) then evaluate. The whole block joins the current span
+                    // (blocks carry no style of their own).
+                    chars.next(); // consume '{'
+                    let mut body = String::new();
+                    let mut depth = 1;
+                    for bc in chars.by_ref() {
+                        match bc {
+                            '{' => {
+                                depth += 1;
+                                body.push(bc);
+                            }
+                            '}' => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                                body.push(bc);
+                            }
+                            _ => body.push(bc),
+                        }
+                    }
+                    cur.push_str(&substitute_block(&body, ctx));
+                }
                 Some(&v) => {
                     chars.next();
                     cur.push_str(&substitute_var(v, ctx));
@@ -230,12 +259,105 @@ fn substitute_var(v: char, ctx: &StatusContext) -> String {
         'S' => ctx.session.clone(),
         'W' => ctx.window.clone(),
         'H' => ctx.host.clone(),
+        // tmux `#h` is the short hostname (up to the first dot).
+        'h' => ctx.host.split('.').next().unwrap_or(&ctx.host).to_string(),
         'I' => ctx.window_index.to_string(),
         'P' => ctx.pane_index.to_string(),
         'F' => ctx.flags.clone(),
         other => format!("#{other}"),
     }
 }
+
+/// Evaluate the body of a `#{...}` format block against `ctx`.
+///
+/// Supports:
+/// - `?cond,then,else` — tmux conditional: emits `then` when the boolean
+///   variable `cond` is true, else `else`. The `then`/`else` parts are
+///   themselves expanded (so `#[...]`/`#X`/`%X` tokens inside them work), and
+///   commas nested inside further `#{...}` are not split on.
+/// - a bare variable name (`host`, `hostname_short`, `session_name`,
+///   `window_name`, `client_prefix`, …) — emits its value.
+///
+/// Unknown blocks emit empty (tmux does too), so a config never dumps raw
+/// `#{...}` onto the bar.
+fn substitute_block(body: &str, ctx: &StatusContext) -> String {
+    if let Some(rest) = body.strip_prefix('?') {
+        // Conditional: split into cond, then, else on TOP-LEVEL commas.
+        let parts = split_top_level(rest, ',');
+        let cond = parts.first().map(String::as_str).unwrap_or("");
+        let then_s = parts.get(1).map(String::as_str).unwrap_or("");
+        let else_s = parts.get(2).map(String::as_str).unwrap_or("");
+        let chosen = if eval_condition(cond, ctx) { then_s } else { else_s };
+        // Expand the chosen branch (it may hold tokens/styles). We only want its
+        // text here, so join the resulting spans' text.
+        return format(chosen, ctx).into_iter().map(|s| s.text).collect();
+    }
+    // A bare variable block, e.g. #{host} / #{session_name}.
+    block_var(body, ctx)
+}
+
+/// Whether a boolean condition variable is currently true.
+fn eval_condition(name: &str, ctx: &StatusContext) -> bool {
+    match name {
+        "client_prefix" => ctx.client_prefix,
+        // A non-empty string variable is truthy (tmux semantics), e.g.
+        // `#{?session_name,…}`.
+        other => !block_var(other, ctx).is_empty(),
+    }
+}
+
+/// Resolve a named variable used inside a `#{...}` block to its string value.
+fn block_var(name: &str, ctx: &StatusContext) -> String {
+    match name {
+        "session_name" => ctx.session.clone(),
+        "window_name" => ctx.window.clone(),
+        "host" | "host_short" | "hostname" => ctx.host.clone(),
+        "window_index" => ctx.window_index.to_string(),
+        "pane_index" => ctx.pane_index.to_string(),
+        "client_prefix" => {
+            if ctx.client_prefix {
+                "1".to_string()
+            } else {
+                String::new()
+            }
+        }
+        _ => String::new(),
+    }
+}
+
+/// Split `s` on `sep`, but only at brace depth 0, so commas inside nested
+/// `#{...}` blocks stay with their block. Returns owned segments.
+fn split_top_level(s: &str, sep: char) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut depth = 0i32;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '#' if chars.peek() == Some(&'{') => {
+                cur.push(c);
+                cur.push('{');
+                chars.next();
+                depth += 1;
+            }
+            '{' => {
+                depth += 1;
+                cur.push(c);
+            }
+            '}' => {
+                depth -= 1;
+                cur.push(c);
+            }
+            c if c == sep && depth == 0 => {
+                out.push(std::mem::take(&mut cur));
+            }
+            _ => cur.push(c),
+        }
+    }
+    out.push(cur);
+    out
+}
+
 
 fn substitute_time(t: char, ctx: &StatusContext) -> String {
     let tm = &ctx.time;
@@ -451,6 +573,60 @@ mod tests {
     fn substitutes_host_and_indices() {
         let s = format("#H #I:#P", &ctx());
         assert_eq!(joined(&s), "winhost 1:0");
+    }
+
+    #[test]
+    fn short_host_strips_the_domain() {
+        let mut c = ctx();
+        c.host = "dev.example.com".into();
+        // #H is the full host; #h and #{host_short} are up to the first dot.
+        assert_eq!(joined(&format("#H", &c)), "dev.example.com");
+        assert_eq!(joined(&format("#h", &c)), "dev");
+    }
+
+    #[test]
+    fn client_prefix_conditional() {
+        let mut c = ctx();
+        // Not armed: the conditional yields the else branch (empty here).
+        c.client_prefix = false;
+        assert_eq!(joined(&format("#{?client_prefix,PFX,}", &c)), "");
+        // Armed: yields the then branch.
+        c.client_prefix = true;
+        assert_eq!(joined(&format("#{?client_prefix,PFX,}", &c)), "PFX");
+        // With an else branch.
+        c.client_prefix = false;
+        assert_eq!(joined(&format("#{?client_prefix,ON,off}", &c)), "off");
+    }
+
+    #[test]
+    fn conditional_branches_expand_inner_tokens() {
+        let mut c = ctx();
+        c.client_prefix = true;
+        // The then-branch itself contains a #S token, which must expand.
+        assert_eq!(joined(&format("#{?client_prefix,[#S],}", &c)), "[work]");
+    }
+
+    #[test]
+    fn bare_variable_block() {
+        let s = format("#{session_name}@#{host}", &ctx());
+        assert_eq!(joined(&s), "work@winhost");
+    }
+
+    #[test]
+    fn unknown_block_yields_empty_not_literal() {
+        // A block lumux doesn't know must NOT dump raw "#{...}" onto the bar.
+        let s = format("x#{totally_unknown_thing}y", &ctx());
+        assert_eq!(joined(&s), "xy");
+    }
+
+    #[test]
+    fn nested_commas_in_condition_are_not_split() {
+        let mut c = ctx();
+        c.client_prefix = true;
+        // The then-branch holds a further #{...} with its own comma; the outer
+        // split must not break on that inner comma.
+        let out = joined(&format("#{?client_prefix,#{?client_prefix,YES,no},off}", &c));
+        assert_eq!(out, "YES");
     }
 
     #[test]

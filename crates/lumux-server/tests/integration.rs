@@ -56,6 +56,28 @@ fn start_daemon_mouse() -> std::path::PathBuf {
     path
 }
 
+/// Like [`start_daemon`] but with a custom `status_right` format, for testing
+/// status-bar tokens (e.g. the `#{?client_prefix,…}` conditional).
+fn start_daemon_status_right(fmt: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(5_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let cfg = lumux_core::config::Config {
+        status_right: fmt.to_string(),
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
 /// Like [`start_daemon`] but with remain-on-exit enabled, so a pane whose child
 /// exits stays on screen (dead) instead of cascade-closing.
 fn start_daemon_remain() -> std::path::PathBuf {
@@ -1973,6 +1995,40 @@ fn prefix_s_switches_session() {
     assert!(
         vt2.contains("ALPHA_HERE"),
         "after switching, the client should see alpha's screen; got:\n{vt2}"
+    );
+}
+
+#[test]
+fn status_client_prefix_conditional_shows_on_prefix() {
+    // Regression for raw "#{?client_prefix,…}" leaking onto the status bar: the
+    // conditional must be EVALUATED — hidden normally, shown once the prefix key
+    // is armed. Configure status_right with the marker and drive the prefix.
+    let path = start_daemon_status_right("#{?client_prefix,PREFIXON,}");
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("pfx".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Repaint with no prefix armed: the marker must NOT show, and the raw token
+    // must never appear.
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !before.contains("PREFIXON"),
+        "marker must be hidden when the prefix isn't armed; got:\n{before}"
+    );
+    assert!(
+        !before.contains("#{?"),
+        "the raw #{{?...}} token must never render literally; got:\n{before}"
+    );
+    // Press the prefix key (Ctrl-b). The status repaints while armed → marker on.
+    c.send(&ClientMsg::Input(vec![0x02]));
+    let (_d1, armed) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        armed.contains("PREFIXON"),
+        "the prefix marker should show once the prefix is armed; got:\n{armed}"
     );
 }
 
