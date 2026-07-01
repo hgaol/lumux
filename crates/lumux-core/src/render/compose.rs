@@ -20,6 +20,9 @@ pub struct WindowView<'a> {
     /// Attributes for the active pane's border (tmux pane-active-border-style).
     /// `None` draws every border with the default attribute (no highlight).
     pub active_border: Option<CellAttributes>,
+    /// Attributes for inactive pane borders (tmux pane-border-style). `None`
+    /// draws them with the terminal default.
+    pub inactive_border: Option<CellAttributes>,
 }
 
 /// A single-line status bar description.
@@ -213,7 +216,7 @@ pub fn compose(
     let viewport = Rect::new(0, 0, w as u16, content_rows as u16);
     let rects = layout::compute(view.layout, viewport);
 
-    let border_attrs = CellAttributes::default();
+    let border_attrs = view.inactive_border.clone().unwrap_or_default();
     for (&pid, rect) in &rects {
         if let Some(grid) = view.grids.get(&pid) {
             blit_pane(&mut screen, *rect, grid);

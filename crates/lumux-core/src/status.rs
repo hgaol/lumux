@@ -57,6 +57,61 @@ fn entry_text(e: &WindowEntry) -> String {
     format!("{}:{}{marker}", e.index, e.name)
 }
 
+/// Build the window list from per-window tmux format strings (window-status-format
+/// / -current-format), joined by `separator`. Each entry's `#I`/`#W`/`#F` tokens
+/// and `#[...]` style spans are expanded against a context built from that entry,
+/// so a config can color the current window differently from the rest. `base`
+/// supplies the fallback background so untinted spans blend into the bar.
+///
+/// Returns the spans plus the per-entry hit ranges (0-based position, start, end
+/// column relative to the segment start), so status-bar clicks still map to the
+/// right window — the ranges are computed from the actual rendered widths.
+pub fn window_list_formatted(
+    entries: &[WindowEntry],
+    inactive_fmt: &str,
+    current_fmt: &str,
+    separator: &str,
+    ctx: &StatusContext,
+    base: &CellAttributes,
+) -> (Vec<Span>, Vec<(usize, usize, usize)>) {
+    let mut spans = Vec::new();
+    let mut ranges = Vec::new();
+    let mut col = 0usize;
+    for (i, e) in entries.iter().enumerate() {
+        let ectx = StatusContext {
+            window: e.name.clone(),
+            window_index: e.index,
+            flags: if e.active { "*".to_string() } else { String::new() },
+            // Session/host/time carry through so a format may reference them.
+            session: ctx.session.clone(),
+            host: ctx.host.clone(),
+            pane_index: ctx.pane_index,
+            time: ctx.time.clone(),
+        };
+        let fmt = if e.active { current_fmt } else { inactive_fmt };
+        let entry_spans = format(fmt, &ectx);
+        let width: usize = entry_spans.iter().map(|s| s.text.chars().count()).sum();
+        // Entries default their background to the bar base when unset, so the
+        // pill fills correctly (mirrors StyledStatus::paint's inheritance).
+        for mut sp in entry_spans {
+            if sp.attrs.background() == ColorAttribute::Default {
+                sp.attrs.set_background(base.background());
+            }
+            spans.push(sp);
+        }
+        ranges.push((i, col, col + width));
+        col += width;
+        if i + 1 < entries.len() && !separator.is_empty() {
+            spans.push(Span {
+                text: separator.to_string(),
+                attrs: base.clone(),
+            });
+            col += separator.chars().count();
+        }
+    }
+    (spans, ranges)
+}
+
 /// Column ranges, within the centre segment, occupied by each window entry —
 /// `(entry_position, start_col, end_col)` where columns are relative to the
 /// start of the centre segment. The separator space between entries belongs to
@@ -85,6 +140,9 @@ pub struct StatusContext {
     pub window_index: u32,
     pub pane_index: u32,
     pub host: String,
+    /// Window flags for `#F` (e.g. `*` current, `-` last). Empty for the plain
+    /// status segments; filled per-entry when formatting the window list.
+    pub flags: String,
     /// Broken-out local time for strftime tokens (so core stays clock-free).
     pub time: TimeParts,
 }
@@ -174,6 +232,7 @@ fn substitute_var(v: char, ctx: &StatusContext) -> String {
         'H' => ctx.host.clone(),
         'I' => ctx.window_index.to_string(),
         'P' => ctx.pane_index.to_string(),
+        'F' => ctx.flags.clone(),
         other => format!("#{other}"),
     }
 }
@@ -197,6 +256,14 @@ fn substitute_time(t: char, ctx: &StatusContext) -> String {
 
 /// Apply a comma-separated style spec like "fg=red,bg=colour24,bold".
 fn apply_style(attrs: &mut CellAttributes, spec: &str) {
+    apply_style_spec(attrs, spec)
+}
+
+/// Apply a comma-separated tmux style spec (`fg=`, `bg=`, and attribute flags
+/// like `bold`/`reverse`) onto `attrs`. Public so the daemon can style the
+/// message row (tmux `message-style`) with the same parser used for `#[...]`
+/// spans.
+pub fn apply_style_spec(attrs: &mut CellAttributes, spec: &str) {
     for part in spec.split(',') {
         let part = part.trim();
         if let Some(c) = part.strip_prefix("fg=") {
@@ -229,8 +296,14 @@ fn apply_style(attrs: &mut CellAttributes, spec: &str) {
     }
 }
 
-/// Parse a tmux color name or `colourN` / `N` index into a ColorAttribute.
+/// Parse a tmux color name, `colourN` / `N` palette index, or `#rrggbb` /
+/// `#rgb` hex triplet into a ColorAttribute. Hex colors become truecolor with a
+/// nearest-256-palette fallback so they still render on non-truecolor terminals.
 pub fn parse_color(s: &str) -> ColorAttribute {
+    let s = s.trim();
+    if let Some(rgb) = parse_hex(s) {
+        return rgb;
+    }
     let named = match s {
         "black" => Some(0),
         "red" => Some(1),
@@ -266,6 +339,81 @@ pub fn parse_color(s: &str) -> ColorAttribute {
     }
 }
 
+/// Parse a `#rrggbb` or shorthand `#rgb` hex color into a truecolor attribute
+/// with a nearest-palette fallback. Returns None if `s` isn't a valid hex color.
+fn parse_hex(s: &str) -> Option<ColorAttribute> {
+    let hex = s.strip_prefix('#')?;
+    let (r, g, b) = match hex.len() {
+        6 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            (r, g, b)
+        }
+        // Shorthand #rgb expands each nibble (f -> ff), matching CSS/tmux.
+        3 => {
+            let n = |c: &str| u8::from_str_radix(c, 16).ok().map(|v| v * 17);
+            (n(&hex[0..1])?, n(&hex[1..2])?, n(&hex[2..3])?)
+        }
+        _ => return None,
+    };
+    let tuple = termwiz::color::RgbColor::new_8bpc(r, g, b).to_tuple_rgba();
+    Some(ColorAttribute::TrueColorWithPaletteFallback(
+        tuple,
+        nearest_palette_index(r, g, b),
+    ))
+}
+
+/// Approximate an RGB color with the closest xterm-256 palette index, so a
+/// truecolor value still renders sensibly where only 256 colors are available.
+/// Uses the 6x6x6 color cube (indices 16..232) plus the grayscale ramp.
+fn nearest_palette_index(r: u8, g: u8, b: u8) -> u8 {
+    // Map an 8-bit channel to the 6-level cube axis (0,95,135,175,215,255).
+    fn cube_axis(v: u8) -> (u8, u8) {
+        const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+        let mut best = 0usize;
+        let mut best_d = u16::MAX;
+        for (i, &l) in LEVELS.iter().enumerate() {
+            let d = (l as i16 - v as i16).unsigned_abs();
+            if d < best_d {
+                best_d = d;
+                best = i;
+            }
+        }
+        (best as u8, LEVELS[best])
+    }
+    let (ri, rv) = cube_axis(r);
+    let (gi, gv) = cube_axis(g);
+    let (bi, bv) = cube_axis(b);
+    let cube_idx = 16 + 36 * ri + 6 * gi + bi;
+    let cube_d = dist2(r, g, b, rv, gv, bv);
+
+    // Grayscale ramp: indices 232..256 map to 8,18,...,238.
+    let gray = ((r as u16 + g as u16 + b as u16) / 3) as u8;
+    let gi = if gray < 8 {
+        0
+    } else {
+        ((gray as u16 - 8) / 10).min(23) as u8
+    };
+    let gv = 8 + gi * 10;
+    let gray_idx = 232 + gi;
+    let gray_d = dist2(r, g, b, gv, gv, gv);
+
+    if gray_d < cube_d {
+        gray_idx
+    } else {
+        cube_idx
+    }
+}
+
+fn dist2(r: u8, g: u8, b: u8, r2: u8, g2: u8, b2: u8) -> u32 {
+    let d = |a: u8, b: u8| {
+        let x = a as i32 - b as i32;
+        (x * x) as u32
+    };
+    d(r, r2) + d(g, g2) + d(b, b2)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -285,6 +433,7 @@ mod tests {
                 month: 6,
                 year: 2026,
             },
+            ..Default::default()
         }
     }
 
@@ -317,6 +466,48 @@ mod tests {
     }
 
     #[test]
+    fn window_list_formatted_expands_tokens_and_ranges() {
+        use termwiz::color::ColorAttribute;
+        let entries = vec![
+            WindowEntry { index: 1, name: "bash".into(), active: false },
+            WindowEntry { index: 2, name: "vim".into(), active: true },
+        ];
+        let base = CellAttributes::default();
+        let (spans, ranges) = window_list_formatted(
+            &entries,
+            " #I:#W ",                     // inactive
+            "#[fg=green,bold] #I:#W#F ",   // current (with a #F flag)
+            "|",
+            &ctx(),
+            &base,
+        );
+        let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+        // Inactive " 1:bash ", separator "|", current " 2:vim* " (#F -> *).
+        assert_eq!(text, " 1:bash | 2:vim* ");
+        // The current window's spans carry the green fg from its format.
+        assert!(
+            spans.iter().any(|s| s.attrs.foreground() == ColorAttribute::PaletteIndex(2)),
+            "current window format should apply its color"
+        );
+        // Hit ranges: entry 0 = cols 0..8, entry 1 starts after the 1-col sep.
+        assert_eq!(ranges, vec![(0, 0, 8), (1, 9, 17)]);
+    }
+
+    #[test]
+    fn message_style_spec_applies_fg_bg() {
+        use termwiz::color::ColorAttribute;
+        let mut a = CellAttributes::default();
+        apply_style_spec(&mut a, "fg=#ff0000,bg=colour24,bold");
+        assert_eq!(a.intensity(), termwiz::cell::Intensity::Bold);
+        assert_eq!(a.background(), ColorAttribute::PaletteIndex(24));
+        // Hex fg becomes truecolor.
+        assert!(matches!(
+            a.foreground(),
+            ColorAttribute::TrueColorWithPaletteFallback(_, _)
+        ));
+    }
+
+    #[test]
     fn style_spans_split_and_carry_attrs() {
         let s = format("#[fg=red,bold]ERR#[default] ok", &ctx());
         // Three spans: "ERR" (red bold), then default-attr " ok".
@@ -332,6 +523,37 @@ mod tests {
         assert_eq!(parse_color("124"), ColorAttribute::PaletteIndex(124));
         assert_eq!(parse_color("cyan"), ColorAttribute::PaletteIndex(6));
         assert_eq!(parse_color("default"), ColorAttribute::Default);
+    }
+
+    #[test]
+    fn parses_hex_colors_as_truecolor() {
+        use termwiz::color::RgbColor;
+        // #rrggbb → truecolor with a palette fallback.
+        let c = parse_color("#1e1e2e");
+        match c {
+            ColorAttribute::TrueColorWithPaletteFallback(tuple, _) => {
+                assert_eq!(tuple, RgbColor::new_8bpc(0x1e, 0x1e, 0x2e).to_tuple_rgba());
+            }
+            other => panic!("expected truecolor, got {other:?}"),
+        }
+        // Shorthand #rgb expands each nibble.
+        assert_eq!(parse_color("#fff"), parse_color("#ffffff"));
+        // Leading/trailing space tolerated (values come from split style specs).
+        assert_eq!(parse_color(" #89b4fa "), parse_color("#89b4fa"));
+        // Malformed hex falls back to Default rather than a wrong color.
+        assert_eq!(parse_color("#12"), ColorAttribute::Default);
+        assert_eq!(parse_color("#gggggg"), ColorAttribute::Default);
+    }
+
+    #[test]
+    fn hex_palette_fallback_is_sane() {
+        // Pure white/black map to the extremes of the fallback ramp.
+        let idx = |s: &str| match parse_color(s) {
+            ColorAttribute::TrueColorWithPaletteFallback(_, i) => i,
+            other => panic!("expected truecolor, got {other:?}"),
+        };
+        assert_eq!(idx("#000000"), 16); // cube corner (0,0,0)
+        assert_eq!(idx("#ffffff"), 231); // cube corner (5,5,5)
     }
 
     #[test]

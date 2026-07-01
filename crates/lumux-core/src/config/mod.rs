@@ -58,6 +58,28 @@ pub struct Config {
     /// Foreground color of the active pane's border (tmux pane-active-border).
     /// A tmux color name or `colourN`. Empty disables the highlight.
     pub pane_active_border_fg: String,
+    /// Foreground color of inactive pane borders (tmux pane-border-style fg).
+    /// Empty uses the terminal default (no explicit color).
+    pub pane_border_fg: String,
+    /// Window-list entry format for inactive windows (tmux window-status-format).
+    /// Supports the same tokens and `#[...]` style spans as the status segments.
+    pub window_status_format: String,
+    /// Window-list entry format for the current window (tmux
+    /// window-status-current-format).
+    pub window_status_current_format: String,
+    /// Separator drawn between window-list entries (tmux
+    /// window-status-separator).
+    pub window_status_separator: String,
+    /// Style applied to display-message / flash messages and the command prompt
+    /// row (tmux message-style), as a raw `key=val,flag` spec. Empty keeps the
+    /// reverse-video default.
+    pub message_style: String,
+    /// Foreground color of inactive pane numbers in the display-panes overlay
+    /// (tmux display-panes-colour). Empty keeps the reverse-video default.
+    pub display_panes_colour: String,
+    /// Foreground color of the active pane's number in the display-panes overlay
+    /// (tmux display-panes-active-colour). Empty keeps the reverse-video default.
+    pub display_panes_active_colour: String,
     /// When true, a pane whose process exits stays on screen (dead) instead of
     /// closing, so it can be inspected or respawned (tmux `remain-on-exit`). Off
     /// by default.
@@ -99,6 +121,16 @@ impl Default for Config {
             status_fg: "white".to_string(),
             // tmux's default: the active pane gets a green border.
             pane_active_border_fg: "green".to_string(),
+            // Inactive borders and window-status formats default to empty, which
+            // preserves lumux's built-in look (plain borders, reverse-video
+            // window list). Setting them switches to the tmux format path.
+            pane_border_fg: String::new(),
+            window_status_format: String::new(),
+            window_status_current_format: String::new(),
+            window_status_separator: " ".to_string(),
+            message_style: String::new(),
+            display_panes_colour: String::new(),
+            display_panes_active_colour: String::new(),
             remain_on_exit: false,
             mode_keys: "vi".to_string(),
             persist: false,

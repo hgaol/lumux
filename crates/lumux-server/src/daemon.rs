@@ -244,6 +244,12 @@ impl<S: PtySystem> Daemon<S> {
         lumux_core::render::border_attrs(&self.config.pane_active_border_fg)
     }
 
+    /// Attributes for inactive pane borders (tmux pane-border-style). None when
+    /// unconfigured, so borders keep the terminal default.
+    fn inactive_border_attrs(&self) -> Option<lumux_core::render::CellAttributes> {
+        lumux_core::render::border_attrs(&self.config.pane_border_fg)
+    }
+
     /// Lowest window/pane number shown to the user (tmux base-index). Window
     /// selection keys/commands are offset by this so the digit a user presses
     /// matches the number rendered in the status bar.
@@ -1587,6 +1593,7 @@ impl<S: PtySystem> Daemon<S> {
             grids: &grids,
             active_pane,
             active_border: self.active_border_attrs(),
+            inactive_border: self.inactive_border_attrs(),
         };
         // Compose panes without a built-in status row, but reserve the bottom
         // row so panes don't extend into it; we then paint our own styled status
@@ -1626,19 +1633,88 @@ impl<S: PtySystem> Daemon<S> {
         let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
         let rects = lumux_core::layout::compute(layout, viewport);
         let base = self.base_index();
-        let mut attrs = CellAttributes::default();
-        attrs.set_reverse(true);
+        // Reverse-video by default; a configured display-panes-colour tints the
+        // number foreground instead (active vs inactive picked per pane below).
+        let attrs_for = |is_active: bool| {
+            let colour = if is_active {
+                &self.config.display_panes_active_colour
+            } else {
+                &self.config.display_panes_colour
+            };
+            let mut a = CellAttributes::default();
+            if colour.is_empty() {
+                a.set_reverse(true);
+            } else {
+                a.set_foreground(lumux_core::status::parse_color(colour));
+            }
+            a
+        };
         // Number panes by their traversal order so the digits match pick_pane_number.
         for (i, pid) in layout.pane_ids().iter().enumerate() {
             let Some(rect) = rects.get(pid) else { continue };
-            let label = if Some(*pid) == active {
+            let is_active = Some(*pid) == active;
+            let label = if is_active {
                 format!(" {}* ", base as usize + i)
             } else {
                 format!(" {} ", base as usize + i)
             };
+            let attrs = attrs_for(is_active);
             let cx = rect.x as usize + (rect.cols as usize / 2).saturating_sub(label.len() / 2);
             let cy = rect.y as usize + rect.rows as usize / 2;
             screen.write_str(cx, cy, &label, &attrs);
+        }
+    }
+
+    /// Build the centre segment (window list) as styled spans plus the per-entry
+    /// hit ranges, so `paint_status` and `status_window_at` stay in lockstep.
+    /// Uses the tmux window-status format strings when configured, otherwise the
+    /// built-in reverse-video list.
+    fn window_list_segment(
+        &self,
+        s: &lumux_core::model::Session,
+        base_idx: u32,
+        base: &lumux_core::render::CellAttributes,
+        ctx: &lumux_core::status::StatusContext,
+    ) -> (Vec<lumux_core::status::Span>, Vec<(usize, usize, usize)>) {
+        use lumux_core::status::{self, WindowEntry};
+        let entries: Vec<WindowEntry> = s
+            .window_ids()
+            .iter()
+            .enumerate()
+            .filter_map(|(i, wid)| {
+                s.window(*wid).map(|w| WindowEntry {
+                    index: i as u32 + base_idx,
+                    name: w.name.clone(),
+                    active: *wid == s.active_window(),
+                })
+            })
+            .collect();
+        let cfg = &self.config;
+        if cfg.window_status_format.is_empty() && cfg.window_status_current_format.is_empty() {
+            let spans = status::window_list(&entries, base);
+            let ranges = status::window_list_hit_ranges(&entries);
+            (spans, ranges)
+        } else {
+            // If only one of the two formats is set, fall back to the other for
+            // the missing one so a partial config still renders every entry.
+            let inactive = if cfg.window_status_format.is_empty() {
+                &cfg.window_status_current_format
+            } else {
+                &cfg.window_status_format
+            };
+            let current = if cfg.window_status_current_format.is_empty() {
+                &cfg.window_status_format
+            } else {
+                &cfg.window_status_current_format
+            };
+            status::window_list_formatted(
+                &entries,
+                inactive,
+                current,
+                &cfg.window_status_separator,
+                ctx,
+                base,
+            )
         }
     }
 
@@ -1662,13 +1738,13 @@ impl<S: PtySystem> Daemon<S> {
                 PromptTarget::Session => format!("(rename-session) {}", p.buffer),
                 PromptTarget::FindWindow => format!("(find-window) {}", p.buffer),
             };
-            screen.status_line(screen.dimensions().1.saturating_sub(1), &line);
+            self.paint_message_row(screen, &line);
             return;
         }
 
         // A pending display-message takes over the whole row.
         if let Some(msg) = self.message.get(&client_id) {
-            screen.status_line(screen.dimensions().1.saturating_sub(1), msg);
+            self.paint_message_row(screen, msg);
             return;
         }
 
@@ -1686,6 +1762,7 @@ impl<S: PtySystem> Daemon<S> {
             window_index: window_index(s, window.id) + base_idx,
             pane_index: base_idx,
             host: hostname(),
+            flags: String::new(),
             time: now_parts(),
         };
 
@@ -1697,23 +1774,10 @@ impl<S: PtySystem> Daemon<S> {
         } else {
             &self.config.status_left
         };
+        let (centre, _) = self.window_list_segment(s, base_idx, &base, &ctx);
         let styled = StyledStatus {
             left: status::format(left_fmt, &ctx),
-            centre: {
-                let entries: Vec<status::WindowEntry> = s
-                    .window_ids()
-                    .iter()
-                    .enumerate()
-                    .filter_map(|(i, wid)| {
-                        s.window(*wid).map(|w| status::WindowEntry {
-                            index: i as u32 + base_idx,
-                            name: w.name.clone(),
-                            active: *wid == s.active_window(),
-                        })
-                    })
-                    .collect();
-                status::window_list(&entries, &base)
-            },
+            centre,
             right: status::format(&self.config.status_right, &ctx),
             base,
             justify: match self.config.status_justify.as_str() {
@@ -1723,6 +1787,24 @@ impl<S: PtySystem> Daemon<S> {
             },
         };
         styled.render(screen);
+    }
+
+    /// Paint a full-width message/prompt row (display-message, command prompt),
+    /// honoring tmux `message-style` when set and otherwise using reverse video.
+    fn paint_message_row(&self, screen: &mut lumux_core::render::Screen, text: &str) {
+        use lumux_core::render::{Cell, CellAttributes};
+        let y = screen.dimensions().1.saturating_sub(1);
+        if self.config.message_style.is_empty() {
+            screen.status_line(y, text);
+            return;
+        }
+        let w = screen.dimensions().0;
+        let mut attrs = CellAttributes::default();
+        lumux_core::status::apply_style_spec(&mut attrs, &self.config.message_style);
+        for x in 0..w {
+            screen.set_cell(x, y, Cell::new(' ', attrs.clone()));
+        }
+        screen.write_str(0, y, text, &attrs);
     }
 
     /// Hit-test a click on the status row against the window list: return the
@@ -1748,6 +1830,7 @@ impl<S: PtySystem> Daemon<S> {
             window_index: window_index(s, window.id) + base_idx,
             pane_index: base_idx,
             host: hostname(),
+            flags: String::new(),
             time: now_parts(),
         };
         let base = StyledStatus::base_attrs(&self.config.status_bg, &self.config.status_fg);
@@ -1757,20 +1840,10 @@ impl<S: PtySystem> Daemon<S> {
             &self.config.status_left
         };
         let wids = s.window_ids();
-        let entries: Vec<status::WindowEntry> = wids
-            .iter()
-            .enumerate()
-            .filter_map(|(i, wid)| {
-                s.window(*wid).map(|w| status::WindowEntry {
-                    index: i as u32 + base_idx,
-                    name: w.name.clone(),
-                    active: *wid == s.active_window(),
-                })
-            })
-            .collect();
+        let (centre, hit_ranges) = self.window_list_segment(s, base_idx, &base, &ctx);
         let styled = StyledStatus {
             left: status::format(left_fmt, &ctx),
-            centre: status::window_list(&entries, &base),
+            centre,
             right: status::format(&self.config.status_right, &ctx),
             base,
             justify: match self.config.status_justify.as_str() {
@@ -1786,7 +1859,7 @@ impl<S: PtySystem> Daemon<S> {
             return None;
         }
         let rel = click - cx;
-        for (pos, start, end) in status::window_list_hit_ranges(&entries) {
+        for (pos, start, end) in hit_ranges {
             if rel >= start && rel < end {
                 return wids.get(pos).copied();
             }
@@ -1821,6 +1894,7 @@ impl<S: PtySystem> Daemon<S> {
             grids: &grids,
             active_pane: active,
             active_border: self.active_border_attrs(),
+            inactive_border: self.inactive_border_attrs(),
         };
         let cols = size.cols as usize;
         let rows = size.rows as usize;

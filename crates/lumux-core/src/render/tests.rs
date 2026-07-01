@@ -28,6 +28,7 @@ fn single_pane_fills_content_area() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let screen = compose((20, 5), &view, None, false);
     assert_eq!(screen.row_string(0), "hello");
@@ -47,6 +48,7 @@ fn horizontal_split_draws_vertical_border() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let screen = compose((20, 3), &view, None, false);
     let row0 = screen.row_string(0);
@@ -69,6 +71,7 @@ fn status_bar_occupies_bottom_row() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let status = StatusBar {
         left: "[work] 0:sh".into(),
@@ -102,6 +105,7 @@ fn reserved_status_row_keeps_panes_out_of_bottom_line() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let screen = compose((20, 5), &view, None, true);
     // The bottom row (index 4) must be blank — reserved for the status bar.
@@ -128,6 +132,7 @@ fn active_pane_cursor_wins() {
         grids: &refs(&grids),
         active_pane: p(2),
         active_border: None,
+        inactive_border: None,
     };
     let screen = compose((20, 3), &view, None, false);
     // 20 cols, divider 1 => 19 usable, ratio 0.5 => round(9.5)=10 left / 9 right.
@@ -146,6 +151,7 @@ fn client_renderer_full_then_incremental() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let mut cr = ClientRenderer::new();
     let first = cr.render(compose((20, 3), &view, None, false));
@@ -161,6 +167,7 @@ fn client_renderer_full_then_incremental() {
         grids: &refs(&grids2),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let second = cr.render(compose((20, 3), &view2, None, false));
     assert!(
@@ -180,6 +187,7 @@ fn renderer_invalidate_forces_repaint() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None,
+        inactive_border: None,
     };
     let mut cr = ClientRenderer::new();
     let _ = cr.render(compose((10, 2), &view, None, false));
@@ -208,7 +216,7 @@ fn repaint_roundtrip_preserves_text_with_inline_sgr() {
     let layout = PaneNode::leaf(PaneId(1));
     let mut grids: BTreeMap<PaneId, &Grid> = BTreeMap::new();
     grids.insert(PaneId(1), &src);
-    let view = WindowView { layout: &layout, grids: &grids, active_pane: PaneId(1), active_border: None };
+    let view = WindowView { layout: &layout, grids: &grids, active_pane: PaneId(1), active_border: None, inactive_border: None };
     let screen = compose((80, 4), &view, None, false);
 
     // The composed screen's row 0 must read the literal text (no shift).
@@ -470,6 +478,7 @@ fn active_pane_border_is_highlighted() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: green,
+        inactive_border: None,
     };
     let screen = compose((20, 3), &view, None, false);
 
@@ -501,6 +510,7 @@ fn inactive_pane_border_is_not_highlighted() {
         grids: &refs(&grids),
         active_pane: p(1),
         active_border: None, // highlight disabled
+        inactive_border: None,
     };
     let screen = compose((20, 3), &view, None, false);
     let row0 = screen.row_string(0);

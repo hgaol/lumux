@@ -17,6 +17,12 @@
 //! (single or double) are handled. Commands joined with `\;` (tmux's command
 //! separator) keep only the first command on the line — enough for the common
 //! `bind r source-file … \; display "…"` pattern.
+//!
+//! Config variables are supported: `%hidden NAME=value` (or a bare
+//! `NAME=value`) defines a variable, referenced as `$NAME` / `${NAME}` and
+//! expanded before a directive is applied (falling back to the environment, so
+//! `$HOME` works). This is what makes palette-style configs — define colors
+//! once, reuse them across `*-style` options — load correctly.
 
 use super::{Config, ConfigError, ShellProfile};
 
@@ -41,6 +47,11 @@ impl Config {
     pub fn from_tmux_verbose(s: &str) -> Result<TmuxParse, ConfigError> {
         let mut cfg = Config::default();
         let mut warnings = Vec::new();
+        // tmux config variables: `%hidden NAME=value` or a bare `NAME=value`
+        // line. Referenced elsewhere as `$NAME` / `${NAME}` and expanded before a
+        // directive is applied. (Without this, e.g. a `$BG` in a status-style
+        // string would reach the renderer literally and render as the default.)
+        let mut vars: std::collections::HashMap<String, String> = std::collections::HashMap::new();
 
         for raw_line in logical_lines(s) {
             let line = raw_line.trim();
@@ -53,13 +64,93 @@ impl Config {
                 Some(t) if !t.is_empty() => t,
                 _ => continue,
             };
-            apply_directive(&mut cfg, &tokens, &mut warnings)?;
+            // Variable assignment: `%hidden NAME=value` or a bare `NAME=value`.
+            // Capture it (expanding any vars already defined) and move on — it's
+            // not a directive to apply.
+            let assign_tok = if tokens[0] == "%hidden" {
+                tokens.get(1)
+            } else {
+                Some(&tokens[0])
+            };
+            if let Some((name, value)) = assign_tok.and_then(|t| parse_assignment(t)) {
+                vars.insert(name, expand_vars(&value, &vars));
+                continue;
+            }
+            // Expand `$VAR` in every token, then apply.
+            let expanded: Vec<String> = tokens.iter().map(|t| expand_vars(t, &vars)).collect();
+            apply_directive(&mut cfg, &expanded, &mut warnings)?;
         }
         Ok(TmuxParse {
             config: cfg,
             warnings,
         })
     }
+}
+
+/// Parse a tmux variable assignment token `NAME=value` (the value already
+/// unquoted by the tokenizer). Returns None if the left side isn't a plain
+/// identifier, so directive tokens like `bg=green` on a style line — which only
+/// ever appear as non-first tokens — are never mistaken for assignments.
+fn parse_assignment(tok: &str) -> Option<(String, String)> {
+    let (name, value) = tok.split_once('=')?;
+    if name.is_empty() || !name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return None;
+    }
+    Some((name.to_string(), value.to_string()))
+}
+
+/// Expand `$NAME` and `${NAME}` references in `s` using `vars`, falling back to
+/// the process environment (so `$HOME` works like tmux). Unknown names are left
+/// literal — more debuggable than silently blanking, and a stray `$X` in a color
+/// slot degrades to the default anyway.
+fn expand_vars(s: &str, vars: &std::collections::HashMap<String, String>) -> String {
+    if !s.contains('$') {
+        return s.to_string();
+    }
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' {
+            out.push(c);
+            continue;
+        }
+        // `${NAME}` (braced) or `$NAME` (bare, alnum/underscore run).
+        let braced = chars.peek() == Some(&'{');
+        if braced {
+            chars.next(); // consume '{'
+        }
+        let mut name = String::new();
+        while let Some(&nc) = chars.peek() {
+            let part_of_name = if braced {
+                nc != '}'
+            } else {
+                nc.is_ascii_alphanumeric() || nc == '_'
+            };
+            if !part_of_name {
+                break;
+            }
+            name.push(nc);
+            chars.next();
+        }
+        if braced {
+            chars.next(); // consume '}' (if present)
+        }
+        match vars.get(&name).cloned().or_else(|| std::env::var(&name).ok()) {
+            Some(v) => out.push_str(&v),
+            None => {
+                // Leave the reference literal.
+                out.push('$');
+                if braced {
+                    out.push('{');
+                    out.push_str(&name);
+                    out.push('}');
+                } else {
+                    out.push_str(&name);
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Join physical lines on a trailing backslash into logical lines.
@@ -268,6 +359,27 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
                 cfg.pane_active_border_fg = fg;
             }
         }
+        // Inactive pane border color (tmux pane-border-style fg=...). Empty leaves
+        // the terminal default.
+        "pane-border-style" => {
+            if let Some(fg) = style_fg(value) {
+                cfg.pane_border_fg = fg;
+            }
+        }
+        // Window-list entry formats. These carry `#[...]` style spans and tokens
+        // (#I index, #W name, #F flags) rendered by the status formatter.
+        "window-status-format" => cfg.window_status_format = value.to_string(),
+        "window-status-current-format" => cfg.window_status_current_format = value.to_string(),
+        "window-status-separator" => cfg.window_status_separator = value.to_string(),
+        // Message / command-prompt row styling (raw spec; fg/bg/attrs applied).
+        "message-style" => cfg.message_style = value.to_string(),
+        // display-panes overlay number colors (tmux prefix q).
+        "display-panes-colour" | "display-panes-color" => {
+            cfg.display_panes_colour = value.to_string();
+        }
+        "display-panes-active-colour" | "display-panes-active-color" => {
+            cfg.display_panes_active_colour = value.to_string();
+        }
         // Copy-mode key style: vi (default) or emacs.
         "mode-keys" => {
             let v = value.trim().to_lowercase();
@@ -277,10 +389,17 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
         }
         // Known-but-irrelevant to lumux: silently accept the common ones so a
         // typical tmux.conf doesn't spew warnings for things that are simply the
-        // default behavior in lumux.
+        // default behavior in lumux, or features it doesn't have (copy-mode
+        // selection styling, clock mode, activity monitoring, clipboard/terminal
+        // negotiation).
         "status-keys" | "escape-time" | "status" | "status-interval"
         | "renumber-windows" | "set-titles" | "status-left-length" | "status-right-length"
-        | "aggressive-resize" | "default-terminal" | "focus-events" | "pane-border-style" => {}
+        | "aggressive-resize" | "default-terminal" | "focus-events"
+        | "mode-style" | "message-command-style" | "window-status-activity-style"
+        | "window-status-bell-style" | "monitor-activity" | "monitor-bell"
+        | "clock-mode-colour" | "clock-mode-color" | "clock-mode-style"
+        | "set-clipboard" | "terminal-overrides" | "terminal-features"
+        | "status-position" | "display-time" | "visual-activity" | "visual-bell" => {}
         other => warnings.push(format!("unsupported option: {other}")),
     }
 }
@@ -636,6 +755,54 @@ mod tests {
     }
 
     #[test]
+    fn hidden_vars_expand_in_directives() {
+        // The Catppuccin-style pattern: define a palette with %hidden, reference
+        // it as $VAR / ${VAR} inside style strings and other options.
+        let conf = r##"
+            %hidden BG="#1e1e2e"
+            %hidden FG="#cdd6f4"
+            %hidden ACCENT="#89b4fa"
+            set -g status-style "bg=$BG,fg=$FG"
+            set -g status-left "#[fg=$BG,bg=${ACCENT}] #S "
+            set -g pane-active-border-style "fg=$ACCENT"
+        "##;
+        let c = Config::from_tmux(conf).unwrap();
+        // %hidden lines are not warnings and the vars are substituted.
+        assert_eq!(c.status_bg, "#1e1e2e");
+        assert_eq!(c.status_fg, "#cdd6f4");
+        assert_eq!(c.status_left, "#[fg=#1e1e2e,bg=#89b4fa] #S ");
+        assert_eq!(c.pane_active_border_fg, "#89b4fa");
+    }
+
+    #[test]
+    fn bare_and_referential_assignments_work() {
+        // Bare NAME=value (no %hidden) also defines a var, and a later var may
+        // reference an earlier one.
+        let conf = r##"
+            ACCENT="#89b4fa"
+            LEFT="fg=$ACCENT,bold"
+            set -g status-style "$LEFT"
+        "##;
+        let p = Config::from_tmux_verbose(conf).unwrap();
+        // Assignments must not produce "unsupported command" warnings.
+        assert!(
+            !p.warnings.iter().any(|w| w.contains("ACCENT") || w.contains("LEFT")),
+            "assignments should not warn: {:?}",
+            p.warnings
+        );
+        // status-style only pulls fg here; bold is ignored, fg expanded.
+        assert_eq!(p.config.status_fg, "#89b4fa");
+    }
+
+    #[test]
+    fn unknown_var_left_literal() {
+        // An undefined reference is left as-is rather than blanked, so the
+        // mistake is visible instead of silently dropping the value.
+        let c = Config::from_tmux(r#"set -g status-left "$NOPE end""#).unwrap();
+        assert_eq!(c.status_left, "$NOPE end");
+    }
+
+    #[test]
     fn unsupported_directives_warn_not_fail() {
         let conf = r#"
             set -g prefix C-a
@@ -646,8 +813,10 @@ mod tests {
         "#;
         let p = Config::from_tmux_verbose(conf).unwrap();
         assert_eq!(p.config.prefix, "C-a");
-        // The unknown option and the unsupported binding are warned about.
-        assert!(p.warnings.iter().any(|w| w.contains("monitor-activity")));
+        // A genuinely unknown option is warned about. (monitor-activity and
+        // renumber-windows are silently accepted — lumux either has no such
+        // feature or it's already the default, so warning would be noise.)
+        assert!(p.warnings.iter().any(|w| w.contains("some-future-option")));
         assert!(!p.warnings.is_empty());
     }
 
