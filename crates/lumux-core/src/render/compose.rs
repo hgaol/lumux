@@ -313,6 +313,60 @@ fn blit_pane(screen: &mut Screen, rect: Rect, grid: &Grid) {
     );
 }
 
+/// Blit a whole window's split layout (every pane + the dividers between them)
+/// into the sub-region at `(ox, oy)` of size `w × h`. This is the same layout +
+/// border math as [`compose`], but scaled into an arbitrary rectangle so the
+/// session-chooser preview can show a shrunk multi-pane view instead of only the
+/// active pane. Panes missing from `grids` are left blank. Dividers use the
+/// default cell attributes (a `│` / `─` grid line).
+pub fn blit_window_layout(
+    screen: &mut Screen,
+    ox: usize,
+    oy: usize,
+    w: usize,
+    h: usize,
+    layout: &PaneNode,
+    grids: &BTreeMap<PaneId, &Grid>,
+) {
+    if w == 0 || h == 0 {
+        return;
+    }
+    let rects = layout::compute(layout, Rect::new(0, 0, w as u16, h as u16));
+    let border_attrs = CellAttributes::default();
+    for (&pid, rect) in &rects {
+        if let Some(grid) = grids.get(&pid) {
+            // Offset the pane rect into the sub-region before blitting.
+            let placed = Rect::new(
+                ox as u16 + rect.x,
+                oy as u16 + rect.y,
+                rect.cols,
+                rect.rows,
+            );
+            blit_pane(screen, placed, grid);
+        }
+        // Right divider when this pane doesn't reach the sub-region's right edge.
+        let right = rect.x as usize + rect.cols as usize;
+        if right < w {
+            screen.vline(
+                ox + right,
+                oy + rect.y as usize,
+                oy + rect.y as usize + rect.rows as usize,
+                &border_attrs,
+            );
+        }
+        // Bottom divider when it doesn't reach the sub-region's bottom edge.
+        let bottom = rect.y as usize + rect.rows as usize;
+        if bottom < h {
+            screen.hline(
+                oy + bottom,
+                ox + rect.x as usize,
+                ox + rect.x as usize + rect.cols as usize,
+                &border_attrs,
+            );
+        }
+    }
+}
+
 /// Per-client renderer: remembers the last screen sent so the next frame is a
 /// minimal diff. The daemon holds one of these per attached client.
 pub struct ClientRenderer {

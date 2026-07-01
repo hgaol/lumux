@@ -9,7 +9,10 @@ mod diff;
 mod screen;
 mod sgr;
 
-pub use compose::{border_attrs, compose, ClientRenderer, Justify, StatusBar, StyledStatus, WindowView};
+pub use compose::{
+    blit_window_layout, border_attrs, compose, ClientRenderer, Justify, StatusBar, StyledStatus,
+    WindowView,
+};
 pub use termwiz::cell::CellAttributes;
 pub use diff::{diff, full_repaint};
 pub use screen::Screen;

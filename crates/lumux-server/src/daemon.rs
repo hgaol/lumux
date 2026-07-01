@@ -1830,12 +1830,20 @@ impl<S: PtySystem> Daemon<S> {
             let Some(s) = self.server.session(*sid) else {
                 continue;
             };
-            // Clip the label to the list column so it doesn't bleed into the
-            // preview region.
-            let mut line = format!("{}: {} ({}w)", i, s.name, s.window_count());
-            if line.chars().count() > list_w {
-                line = line.chars().take(list_w).collect();
-            }
+            // Build the row as "<i>: <name>" plus a RIGHT-ALIGNED window count
+            // ("3w"), so a long session name truncates the NAME, never the count.
+            let count = format!("{}w", s.window_count());
+            let prefix = format!("{i}: ");
+            // Space available for the name = list_w - prefix - count - 1 gap.
+            let name_room = list_w
+                .saturating_sub(prefix.chars().count())
+                .saturating_sub(count.chars().count())
+                .saturating_sub(1);
+            let name: String = s.name.chars().take(name_room).collect();
+            // Pad so the count sits flush at the right edge of the list column.
+            let used = prefix.chars().count() + name.chars().count() + count.chars().count();
+            let pad = list_w.saturating_sub(used);
+            let line = format!("{prefix}{name}{}{count}", " ".repeat(pad));
             if i == sel {
                 screen.status_line_width(y, &line, list_w);
             } else {
@@ -1968,9 +1976,23 @@ impl<S: PtySystem> Daemon<S> {
             let sep_rows = if is_last { 0 } else { 1 };
             let content_h = this_h.saturating_sub(1 + sep_rows); // minus header (+sep)
             if content_h > 0 {
-                if let Some(p) = self.panes.get(&win.active_pane()) {
-                    screen.blit_grid(x, top + 1, w, content_h, &p.grid);
+                // Preview the window's WHOLE split layout (all panes + dividers),
+                // shrunk into the slot — not just the active pane.
+                let mut grids = std::collections::BTreeMap::new();
+                for pid in win.pane_ids() {
+                    if let Some(p) = self.panes.get(&pid) {
+                        grids.insert(pid, &p.grid);
+                    }
                 }
+                lumux_core::render::blit_window_layout(
+                    screen,
+                    x,
+                    top + 1,
+                    w,
+                    content_h,
+                    &win.layout,
+                    &grids,
+                );
             }
             if sep_rows == 1 {
                 // Thin horizontal rule across the preview column at the slot's end.

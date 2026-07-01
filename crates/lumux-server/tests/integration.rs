@@ -1977,6 +1977,68 @@ fn prefix_s_switches_session() {
 }
 
 #[test]
+fn chooser_preview_shows_all_panes_of_a_window() {
+    // Regression: the session-chooser preview showed only each window's active
+    // pane. It must render the window's WHOLE split layout — every pane plus the
+    // divider between them. Split the window into two panes with distinct
+    // markers, open the chooser, and assert BOTH markers AND a `│` divider show
+    // in the preview.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("multipane".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Left pane marker, then split right and mark the new pane.
+    c.send(&ClientMsg::Input(b"echo LEFTPANE_AA\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"echo RIGHTPANE_BB\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Open the chooser (a wide screen so the preview has room for both panes).
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 120, rows: 30 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("LEFTPANE_AA") && vt.contains("RIGHTPANE_BB"),
+        "preview should show BOTH panes' content; got:\n{vt}"
+    );
+    assert!(
+        vt.contains('\u{2502}'),
+        "preview should draw a divider between the two panes; got:\n{vt}"
+    );
+}
+
+#[test]
+fn chooser_list_shows_window_count() {
+    // The session list must show each session's window count (e.g. "3w"),
+    // right-aligned so it survives a long session name.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("counts".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Three windows total: create two more (prefix c).
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("choose a session") && vt.contains("3w"),
+        "the list should show the window count '3w'; got:\n{vt}"
+    );
+}
+
+#[test]
 fn prefix_d_detaches_but_keeps_session_alive() {
     let path = start_daemon();
     let mut c = TestClient::connect(&path);

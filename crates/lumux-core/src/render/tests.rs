@@ -512,3 +512,40 @@ fn inactive_pane_border_is_not_highlighted() {
         "with no active_border, dividers stay default-colored"
     );
 }
+
+#[test]
+fn blit_window_layout_draws_all_panes_and_dividers() {
+    // A [LEFT | RIGHT] split blitted into a 20x5 sub-region at origin (0,0) must
+    // show BOTH panes' content and a vertical divider between them — proving the
+    // chooser preview renders the whole layout, not just one pane.
+    let mut layout = PaneNode::leaf(p(1));
+    layout.split_leaf(p(1), p(2), SplitDir::Horizontal);
+    let mut grids = BTreeMap::new();
+    grids.insert(p(1), grid_with("LEFT", 9, 5));
+    grids.insert(p(2), grid_with("RIGHT", 9, 5));
+
+    let mut screen = Screen::new(20, 5);
+    blit_window_layout(&mut screen, 0, 0, 20, 5, &layout, &refs(&grids));
+
+    let row0 = screen.row_string(0);
+    assert!(row0.contains("LEFT"), "left pane content should render; got {row0:?}");
+    assert!(row0.contains("RIGHT"), "right pane content should render; got {row0:?}");
+    assert!(row0.contains('\u{2502}'), "a vertical divider should separate the panes; got {row0:?}");
+}
+
+#[test]
+fn blit_window_layout_offsets_into_subregion() {
+    // Blit a single pane into a sub-region that does NOT start at the origin;
+    // content must land at the offset, and the area above/left stays blank.
+    let layout = PaneNode::leaf(p(1));
+    let mut grids = BTreeMap::new();
+    grids.insert(p(1), grid_with("HI", 10, 3));
+
+    let mut screen = Screen::new(20, 6);
+    blit_window_layout(&mut screen, 5, 2, 10, 3, &layout, &refs(&grids));
+
+    // Row 0 (above the sub-region) is blank; the content sits at row 2, col 5.
+    assert_eq!(screen.row_string(0).trim_end(), "");
+    assert_eq!(screen.cell(5, 2).map(|c| c.str().to_string()), Some("H".to_string()));
+    assert_eq!(screen.cell(6, 2).map(|c| c.str().to_string()), Some("I".to_string()));
+}
