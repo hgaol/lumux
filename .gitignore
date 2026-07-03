@@ -6,3 +6,6 @@ Cargo.lock
 
 # local-only release helper (bumps sibling tap/bucket repos)
 /bump-packages.sh
+
+# developer-local Make targets (see `-include local.mk` in Makefile)
+/local.mk

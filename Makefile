@@ -33,7 +33,7 @@ INSTALL      := install -m755
 .PHONY: help
 help: ## Show this help
 	@echo "lumux make targets:"
-	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
+	@grep -hE '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) \
 		| awk 'BEGIN {FS = ":.*?## "} {printf "  \033[36m%-22s\033[0m %s\n", $$1, $$2}'
 
 # ---------------------------------------------------------------------------
@@ -168,3 +168,9 @@ dist-linux: ## Build optimized Linux binary -> dist/linux/
 .PHONY: dist
 dist: dist-linux dist-macos dist-windows ## Cross-build for all three platforms
 	@echo "All platform binaries staged under $(DIST)/."
+
+# ---------------------------------------------------------------------------
+# Local, developer-specific targets (e.g. a personal push/publish flow). Kept
+# in an un-committed local.mk; `-include` tolerates the file being absent.
+# ---------------------------------------------------------------------------
+-include local.mk
