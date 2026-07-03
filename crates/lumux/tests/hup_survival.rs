@@ -56,6 +56,9 @@ fn daemon_survives_client_group_sighup() {
         // Point the client at our test socket + no state file, inheriting env.
         std::env::set_var("LUMUX_SOCK", &sock);
         std::env::remove_var("LUMUX_STATE");
+        // Clear the nested-session guard: if this test itself runs inside a lumux
+        // session, `$LUMUX` would make the client refuse to start a new one.
+        std::env::remove_var("LUMUX");
         let mut argv: Vec<*const libc::c_char> = args.iter().map(|a| a.as_ptr()).collect();
         argv.push(std::ptr::null());
         unsafe {
