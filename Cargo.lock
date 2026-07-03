@@ -550,7 +550,7 @@ checksum = "953f07c43838f8e6f9758cab68bf5bed85465e7587ebe0b823f1bcd81978ad3a"
 
 [[package]]
 name = "lumux"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -567,7 +567,7 @@ dependencies = [
 
 [[package]]
 name = "lumux-backend-unix"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "libc",
  "lumux-core",
@@ -577,7 +577,7 @@ dependencies = [
 
 [[package]]
 name = "lumux-backend-win"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "lumux-core",
  "portable-pty",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "lumux-core"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "bincode",
  "bytes",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "lumux-server"
-version = "0.1.13"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "libc",
