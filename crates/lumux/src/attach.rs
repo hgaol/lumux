@@ -395,6 +395,26 @@ fn spawn_daemon_process() -> anyhow::Result<()> {
         // CREATE_NO_WINDOW (0x0800_0000) | DETACHED_PROCESS (0x0000_0008)
         cmd.creation_flags(0x0800_0000 | 0x0000_0008);
     }
+    // On Unix, put the daemon in its OWN session (setsid) so it leaves the
+    // client's process group and drops the controlling terminal. Without this the
+    // daemon is a child of the SSH-launched shell's session, so a disconnect
+    // SIGHUPs the whole group and kills the daemon — taking the last session with
+    // it. We also ignore SIGHUP in the child as a belt-and-suspenders guard.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                // New session + process group, detached from the controlling tty.
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                // Ignore SIGHUP so a hangup on the old tty can't reach us.
+                libc::signal(libc::SIGHUP, libc::SIG_IGN);
+                Ok(())
+            });
+        }
+    }
     cmd.spawn()?;
     Ok(())
 }
