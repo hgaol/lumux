@@ -1,6 +1,5 @@
 /target
 **/*.rs.bk
-Cargo.lock
 /dist
 .intentionally-empty-file.o
 
@@ -9,3 +8,4 @@ Cargo.lock
 
 # developer-local Make targets (see `-include local.mk` in Makefile)
 /local.mk
+/Cargo.toml-E
