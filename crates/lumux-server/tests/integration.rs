@@ -641,6 +641,115 @@ fn copy_mode_shows_mode_line() {
 }
 
 #[test]
+fn mouse_drag_selects_and_copies_text() {
+    // tmux drag-to-copy: left-press over a pane, drag across text, release — the
+    // selection is copied to the clipboard. We prove the copy by capturing the
+    // OSC-52 set-clipboard frame the daemon emits on release and decoding its
+    // base64 payload back to the selected text.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("dragcopy".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Print a unique marker so we can look for it in the copied text.
+    c.send(&ClientMsg::Input(b"echo DRAGCOPY_MARKER_XZ\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    // Left-press at the top-left, drag across a wide swath of the screen (which
+    // enters copy-mode and extends the selection), then release. SGR button
+    // codes: 0 = left press/release, 32 = left-drag (motion bit set). Coords are
+    // 1-based on the wire.
+    c.send(&ClientMsg::Input(b"\x1b[<0;1;1M".to_vec())); // press (1,1)
+    c.collect_until(Duration::from_millis(100), |_| false);
+    c.send(&ClientMsg::Input(b"\x1b[<32;80;20M".to_vec())); // drag to (80,20)
+    c.collect_until(Duration::from_millis(100), |_| false);
+
+    // The release frame carries the OSC-52 clipboard set. Collect until we see a
+    // frame containing the OSC-52 introducer.
+    c.send(&ClientMsg::Input(b"\x1b[<0;80;20m".to_vec())); // release (80,20)
+    let (saw_osc, vt) = c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Frame(b) if find_osc52(b).is_some())
+    });
+    assert!(saw_osc, "release must emit an OSC-52 clipboard frame; got:\n{vt}");
+
+    // Decode the payload and confirm the marker text was actually copied.
+    let payload = osc52_payload(&vt).expect("OSC-52 payload in captured frames");
+    let text = String::from_utf8(base64_decode(&payload).expect("valid base64"))
+        .expect("utf8 clipboard text");
+    assert!(
+        text.contains("DRAGCOPY_MARKER_XZ"),
+        "copied text should contain the dragged marker; got:\n{text:?}"
+    );
+}
+
+/// Locate an OSC-52 set-clipboard sequence (`ESC ] 52 ; c ; <b64> BEL`) in raw
+/// frame bytes, returning the base64 payload. Used by the drag-copy test.
+fn find_osc52(bytes: &[u8]) -> Option<String> {
+    osc52_payload(&String::from_utf8_lossy(bytes))
+}
+
+/// Extract the base64 payload of the first OSC-52 sequence in a (lossy) string.
+fn osc52_payload(s: &str) -> Option<String> {
+    let start = s.find("\x1b]52;")?;
+    // After the introducer: "52;<selection>;<b64>BEL". Skip to the 2nd ';'.
+    let rest = &s[start + 2..]; // past ESC ]
+    let semi1 = rest.find(';')?;
+    let after_sel = &rest[semi1 + 1..];
+    let semi2 = after_sel.find(';')?;
+    let payload = &after_sel[semi2 + 1..];
+    let end = payload.find('\x07')?; // BEL terminator
+    Some(payload[..end].to_string())
+}
+
+/// Minimal standard-base64 decoder (the crate hand-rolls the encoder to avoid a
+/// dependency; the test hand-rolls the matching decoder for the same reason).
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    fn val(c: u8) -> Option<u32> {
+        match c {
+            b'A'..=b'Z' => Some((c - b'A') as u32),
+            b'a'..=b'z' => Some((c - b'a' + 26) as u32),
+            b'0'..=b'9' => Some((c - b'0' + 52) as u32),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let s: Vec<u8> = s.bytes().filter(|b| !b.is_ascii_whitespace()).collect();
+    let mut out = Vec::new();
+    for chunk in s.chunks(4) {
+        let mut acc = 0u32;
+        let mut pad = 0;
+        for (k, &ch) in chunk.iter().enumerate() {
+            if ch == b'=' {
+                pad += 1;
+                acc <<= 6;
+            } else {
+                acc = (acc << 6) | val(ch)?;
+            }
+            let _ = k;
+        }
+        // Missing chars (short final chunk) count as padding.
+        for _ in chunk.len()..4 {
+            acc <<= 6;
+            pad += 1;
+        }
+        out.push((acc >> 16) as u8);
+        if pad < 2 {
+            out.push((acc >> 8) as u8);
+        }
+        if pad < 1 {
+            out.push(acc as u8);
+        }
+    }
+    Some(out)
+}
+
+#[test]
 fn copy_mode_keeps_other_panes_with_multiple_panes() {
     // Regression: entering copy-mode (which scrolling does) used to paint the
     // active pane full-screen, blanking every other pane and erasing the

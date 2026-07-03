@@ -654,7 +654,7 @@ where
         session: SessionId,
         bytes: &[u8],
     ) -> Vec<u8> {
-        use lumux_core::mouse::{self, MouseKind};
+        use lumux_core::mouse::{self, MouseButton, MouseKind};
         // Prepend any mouse-report prefix held back from the previous frame (an
         // SGR report split across reads, e.g. over SSH). Taken out of the handle
         // so we don't borrow self.clients across the &mut self calls below.
@@ -686,6 +686,15 @@ where
                 if matches!(ev.kind, MouseKind::Down(_)) {
                     self.mouse_select_pane(session, ev.col, ev.row);
                     self.daemon.begin_drag(client_id, session, ev.col, ev.row);
+                    // A left-press that didn't grab a divider arms a text
+                    // selection; the first drag motion turns it into a copy-mode
+                    // selection (tmux drag-to-copy). A press on a divider resizes
+                    // instead, so don't arm there.
+                    if matches!(ev.kind, MouseKind::Down(MouseButton::Left))
+                        && !self.daemon.is_dragging_divider(client_id)
+                    {
+                        self.daemon.mouse_sel_arm(client_id, session, ev.col, ev.row);
+                    }
                 }
                 // If the app in the pane under the pointer enabled mouse
                 // reporting, forward the raw event to it (pane-relative) and skip
@@ -701,8 +710,33 @@ where
                     MouseKind::Down(_) => {}
                     MouseKind::ScrollUp => self.mouse_scroll(client_id, session, ev.col, ev.row, true),
                     MouseKind::ScrollDown => self.mouse_scroll(client_id, session, ev.col, ev.row, false),
-                    MouseKind::Drag(_) => self.mouse_drag(client_id, session, ev.col, ev.row),
-                    MouseKind::Up(_) => self.daemon.end_drag(client_id),
+                    MouseKind::Drag(_) => {
+                        // A live/armed text selection takes the drag (extending
+                        // the copy-mode selection under the pointer). Otherwise
+                        // fall back to moving a grabbed divider.
+                        if self.daemon.mouse_sel_drag(client_id, session, ev.col, ev.row) {
+                            self.render_client(client_id);
+                        } else {
+                            self.mouse_drag(client_id, session, ev.col, ev.row);
+                        }
+                    }
+                    MouseKind::Up(_) => {
+                        // Releasing a text-selection drag yanks it (copy + exit
+                        // copy-mode) and emits OSC-52 so the client's local
+                        // terminal clipboard is set too — same as keyboard Yank.
+                        if self.daemon.mouse_sel_active(client_id) {
+                            let text = self.daemon.mouse_sel_finish(client_id, session);
+                            if let Some(k) = self.daemon.keymap_mut(client_id) {
+                                k.reset();
+                            }
+                            if let (Some(text), Some(h)) = (text, self.clients.get(&client_id)) {
+                                let _ = h.out.send(ServerMsg::Frame(osc52(&text)));
+                            }
+                            self.render_client(client_id);
+                        } else {
+                            self.daemon.end_drag(client_id);
+                        }
+                    }
                     // Bare pointer motion: consumed (so it can't leak as text) but
                     // otherwise ignored — it must not dismiss overlays like help.
                     MouseKind::Move => {}

@@ -461,6 +461,27 @@ fn blit_grid_scrolled_preserves_color() {
 }
 
 #[test]
+fn reverse_cell_flips_reverse_but_keeps_glyph_and_color() {
+    use termwiz::color::ColorAttribute;
+    let mut g = Grid::new(20, 2, 50);
+    g.feed(b"\x1b[31mR\x1b[m");
+    let mut screen = Screen::new(20, 2);
+    screen.blit_grid_scrolled(0, 0, 20, 2, &g, 0);
+    assert!(!screen.cell(0, 0).unwrap().attrs().reverse());
+    screen.reverse_cell(0, 0);
+    let c = screen.cell(0, 0).unwrap();
+    assert!(c.attrs().reverse(), "reverse must be on");
+    assert_eq!(c.str(), "R", "glyph must be preserved");
+    assert_eq!(
+        c.attrs().foreground(),
+        ColorAttribute::PaletteIndex(1),
+        "color must be preserved under the highlight"
+    );
+    // Out-of-bounds is a silent no-op.
+    screen.reverse_cell(999, 999);
+}
+
+#[test]
 fn active_pane_border_is_highlighted() {
     use termwiz::color::ColorAttribute;
     // [LEFT | RIGHT] split in 20x3, active = LEFT (p1). The shared divider is the

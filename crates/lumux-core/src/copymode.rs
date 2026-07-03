@@ -244,6 +244,19 @@ impl CopyMode {
         true
     }
 
+    /// Place the cursor at an absolute buffer position (row clamped to the last
+    /// combined-buffer row, col left as-is) and scroll it into view. Unlike
+    /// [`navigate`], which moves relative to the current cursor, this jumps to a
+    /// point — used by the mouse to anchor/extend a selection under the pointer.
+    pub fn set_cursor(&mut self, pos: Pos, grid: &Grid) {
+        let max_row = grid.combined_len().saturating_sub(1);
+        self.cursor = Pos {
+            row: pos.row.min(max_row),
+            col: pos.col,
+        };
+        self.scroll_to_cursor(grid);
+    }
+
     /// Keep the cursor row within the visible window by adjusting `top`.
     fn scroll_to_cursor(&mut self, grid: &Grid) {
         let combined = grid.combined_len();
@@ -291,6 +304,42 @@ impl CopyMode {
             }
         }
         out
+    }
+
+    /// The highlighted column range `[start, end)` on combined-buffer `row`, or
+    /// `None` if `row` is outside the selection. `width` is the pane's column
+    /// count, used to extend a stream selection's first/middle rows to the right
+    /// edge (matching how `selected_text` takes the rest of the line). Pure — no
+    /// grid needed — so the renderer can paint the reverse-video highlight and
+    /// the yank stays the single source of truth for the actual text.
+    pub fn selection_span(&self, row: usize, width: usize) -> Option<(usize, usize)> {
+        let anchor = self.anchor?;
+        if self.rectangle {
+            let r0 = anchor.row.min(self.cursor.row);
+            let r1 = anchor.row.max(self.cursor.row);
+            if row < r0 || row > r1 {
+                return None;
+            }
+            let lo = anchor.col.min(self.cursor.col);
+            let hi = anchor.col.max(self.cursor.col) + 1;
+            return Some((lo, hi.min(width)));
+        }
+        let (start, end) = order(anchor, self.cursor);
+        if row < start.row || row > end.row {
+            return None;
+        }
+        // Column range mirrors `selected_text` exactly (exclusive end) so the
+        // reverse-video highlight covers precisely what a yank would copy.
+        let (c0, c1) = if start.row == end.row {
+            (start.col, end.col)
+        } else if row == start.row {
+            (start.col, width)
+        } else if row == end.row {
+            (0, end.col)
+        } else {
+            (0, width)
+        };
+        Some((c0.min(width), c1.min(width)))
     }
 
     /// Extract a rectangular (block) selection: the same column range
@@ -540,6 +589,71 @@ mod tests {
         cm.toggle_rectangle();
         assert!(cm.has_selection(), "toggling block mid-air begins a selection");
         assert!(cm.is_rectangle());
+    }
+
+    #[test]
+    fn set_cursor_clamps_row_and_scrolls_into_view() {
+        // Grid taller than the viewport so there's scrollback to clamp against.
+        let mut g = Grid::new(20, 3, 50);
+        for i in 0..10 {
+            g.feed(format!("line{i}\r\n").as_bytes());
+        }
+        let mut cm = CopyMode::enter(&g);
+        let max_row = g.combined_len().saturating_sub(1);
+        // A row past the end clamps to the last combined-buffer row.
+        cm.set_cursor(Pos { row: 999, col: 4 }, &g);
+        assert_eq!(cm.cursor().row, max_row);
+        assert_eq!(cm.cursor().col, 4);
+        // Jumping to the top scrolls the view so the cursor is visible.
+        cm.set_cursor(Pos { row: 0, col: 0 }, &g);
+        assert_eq!(cm.cursor().row, 0);
+        assert!(cm.top() <= cm.cursor().row);
+    }
+
+    #[test]
+    fn selection_span_stream_matches_selected_text_columns() {
+        // Single row: anchor col 0, cursor col 5 → highlight cols [0,5),
+        // exactly the "hello" that selected_text yields (exclusive end).
+        let mut g = Grid::new(20, 2, 50);
+        g.feed(b"hello world");
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 0 };
+        cm.start_selection();
+        cm.cursor = Pos { row: 0, col: 5 };
+        assert_eq!(cm.selection_span(0, 20), Some((0, 5)));
+        // Rows outside the selection are not highlighted.
+        assert_eq!(cm.selection_span(1, 20), None);
+    }
+
+    #[test]
+    fn selection_span_multi_row_extends_to_width() {
+        // Two rows: first row runs from the anchor col to the right edge, the
+        // last row from col 0 up to (exclusive) the cursor col — mirroring the
+        // stream text extraction.
+        let mut g = Grid::new(20, 3, 50);
+        g.feed(b"abcde\r\nfghij");
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 2 };
+        cm.start_selection();
+        cm.cursor = Pos { row: 1, col: 3 };
+        assert_eq!(cm.selection_span(0, 20), Some((2, 20)));
+        assert_eq!(cm.selection_span(1, 20), Some((0, 3)));
+    }
+
+    #[test]
+    fn selection_span_rectangle_is_column_bounded_every_row() {
+        // Block mode: the same inclusive column range on each row in range.
+        let mut g = Grid::new(20, 4, 50);
+        g.feed(b"abcde\r\nfghij\r\nklmno");
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 1 };
+        cm.toggle_rectangle(); // anchors here, block mode on
+        cm.cursor = Pos { row: 2, col: 2 };
+        // Columns 1..=2 → span [1,3) on rows 0,1,2.
+        for r in 0..=2 {
+            assert_eq!(cm.selection_span(r, 20), Some((1, 3)), "row {r}");
+        }
+        assert_eq!(cm.selection_span(3, 20), None);
     }
 
     fn search_grid() -> Grid {

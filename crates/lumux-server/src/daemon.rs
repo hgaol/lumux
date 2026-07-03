@@ -122,6 +122,10 @@ pub struct Daemon<S: PtySystem> {
     /// Clients mid-divider-drag: the path to the divider grabbed on mouse-press,
     /// so subsequent drag motion moves that same divider (even off its line).
     dragging: BTreeMap<u64, Vec<bool>>,
+    /// Clients mid mouse-drag text-selection (tmux drag-to-copy). Armed on a
+    /// left-press over a selectable pane; promoted to Dragging on the first drag
+    /// motion, which enters copy-mode and starts the selection.
+    mouse_sel: BTreeMap<u64, MouseSel>,
     /// Server-global paste buffers (tmux paste-buffer stack), shared by all
     /// sessions and clients. Yanks push here; prefix `]`/`=` read from it.
     buffers: lumux_core::buffers::PasteBuffers,
@@ -131,6 +135,17 @@ pub struct Daemon<S: PtySystem> {
     showing_panes: std::collections::BTreeSet<u64>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
+}
+
+/// Mouse text-selection drag state (tmux drag-to-copy). A left-press over a
+/// selectable pane records `Armed` with the press cell; the first drag motion
+/// promotes it to `Dragging`, entering copy-mode and starting the selection.
+#[derive(Clone, Copy)]
+enum MouseSel {
+    /// Pressed but not yet moved; remembers where the drag would start.
+    Armed { ox: u16, oy: u16 },
+    /// Drag in progress: copy-mode is open and the selection is being extended.
+    Dragging,
 }
 
 /// An open rename prompt: what it renames, plus the in-progress text.
@@ -207,6 +222,7 @@ impl<S: PtySystem> Daemon<S> {
             prompt: BTreeMap::new(),
             search: BTreeMap::new(),
             dragging: BTreeMap::new(),
+            mouse_sel: BTreeMap::new(),
             buffers: lumux_core::buffers::PasteBuffers::new(),
             choosing_buffer: BTreeMap::new(),
             showing_panes: std::collections::BTreeSet::new(),
@@ -1550,6 +1566,146 @@ impl<S: PtySystem> Daemon<S> {
         self.dragging.remove(&client_id);
     }
 
+    /// Whether this client currently has a divider grabbed (press landed on a
+    /// split border). Used so a drag that started on a divider resizes rather
+    /// than starting a text selection.
+    pub fn is_dragging_divider(&self, client_id: u64) -> bool {
+        self.dragging.contains_key(&client_id)
+    }
+
+    /// Mouse-press over a selectable pane: arm a possible text selection at
+    /// (col,row). Promoted to a live selection on the first drag motion (tmux
+    /// starts selecting on move, so a plain click never flickers copy-mode).
+    /// No-op on the status row or the alternate screen (nothing to select).
+    pub fn mouse_sel_arm(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) {
+        self.mouse_sel.remove(&client_id);
+        let Some(pid) = self.pane_at_screen(session, col, row) else {
+            return;
+        };
+        if self.pane_on_alt_screen(pid) {
+            return;
+        }
+        self.mouse_sel
+            .insert(client_id, MouseSel::Armed { ox: col, oy: row });
+    }
+
+    /// Mouse-drag while a selection is armed/active. The first motion enters
+    /// copy-mode, anchors the selection at the press cell, and extends it to the
+    /// current cell; later motions just extend. Returns true when a text
+    /// selection is live (so the caller skips divider-drag and repaints).
+    pub fn mouse_sel_drag(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) -> bool {
+        match self.mouse_sel.get(&client_id).copied() {
+            Some(MouseSel::Armed { ox, oy }) => {
+                // Begin copy-mode on the active pane; bail if it refuses (e.g. an
+                // app flipped to the alt screen between press and drag).
+                if !self.in_copy_mode(client_id) {
+                    self.enter_copy_mode(client_id, session);
+                }
+                if !self.in_copy_mode(client_id) {
+                    self.mouse_sel.remove(&client_id);
+                    return false;
+                }
+                let Some(origin) = self.screen_to_buffer(client_id, session, ox, oy) else {
+                    self.mouse_sel.remove(&client_id);
+                    return false;
+                };
+                let cur = self
+                    .screen_to_buffer(client_id, session, col, row)
+                    .unwrap_or(origin);
+                if let (Some(pid), Some(cm)) =
+                    (self.active_pane(session), self.copy.get_mut(&client_id))
+                {
+                    if let Some(grid) = self.panes.get(&pid).map(|p| &p.grid) {
+                        cm.set_cursor(origin, grid);
+                        cm.start_selection();
+                        cm.set_cursor(cur, grid);
+                    }
+                }
+                self.mouse_sel.insert(client_id, MouseSel::Dragging);
+                if let Some(r) = self.renderers.get_mut(&client_id) {
+                    r.invalidate();
+                }
+                true
+            }
+            Some(MouseSel::Dragging) => {
+                if let Some(cur) = self.screen_to_buffer(client_id, session, col, row) {
+                    if let (Some(pid), Some(cm)) =
+                        (self.active_pane(session), self.copy.get_mut(&client_id))
+                    {
+                        if let Some(grid) = self.panes.get(&pid).map(|p| &p.grid) {
+                            cm.set_cursor(cur, grid);
+                        }
+                    }
+                }
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Whether a mouse text-selection drag is currently in progress.
+    pub fn mouse_sel_active(&self, client_id: u64) -> bool {
+        matches!(self.mouse_sel.get(&client_id), Some(MouseSel::Dragging))
+    }
+
+    /// Mouse-release: finish a text-selection drag by yanking the selection
+    /// (which also exits copy-mode) and returning the copied text, if any. A drag
+    /// that never moved (still `Armed`) copies nothing.
+    pub fn mouse_sel_finish(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        match self.mouse_sel.remove(&client_id) {
+            Some(MouseSel::Dragging) => self.copy_yank(client_id, session),
+            _ => None,
+        }
+    }
+
+    /// Map a screen cell (col,row) to a position in the active pane's combined
+    /// buffer, using the pane's rect and the client's copy-mode scroll offset.
+    /// Clamps into the pane so a drag past an edge selects to the boundary.
+    fn screen_to_buffer(
+        &self,
+        client_id: u64,
+        session: SessionId,
+        col: u16,
+        row: u16,
+    ) -> Option<lumux_core::copymode::Pos> {
+        let (_pid, rect) = self.active_pane_rect(session)?;
+        let cm = self.copy.get(&client_id)?;
+        let rel_col = col.saturating_sub(rect.x).min(rect.cols.saturating_sub(1)) as usize;
+        let rel_row = row.saturating_sub(rect.y).min(rect.rows.saturating_sub(1)) as usize;
+        Some(lumux_core::copymode::Pos {
+            row: cm.top() + rel_row,
+            col: rel_col,
+        })
+    }
+
+    /// The active pane id and its on-screen rectangle in the content viewport.
+    fn active_pane_rect(&self, session: SessionId) -> Option<(PaneId, lumux_core::layout::Rect)> {
+        let vp = self.content_viewport(session)?;
+        let s = self.server.session(session)?;
+        let w = s.window(s.active_window())?;
+        let active = w.active_pane();
+        let layout = match w.zoomed_pane() {
+            Some(pid) => lumux_core::model::PaneNode::leaf(pid),
+            None => w.layout.clone(),
+        };
+        let rect = *lumux_core::layout::compute(&layout, vp).get(&active)?;
+        Some((active, rect))
+    }
+
+    /// The pane id at a screen point within the content area, or None on the
+    /// status row / outside any pane. Used to decide whether a press is over a
+    /// selectable pane.
+    fn pane_at_screen(&self, session: SessionId, col: u16, row: u16) -> Option<PaneId> {
+        let vp = self.content_viewport(session)?;
+        if row >= vp.rows {
+            return None;
+        }
+        let s = self.server.session(session)?;
+        let w = s.window(s.active_window())?;
+        let rects = lumux_core::layout::compute(&w.layout, vp);
+        lumux_core::layout::pane_at(&rects, col, row)
+    }
+
     /// Render the active window of `session` for `client_id`, returning VT bytes
     /// to send (empty if nothing changed).
     pub fn render_for_client(&mut self, client_id: u64, session: SessionId) -> Option<String> {
@@ -1929,6 +2085,18 @@ impl<S: PtySystem> Daemon<S> {
         // after a wide (CJK/emoji) char and drops colors, which looked garbled.
         let (ox, oy) = (rect.x as usize, rect.y as usize);
         screen.blit_grid_scrolled(ox, oy, rect.cols as usize, rect.rows as usize, grid, top);
+
+        // Paint the selection highlight (reverse video) over the blitted rows so
+        // a mouse-drag or keyboard selection is visible. selection_span gives the
+        // exact column range a yank would copy on each combined-buffer row.
+        let rect_cols = rect.cols as usize;
+        for gy in 0..rect.rows as usize {
+            if let Some((c0, c1)) = cm.selection_span(top + gy, rect_cols) {
+                for gx in c0..c1.min(rect_cols) {
+                    screen.reverse_cell(ox + gx, oy + gy);
+                }
+            }
+        }
 
         // Place the copy cursor within the pane rect (if visible in this scroll).
         let cur = cm.cursor();

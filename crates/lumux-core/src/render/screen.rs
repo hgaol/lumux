@@ -54,6 +54,15 @@ impl Screen {
         }
     }
 
+    /// Turn on reverse-video for the cell at (x,y), leaving its glyph and colors
+    /// intact. Used to paint a selection highlight over already-blitted content
+    /// (copy-mode drag/keyboard selection) without rebuilding the cell.
+    pub fn reverse_cell(&mut self, x: usize, y: usize) {
+        if x < self.width && y < self.height {
+            self.cells[y * self.width + x].attrs_mut().set_reverse(true);
+        }
+    }
+
     /// Write a string with given attributes starting at (x,y), clipped to the
     /// row. Returns the next x after the written text.
     pub fn write_str(&mut self, x: usize, y: usize, s: &str, attrs: &CellAttributes) -> usize {
