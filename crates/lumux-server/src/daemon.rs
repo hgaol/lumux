@@ -1648,6 +1648,14 @@ impl<S: PtySystem> Daemon<S> {
         matches!(self.mouse_sel.get(&client_id), Some(MouseSel::Dragging))
     }
 
+    /// Whether a mouse selection is armed or in progress (press seen, not yet
+    /// released). The event loop uses this to hold a trailing partial mouse
+    /// introducer across a read split, so a release SGR sequence chopped by an
+    /// SSH/mosh read boundary still reassembles instead of being dropped.
+    pub fn mouse_sel_pending(&self, client_id: u64) -> bool {
+        self.mouse_sel.contains_key(&client_id)
+    }
+
     /// Mouse-release: finish a text-selection drag by yanking the selection
     /// (which also exits copy-mode) and returning the copied text, if any. A drag
     /// that never moved (still `Armed`) copies nothing.

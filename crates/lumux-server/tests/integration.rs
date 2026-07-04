@@ -687,6 +687,52 @@ fn mouse_drag_selects_and_copies_text() {
     );
 }
 
+#[test]
+fn mouse_drag_release_split_across_reads_still_copies() {
+    // Regression: over SSH/mosh a mouse report can arrive split across reads. A
+    // release `ESC [ < 0 ; x ; y m` split *inside its `ESC [ <` introducer* used
+    // to be dropped (the bytes leaked as text), so `mouse_sel_finish` never ran
+    // and nothing was copied — even though the drag highlight looked fine. The
+    // event loop now holds a trailing partial introducer while a drag is live.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("dragsplit".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(b"echo SPLITCOPY_MARKER_QY\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    // Press + drag as whole reports, then deliver the RELEASE split at the worst
+    // boundary — a bare ESC, then the rest — as two separate inputs.
+    c.send(&ClientMsg::Input(b"\x1b[<0;1;1M".to_vec())); // press (1,1)
+    c.collect_until(Duration::from_millis(100), |_| false);
+    c.send(&ClientMsg::Input(b"\x1b[<32;80;20M".to_vec())); // drag to (80,20)
+    c.collect_until(Duration::from_millis(100), |_| false);
+    c.send(&ClientMsg::Input(b"\x1b".to_vec())); // release, part 1: bare ESC
+    c.collect_until(Duration::from_millis(100), |_| false);
+    c.send(&ClientMsg::Input(b"[<0;80;20m".to_vec())); // release, part 2
+
+    let (saw_osc, vt) = c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Frame(b) if find_osc52(b).is_some())
+    });
+    assert!(
+        saw_osc,
+        "a release split across reads must still emit the OSC-52 frame; got:\n{vt}"
+    );
+    let payload = osc52_payload(&vt).expect("OSC-52 payload in captured frames");
+    let text = String::from_utf8(base64_decode(&payload).expect("valid base64"))
+        .expect("utf8 clipboard text");
+    assert!(
+        text.contains("SPLITCOPY_MARKER_QY"),
+        "copied text should contain the dragged marker; got:\n{text:?}"
+    );
+}
+
 /// Locate an OSC-52 set-clipboard sequence (`ESC ] 52 ; c ; <b64> BEL`) in raw
 /// frame bytes, returning the base64 payload. Used by the drag-copy test.
 fn find_osc52(bytes: &[u8]) -> Option<String> {

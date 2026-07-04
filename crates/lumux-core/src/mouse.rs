@@ -165,6 +165,16 @@ pub fn is_partial(bytes: &[u8]) -> bool {
         && !bytes.iter().any(|&b| b == b'M' || b == b'm')
 }
 
+/// Whether `bytes` is a bare *prefix* of the `ESC [ <` SGR introducer that
+/// hasn't reached the `<` yet — i.e. exactly `ESC` or `ESC [` at a read
+/// boundary. Unlike [`is_partial`], this can't be distinguished from the start
+/// of a real Escape / arrow key, so callers must only hold it *mid-drag*, when
+/// the next report (typically the release) is genuinely expected. Covers the
+/// introducer-boundary split that [`is_partial`] deliberately skips.
+pub fn is_introducer_prefix(bytes: &[u8]) -> bool {
+    bytes == b"\x1b" || bytes == b"\x1b["
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -292,5 +302,20 @@ mod tests {
         // Ordinary text is never partial.
         assert!(!is_partial(b"hello"));
         assert!(!is_partial(b""));
+    }
+
+    #[test]
+    fn is_introducer_prefix_holds_only_bare_esc_prefixes() {
+        // A boundary landing inside the `ESC [ <` introducer: held mid-drag.
+        assert!(is_introducer_prefix(b"\x1b"));
+        assert!(is_introducer_prefix(b"\x1b["));
+        // The full introducer is is_partial's job, not this.
+        assert!(!is_introducer_prefix(b"\x1b[<"));
+        // A real Escape / arrow / other CSI must NOT be caught (would delay the
+        // keystroke by a frame).
+        assert!(!is_introducer_prefix(b"\x1b[A"));
+        assert!(!is_introducer_prefix(b"\x1bO"));
+        assert!(!is_introducer_prefix(b""));
+        assert!(!is_introducer_prefix(b"x"));
     }
 }

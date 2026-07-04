@@ -747,6 +747,17 @@ where
                 // next frame instead of leaking the bytes to the app as text.
                 pending.extend_from_slice(&combined[i..]);
                 break;
+            } else if mouse::is_introducer_prefix(&combined[i..])
+                && self.daemon.mouse_sel_pending(client_id)
+            {
+                // The frame ended inside the `ESC [ <` introducer of the next
+                // report (typically the release, split across an SSH/mosh read).
+                // is_partial can't hold a bare ESC/ESC[ — it's also the start of
+                // a real Escape/arrow — but a mouse selection is live here, so
+                // the next report is expected: hold it so the release
+                // reassembles instead of being dropped (which would lose the copy).
+                pending.extend_from_slice(&combined[i..]);
+                break;
             } else {
                 rest.push(combined[i]);
                 i += 1;
