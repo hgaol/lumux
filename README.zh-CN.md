@@ -9,6 +9,43 @@
 
 **就像 tmux，但原生支持 Windows。** 一个**轻量、开源**的多路复用器——提供会话、窗口和窗格，配合 tmux 风格的快捷键——在 Windows、Linux 和 macOS 上**跨平台**运行。直接放入你现有的 `~/.tmux.conf`，并以**纯文本**形式通过 SSH 或 Microsoft 隧道，从 Windows Terminal、conhost 或任意 VT 终端中连接。
 
+## 安装
+
+一行命令——下载最新发布版二进制文件，校验其 checksum，然后安装（无需 root，无需构建）：
+
+**Linux / macOS**
+
+```sh
+curl -fsSL https://hgaol.github.io/lumux/scripts/install.sh | sh
+```
+
+安装到 `~/.local/bin`（可用 `LUMUX_INSTALL_DIR` 覆盖）。
+
+**Windows（PowerShell）**
+
+```powershell
+irm https://hgaol.github.io/lumux/scripts/install.ps1 | iex
+```
+
+把 `lumux.exe` 安装到 `%LOCALAPPDATA%\lumux\bin`，并将该目录加入用户 `PATH`。重新运行任一安装脚本即可升级。
+
+**使用 Cargo**（任意带 Rust 工具链的平台）
+
+```sh
+cargo install lumux
+```
+
+**包管理器**
+
+```sh
+brew install hgaol/tap/lumux      # macOS / Linux（Homebrew）
+scoop install lumux               # Windows（需先执行：scoop bucket add lumux https://github.com/hgaol/scoop-lumux）
+winget install hgaol.lumux        # Windows
+```
+
+每个发布版的预编译二进制文件与 checksum 都在
+[releases 页面](https://github.com/hgaol/lumux/releases)。若要从源码构建，见 [构建](#构建)。
+
 ## 为什么选择 lumux
 
 WezTerm 已经能在 Windows 上提供持久化和窗格，但它只能通过自己的 GPU 图形界面重新连接。lumux 专为它做不到的那件事而生：**纯文本、终端内连接**。SSH 登录到 Windows 主机，运行 `lumux attach`，你的运行中会话就会以文本形式回到眼前——和 Linux 上的 `tmux attach` 完全一样。会话（及其进程）在连接断开后依然存活。
@@ -151,7 +188,7 @@ argv = ["pwsh.exe"]
 
 ## 构建
 
-需要 Rust（stable）。Windows 目标：`x86_64-pc-windows-msvc`。
+若你想从源码构建，而不使用[预编译发布版](#安装)，需要 Rust（stable）。Windows 目标：`x86_64-pc-windows-msvc`。
 
 ```
 cargo build --release                                  # 本机

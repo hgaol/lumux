@@ -13,6 +13,46 @@ runs **cross-platform** on Windows, Linux, and macOS. Drop in your existing
 `~/.tmux.conf` and attach as **plain text** over SSH or Microsoft tunnel from
 inside Windows Terminal, conhost, or any VT terminal.
 
+## Install
+
+One line — downloads the latest release binary, verifies its checksum, and
+installs it (no root, no build):
+
+**Linux / macOS**
+
+```sh
+curl -fsSL https://hgaol.github.io/lumux/scripts/install.sh | sh
+```
+
+Installs to `~/.local/bin` (override with `LUMUX_INSTALL_DIR`).
+
+**Windows (PowerShell)**
+
+```powershell
+irm https://hgaol.github.io/lumux/scripts/install.ps1 | iex
+```
+
+Installs `lumux.exe` to `%LOCALAPPDATA%\lumux\bin` and adds it to your user
+`PATH`. Re-run either installer to upgrade.
+
+**With Cargo** (any platform with a Rust toolchain)
+
+```sh
+cargo install lumux
+```
+
+**Package managers**
+
+```sh
+brew install hgaol/tap/lumux      # macOS / Linux (Homebrew)
+scoop install lumux               # Windows (after: scoop bucket add lumux https://github.com/hgaol/scoop-lumux)
+winget install hgaol.lumux        # Windows
+```
+
+Prebuilt binaries and checksums for each release are on the
+[releases page](https://github.com/hgaol/lumux/releases). To build from source,
+see [Building](#building).
+
 ## Why lumux
 
 WezTerm already offers persistence and panes on Windows, but it reattaches only
@@ -224,7 +264,8 @@ Reload without restarting: `lumux source-file <path>` (or bind a key to
 
 ## Building
 
-Requires Rust (stable). Windows target: `x86_64-pc-windows-msvc`.
+To build from source instead of using a [prebuilt release](#install), you need
+Rust (stable). Windows target: `x86_64-pc-windows-msvc`.
 
 ```
 cargo build --release                                  # native
