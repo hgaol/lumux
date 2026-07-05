@@ -148,6 +148,16 @@ enum MouseSel {
     Dragging,
 }
 
+/// Side effects of feeding PTY output into a pane, returned by
+/// [`Daemon::feed_pane`] for the event loop to act on.
+#[derive(Default)]
+pub struct PaneFeed {
+    /// The output rang the terminal bell (BEL).
+    pub bell: bool,
+    /// Text the app copied to the clipboard via OSC 52, to forward to clients.
+    pub clipboard: Option<String>,
+}
+
 /// An open rename prompt: what it renames, plus the in-progress text.
 #[derive(Clone)]
 pub struct Prompt {
@@ -449,14 +459,15 @@ impl<S: PtySystem> Daemon<S> {
         Ok((sid, pid, reader))
     }
 
-    /// Feed PTY output bytes into a pane's emulator. Returns true if the output
-    /// rang the terminal bell (BEL), so the caller can notify clients.
+    /// Feed PTY output bytes into a pane's emulator. Returns a [`PaneFeed`] with
+    /// any side effects the caller must act on: the bell flag (to notify clients)
+    /// and any OSC 52 clipboard text the app copied (to forward to clients).
     ///
     /// Also drains any terminal-query replies the emulator produced (cursor
     /// position / device status / device attributes) and writes them straight
     /// back to this pane's PTY — i.e. to the shell's stdin — so line editors like
     /// PSReadLine that query the cursor get their answer.
-    pub fn feed_pane(&mut self, id: PaneId, bytes: &[u8]) -> bool {
+    pub fn feed_pane(&mut self, id: PaneId, bytes: &[u8]) -> PaneFeed {
         if let Some(p) = self.panes.get_mut(&id) {
             // Debug aid: append raw PTY bytes to a capture file so we can inspect
             // exactly what ConPTY emits (e.g. PSReadLine ListView redraws). The
@@ -473,15 +484,21 @@ impl<S: PtySystem> Daemon<S> {
                 let _ = p.writer.write_input(&responses);
             }
             let bell = p.grid.take_bell();
+            let clipboard = p.grid.take_clipboard();
             // automatic-rename: if the app set an OSC title and this pane is the
             // active pane of its window (with auto-rename on), adopt it as the
             // window name.
             if let Some(title) = p.grid.title().map(str::to_string) {
                 self.apply_auto_title(id, &title);
             }
-            bell
+            // An OSC 52 copy also lands in lumux's own paste-buffer stack (tmux
+            // does this), so `prefix ]` can paste what the app copied.
+            if let Some(text) = &clipboard {
+                self.buffers.push(text.clone());
+            }
+            PaneFeed { bell, clipboard }
         } else {
-            false
+            PaneFeed::default()
         }
     }
 

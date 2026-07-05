@@ -202,15 +202,26 @@ where
                 self.clients.remove(&client_id);
             }
             Msg::PaneOutput { pane, bytes } => {
-                let rang = self.daemon.feed_pane(pane, &bytes);
+                let feed = self.daemon.feed_pane(pane, &bytes);
                 if let Some(sid) = self.pane_session.get(&pane).copied() {
-                    if rang {
+                    if feed.bell {
                         // Forward a bell to each attached client (tmux's default
                         // visual-bell-off behavior: the client emits a BEL so the
                         // user's own terminal flashes/beeps per its settings).
                         for id in self.session_clients(sid) {
                             if let Some(h) = self.clients.get(&id) {
                                 let _ = h.out.send(ServerMsg::Event(Event::Bell));
+                            }
+                        }
+                    }
+                    // An app in the pane copied via OSC 52 (e.g. Claude Code's own
+                    // selection). Re-emit it to each attached client's terminal so
+                    // the user's local clipboard is set — tmux `set-clipboard`.
+                    if let Some(text) = &feed.clipboard {
+                        let seq = osc52(text);
+                        for id in self.session_clients(sid) {
+                            if let Some(h) = self.clients.get(&id) {
+                                let _ = h.out.send(ServerMsg::Frame(seq.clone()));
                             }
                         }
                     }

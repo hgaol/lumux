@@ -68,6 +68,11 @@ pub struct Grid {
     /// The most recent window title set by the app via OSC 0/2 (`ESC]2;…BEL`).
     /// Used by the daemon for automatic-rename. None until the app sets one.
     title: Option<String>,
+    /// Text the app copied to the clipboard via OSC 52 (`ESC]52;c;…BEL`), pending
+    /// drain. The daemon forwards it to attached clients so their local terminal
+    /// clipboard is set (tmux `set-clipboard`) — this is how a TUI like Claude
+    /// Code, which does its own selection+copy, reaches the user's clipboard.
+    clipboard: Option<String>,
 }
 
 /// The primary-screen state stashed while the alternate screen is shown.
@@ -114,6 +119,7 @@ impl Grid {
             last_print: None,
             mouse_tracking: false,
             title: None,
+            clipboard: None,
         }
     }
 
@@ -184,6 +190,13 @@ impl Grid {
         std::mem::take(&mut self.bell)
     }
 
+    /// Take and clear any text the app copied to the clipboard via OSC 52. The
+    /// daemon drains this after feeding output and forwards it to clients so the
+    /// user's terminal clipboard is set (tmux `set-clipboard`).
+    pub fn take_clipboard(&mut self) -> Option<String> {
+        self.clipboard.take()
+    }
+
     /// Take the bytes the terminal owes the shell in reply to status queries
     /// (cursor-position / device-status / device-attributes). Empty if none are
     /// pending. The daemon writes these to the pane's PTY after feeding output.
@@ -223,14 +236,24 @@ impl Grid {
             Action::CSI(csi) => self.csi(csi),
             Action::Esc(esc) => self.esc(esc),
             // Capture window-title OSC (0 = icon+title, 2 = title) for tmux-style
-            // automatic-rename; other OSCs and DCS/sixel/kitty are ignored.
+            // automatic-rename, and OSC 52 clipboard writes for set-clipboard
+            // passthrough; other OSCs and DCS/sixel/kitty are ignored.
             Action::OperatingSystemCommand(osc) => {
+                use termwiz::escape::osc::Selection;
                 use termwiz::escape::OperatingSystemCommand as Osc;
                 match *osc {
                     Osc::SetWindowTitle(t)
                     | Osc::SetIconNameAndWindowTitle(t)
                     | Osc::SetWindowTitleSun(t) => {
                         self.title = Some(t);
+                    }
+                    // OSC 52 set-selection: an app copied to the clipboard. termwiz
+                    // hands us the already-base64-decoded text. Forward everything
+                    // except a PRIMARY-only target (that's the X11 selection, not
+                    // the system clipboard); an empty selection parses to
+                    // SELECT|CUT0, which per spec means the clipboard.
+                    Osc::SetSelection(sel, data) if sel != Selection::PRIMARY => {
+                        self.clipboard = Some(data);
                     }
                     _ => {}
                 }

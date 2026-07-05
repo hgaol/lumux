@@ -739,6 +739,42 @@ fn find_osc52(bytes: &[u8]) -> Option<String> {
     osc52_payload(&String::from_utf8_lossy(bytes))
 }
 
+/// A program inside a pane copies to the clipboard via OSC 52 (as Claude Code
+/// does with its own mouse selection). lumux must forward that sequence to the
+/// client's terminal so the user's local clipboard is set — tmux set-clipboard.
+#[test]
+fn app_osc52_clipboard_is_forwarded_to_client() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("appclip".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Emit an OSC 52 set-clipboard from inside the pane. printf writes it to the
+    // pane's PTY exactly as a TUI would. Q0xJUF9YWg== is base64 of "CLIP_XZ".
+    c.send(&ClientMsg::Input(
+        b"printf '\\033]52;c;Q0xJUF9YWg==\\007'\n".to_vec(),
+    ));
+    let (saw_osc, vt) = c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Frame(b) if find_osc52(b).is_some())
+    });
+    assert!(
+        saw_osc,
+        "app OSC 52 must be forwarded to the client as a frame; got:\n{vt}"
+    );
+    let payload = osc52_payload(&vt).expect("OSC-52 payload in captured frames");
+    let text = String::from_utf8(base64_decode(&payload).expect("valid base64"))
+        .expect("utf8 clipboard text");
+    assert!(
+        text.contains("CLIP_XZ"),
+        "forwarded clipboard text should be what the app copied; got:\n{text:?}"
+    );
+}
+
 /// Extract the base64 payload of the first OSC-52 sequence in a (lossy) string.
 fn osc52_payload(s: &str) -> Option<String> {
     let start = s.find("\x1b]52;")?;

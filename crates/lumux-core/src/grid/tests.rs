@@ -433,3 +433,32 @@ fn captures_osc_window_title() {
     g.feed(b"\x1b]0;next\x07");
     assert_eq!(g.title(), Some("next"));
 }
+
+#[test]
+fn captures_osc52_clipboard() {
+    let mut g = grid();
+    assert_eq!(g.take_clipboard(), None);
+    // OSC 52 set-clipboard: ESC ] 52 ; c ; <base64> BEL. "SEVMTE8=" is "HELLO".
+    g.feed(b"\x1b]52;c;SEVMTE8=\x07");
+    assert_eq!(g.take_clipboard().as_deref(), Some("HELLO"));
+    // One-shot: draining clears it.
+    assert_eq!(g.take_clipboard(), None, "clipboard clears after read");
+}
+
+#[test]
+fn osc52_empty_selection_targets_clipboard() {
+    // An empty selection field (ESC]52;;<b64>BEL) means the clipboard per spec;
+    // termwiz parses it as SELECT|CUT0, which we still forward.
+    let mut g = grid();
+    g.feed(b"\x1b]52;;SEVMTE8=\x07");
+    assert_eq!(g.take_clipboard().as_deref(), Some("HELLO"));
+}
+
+#[test]
+fn osc_title_does_not_populate_clipboard() {
+    // A window-title OSC must not leak into the clipboard channel.
+    let mut g = grid();
+    g.feed(b"\x1b]2;some-title\x07");
+    assert_eq!(g.take_clipboard(), None);
+    assert_eq!(g.title(), Some("some-title"));
+}
