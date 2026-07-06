@@ -1593,6 +1593,68 @@ fn keymap_and_command_prompt_new_window_agree() {
 }
 
 #[test]
+fn select_layout_by_name_rearranges_panes() {
+    // `select-layout NAME` must apply that exact preset (not just cycle). Split
+    // left/right (a vertical divider `│`), then select even-vertical, which
+    // stacks the panes top/bottom — so the vertical divider becomes a horizontal
+    // one (`─`). This proves the named layout was applied, not a cycle step.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("layoutname".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split left/right
+    let (_d0, split) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        split.contains('│'),
+        "precondition: a left/right split draws a vertical divider; got:\n{split}"
+    );
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"select-layout even-vertical\r".to_vec()));
+    c.collect_until(Duration::from_millis(400), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    assert!(
+        after.contains('─') && !after.contains('│'),
+        "even-vertical should stack panes (horizontal divider, no vertical); got:\n{after}"
+    );
+}
+
+#[test]
+fn send_keys_injects_text_into_the_active_pane() {
+    // `send-keys TEXT` injects verbatim into the active pane. Send a command
+    // ending in a newline and confirm its echoed output appears.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("sendkeys".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    // The trailing space + \r in the typed line is consumed by the prompt; the
+    // newline that runs the command is part of the send-keys payload.
+    c.send(&ClientMsg::Input(b"send-keys echo SENDKEYS_OK_QW\r".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    // send-keys injected the text but not a newline; press Enter in the pane.
+    c.send(&ClientMsg::Input(b"\r".to_vec()));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("SENDKEYS_OK_QW"),
+        "send-keys should inject text into the active pane; got:\n{vt}"
+    );
+}
+
+#[test]
 fn kill_pane_target_kills_the_indexed_pane_not_the_active_one() {
     // `kill-pane -t .N` must kill pane N, not the active pane. Split into two
     // panes (left = pane 0 with a unique marker; the new right pane = pane 1 and

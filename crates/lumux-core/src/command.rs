@@ -75,6 +75,13 @@ pub enum ParsedCommand {
     RunShell(String),
     /// `display-message <text>` / `display <text>`: flash a status-line message.
     DisplayMessage(String),
+    /// `send-keys <text>`: inject text into the active pane (verbatim; no tmux
+    /// key-name translation). Usable from a binding or the `:` prompt.
+    SendKeys(String),
+    /// `select-layout [NAME]`: apply a named preset layout (even-horizontal,
+    /// even-vertical, main-vertical, main-horizontal, tiled), or cycle to the
+    /// next preset when no name is given (like `next-layout`).
+    SelectLayout(Option<String>),
     /// `save-state`: write the session snapshot to disk now (tmux-resurrect save).
     SaveState,
     Detach,
@@ -104,6 +111,20 @@ pub fn parse_command(line: &str) -> Option<ParsedCommand> {
     }
     if line == "run-shell" || line == "run" {
         return Some(ParsedCommand::BadArgs("usage: run-shell COMMAND"));
+    }
+    // send-keys injects its argument verbatim (it may contain flag-looking text
+    // like `ls -la`), so take the rest of the line rather than splitting flags.
+    for prefix in ["send-keys ", "send ", "send-keys\t", "send\t"] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            let text = rest.trim();
+            if text.is_empty() {
+                return Some(ParsedCommand::BadArgs("usage: send-keys TEXT"));
+            }
+            return Some(ParsedCommand::SendKeys(unquote(text)));
+        }
+    }
+    if line == "send-keys" || line == "send" {
+        return Some(ParsedCommand::BadArgs("usage: send-keys TEXT"));
     }
     let mut parts = line.split_whitespace();
     let verb = parts.next()?;
@@ -250,6 +271,12 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             Some(text) => ParsedCommand::DisplayMessage(unquote(&text)),
             None => ParsedCommand::BadArgs("usage: display-message TEXT"),
         },
+        // send-keys is handled by the verbatim-tail path in parse_command; it
+        // never reaches dispatch(), so no arm is needed here.
+        "select-layout" | "selectl" => {
+            // Bare = cycle (like next-layout); a name applies that preset.
+            ParsedCommand::SelectLayout(join_rest(args))
+        }
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
         "save-state" | "saves" => ParsedCommand::SaveState,
@@ -537,6 +564,28 @@ mod tests {
                 next: false,
                 target: None
             })
+        );
+    }
+
+    #[test]
+    fn send_keys_and_select_layout_parse() {
+        assert_eq!(
+            parse_command("send-keys ls -la"),
+            Some(ParsedCommand::SendKeys("ls -la".to_string()))
+        );
+        assert_eq!(
+            parse_command("send \"echo hi\""),
+            Some(ParsedCommand::SendKeys("echo hi".to_string()))
+        );
+        assert!(matches!(parse_command("send-keys"), Some(ParsedCommand::BadArgs(_))));
+        // select-layout: bare cycles (None), a name applies that preset.
+        assert_eq!(
+            parse_command("select-layout"),
+            Some(ParsedCommand::SelectLayout(None))
+        );
+        assert_eq!(
+            parse_command("select-layout main-vertical"),
+            Some(ParsedCommand::SelectLayout(Some("main-vertical".to_string())))
         );
     }
 }

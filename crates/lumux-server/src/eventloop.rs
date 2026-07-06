@@ -1021,6 +1021,31 @@ where
         }
     }
 
+    /// Apply a specific named preset layout to the active window (tmux
+    /// `select-layout <name>`) and re-fit the PTYs. Unlike [`Self::next_layout`],
+    /// which cycles, this sets the exact layout the user asked for.
+    fn apply_named_layout(&mut self, session: SessionId, kind: lumux_core::model::LayoutKind) {
+        let applied = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let wid = s.active_window();
+                if let Some(w) = s.window_mut(wid) {
+                    w.apply_layout(kind);
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if applied {
+            if let Some(size) = self.daemon.server.effective_size(session) {
+                self.daemon.resize_session(session, size);
+            }
+        }
+    }
+
     /// Re-source the daemon's config file (tmux prefix r) and flash a message.
     /// Reloads from the first existing config candidate, format chosen by
     /// extension (so a tmux-syntax lumux.conf reloads as tmux).
@@ -1212,6 +1237,20 @@ where
             ParsedCommand::DisplayMessage(text) => {
                 self.daemon.flash_message(client_id, text);
             }
+            ParsedCommand::SendKeys(text) => {
+                // Inject verbatim into the active pane (tmux send-keys -l style;
+                // no key-name translation).
+                self.daemon.write_input(session, text.as_bytes());
+            }
+            ParsedCommand::SelectLayout(name) => match name {
+                // A named preset applies that layout; a bad name flashes an error.
+                Some(n) => match lumux_core::model::LayoutKind::from_name(&n) {
+                    Some(kind) => self.apply_named_layout(session, kind),
+                    None => self.daemon.flash_message(client_id, format!("unknown layout: {n}")),
+                },
+                // Bare select-layout cycles, like next-layout.
+                None => self.next_layout(session),
+            },
             ParsedCommand::SaveState => {
                 let path = self.state_path.clone();
                 match self.daemon.save_state(&path) {

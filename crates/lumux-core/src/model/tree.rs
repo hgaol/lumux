@@ -227,6 +227,21 @@ impl LayoutKind {
         let pos = Self::CYCLE.iter().position(|&l| l == self).unwrap_or(0);
         Self::CYCLE[(pos + 1) % Self::CYCLE.len()]
     }
+
+    /// Parse a tmux layout name (`even-horizontal`, `even-vertical`,
+    /// `main-vertical`, `main-horizontal`, `tiled`) into a [`LayoutKind`].
+    /// Returns None for an unknown name (tmux's stacked layout strings aren't
+    /// supported). Case-sensitive, matching tmux's own names.
+    pub fn from_name(name: &str) -> Option<LayoutKind> {
+        Some(match name {
+            "even-horizontal" => LayoutKind::EvenHorizontal,
+            "even-vertical" => LayoutKind::EvenVertical,
+            "main-vertical" => LayoutKind::MainVertical,
+            "main-horizontal" => LayoutKind::MainHorizontal,
+            "tiled" => LayoutKind::Tiled,
+            _ => return None,
+        })
+    }
 }
 
 impl PaneNode {
@@ -544,6 +559,18 @@ mod tests {
         // Five distinct layouts, then wraps back to the first.
         assert_eq!(seen.len(), 5);
         assert_eq!(k.next(), LayoutKind::CYCLE[0]);
+    }
+
+    #[test]
+    fn layout_kind_from_name_parses_tmux_names() {
+        assert_eq!(LayoutKind::from_name("even-horizontal"), Some(LayoutKind::EvenHorizontal));
+        assert_eq!(LayoutKind::from_name("even-vertical"), Some(LayoutKind::EvenVertical));
+        assert_eq!(LayoutKind::from_name("main-vertical"), Some(LayoutKind::MainVertical));
+        assert_eq!(LayoutKind::from_name("main-horizontal"), Some(LayoutKind::MainHorizontal));
+        assert_eq!(LayoutKind::from_name("tiled"), Some(LayoutKind::Tiled));
+        // Unknown / stacked layout strings are rejected.
+        assert_eq!(LayoutKind::from_name("bogus"), None);
+        assert_eq!(LayoutKind::from_name(""), None);
     }
 
     /// True if every Split node in the tree has direction `dir`.
