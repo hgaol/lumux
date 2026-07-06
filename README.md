@@ -118,6 +118,8 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `z` | zoom / unzoom the active pane |
 | `!` | break the active pane into a new window |
 | `{` / `}` | swap the active pane with the previous / next one |
+| `m` | mark / unmark the active pane (for cross-window join/swap) |
+| `Ctrl-o` | rotate the panes in the active window |
 | `S` | toggle synchronize-panes (type into all panes at once) |
 | `q` | show pane numbers, then press one to focus it |
 | `Space` | cycle preset layouts (even-horizontal/vertical, main, tiled) |
@@ -142,12 +144,15 @@ between panes instantly. With `mouse = true`, click selects a pane, the wheel
 scrolls into copy-mode history, and dragging a divider resizes panes.
 
 **Copy-mode:** arrows / PageUp / PageDown / Home / End or vi keys (`hjkl`) to
-move; `u` / `d` half-page scroll; `/` searches forward and `?` backward, with
-`n` / `N` to jump to the next / previous match; `Space` or `v` starts a
-selection and `Ctrl-v` / `R` toggles a rectangular (block) selection; `Enter` or
-`y` yanks (copying to your local terminal's clipboard via OSC-52 **and** pushing
-onto the paste-buffer stack); `q` or `Escape` exits. Paste the most recent
-buffer with `prefix ]`, or pick an older one with `prefix =`.
+move; `w` / `b` / `e` jump by word, `0` / `^` / `$` to line start / first
+non-blank / end, `g` / `G` to the top / bottom of the scrollback; `u` / `d`
+half-page scroll; `/` searches forward and `?` backward, with `n` / `N` to jump
+to the next / previous match; `Space` or `v` starts a selection and `Ctrl-v` /
+`R` toggles a rectangular (block) selection; `Enter` or `y` yanks (copying to
+your local terminal's clipboard via OSC-52 **and** pushing onto the paste-buffer
+stack); `q` or `Escape` exits. Paste the most recent buffer with `prefix ]`, or
+pick an older one with `prefix =`. Set `copy-command` (below) to also pipe each
+yank to a shell command.
 
 ## Command prompt
 
@@ -164,14 +169,21 @@ in your config (see below). The commands lumux implements:
 | `kill-pane [-t .N]` | kill the active pane, or pane N |
 | `swap-pane [-U\|-D] [-t .N]` | swap with the previous / next pane, or pane N |
 | `break-pane` | move the active pane into its own window |
-| `join-pane [-h\|-v] [-s N]` | pull a pane from window N into this one |
+| `join-pane [-h\|-v] [-s N]` | pull a pane from window N (or the marked pane) into this one |
+| `rotate-window [-U]` | rotate the panes in the active window |
+| `swap-window [-s A] -t B` | swap two windows by index |
+| `move-window -t N` | move the active window to index N |
 | `select-layout [NAME]` | apply a preset (`even-horizontal`, `even-vertical`, `main-vertical`, `main-horizontal`, `tiled`); bare cycles |
 | `rename-window <name>` / `rename-session <name>` | |
 | `find-window <query>` | switch to the first window whose name matches |
 | `synchronize-panes [on\|off]` | type into every pane at once |
 | `display-panes` | show pane numbers |
 | `display-message <text>` | flash a message in the status line |
-| `send-keys <text>` | inject text into the active pane (verbatim) |
+| `send-keys [-l] <keys>` | send keys to the active pane (key names like `Enter` / `C-c`, or `-l` for literal text) |
+| `set-buffer [-b name] <text>` | store text in a paste buffer |
+| `paste-buffer [-b name]` | paste a buffer (named, or the most recent) |
+| `save-buffer [-b name] <path>` / `load-buffer <path>` | buffer file I/O |
+| `delete-buffer -b name` | delete a named buffer |
 | `capture-pane` | copy the visible pane text into a paste buffer |
 | `respawn-pane` | restart the shell in a dead pane |
 | `run-shell <cmd>` | run a shell command; its output goes to a paste buffer |
@@ -184,6 +196,10 @@ in your config (see below). The commands lumux implements:
 **Targets (`-t`):** `kill-pane` and `swap-pane` take a target — `-t N` / `-t :N`
 for a window (acts on its active pane), `-t .N` for a pane by index in the active
 window. Indexes honor `base-index`.
+
+**Marking panes:** `prefix m` marks the active pane; then `join-pane` or
+`swap-pane` with no explicit source acts on the marked pane, which may be in
+another window — mark a pane in one window and pull or swap it into another.
 
 ## Configuration
 
@@ -243,6 +259,18 @@ set -g default-command "powershell.exe -NoLogo"
 
 or in TOML via a named profile (`default_shell` + `[[shells]]`, see the example).
 On Windows, with nothing configured, lumux defaults to PowerShell.
+
+### Copy to a system clipboard tool
+
+Yanks already reach your local terminal's clipboard via OSC-52. To *also* pipe
+each copy-mode yank to a shell command (tmux's copy-pipe), set `copy-command`:
+
+```
+set -s copy-command "xclip -selection clipboard -in"   # or: pbcopy, wl-copy
+```
+
+The selected text is fed to the command's stdin on every yank (keyboard or mouse
+drag). Unix-only.
 
 ### Session persistence (survive a reboot)
 

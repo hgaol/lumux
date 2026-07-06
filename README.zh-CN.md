@@ -99,6 +99,8 @@ lumux source-file <path>                          # 实时重载配置
 | `z` | 缩放 / 取消缩放当前窗格 |
 | `!` | 把当前窗格拆分到新窗口 |
 | `{` / `}` | 与上一个 / 下一个窗格交换 |
+| `m` | 标记 / 取消标记当前窗格（用于跨窗口 join/swap） |
+| `Ctrl-o` | 旋转当前窗口中的窗格 |
 | `S` | 切换 synchronize-panes（同时向所有窗格输入） |
 | `q` | 显示窗格编号，然后按其一聚焦该窗格 |
 | `Space` | 循环切换预设布局（even-horizontal/vertical、main、tiled） |
@@ -118,7 +120,7 @@ lumux source-file <path>                          # 实时重载配置
 
 **无需前缀键**（可配置的根绑定）：例如 `Alt+方向键` 可即时在窗格间跳转。当 `mouse = true` 时，点击可选择窗格，滚轮可滚入复制模式历史，拖动分隔线可调整窗格大小。
 
-**复制模式：** 用方向键 / PageUp / PageDown / Home / End 或 vi 键（`hjkl`）移动；`u` / `d` 半页滚动；`/` 向前搜索、`?` 向后搜索，`n` / `N` 跳到下一个 / 上一个匹配；`Space` 或 `v` 开始选择，`Ctrl-v` / `R` 切换矩形（块）选择；`Enter` 或 `y` 复制（通过 OSC-52 复制到本地终端剪贴板，**并**压入粘贴缓冲区栈）；`q` 或 `Escape` 退出。用 `prefix ]` 粘贴最近的缓冲区，或用 `prefix =` 选择较早的一个。
+**复制模式：** 用方向键 / PageUp / PageDown / Home / End 或 vi 键（`hjkl`）移动；`w` / `b` / `e` 按词跳转，`0` / `^` / `$` 跳到行首 / 首个非空白 / 行尾，`g` / `G` 跳到滚动缓冲的顶部 / 底部；`u` / `d` 半页滚动；`/` 向前搜索、`?` 向后搜索，`n` / `N` 跳到下一个 / 上一个匹配；`Space` 或 `v` 开始选择，`Ctrl-v` / `R` 切换矩形（块）选择；`Enter` 或 `y` 复制（通过 OSC-52 复制到本地终端剪贴板，**并**压入粘贴缓冲区栈）；`q` 或 `Escape` 退出。用 `prefix ]` 粘贴最近的缓冲区，或用 `prefix =` 选择较早的一个。设置 `copy-command`（见下文）可让每次复制同时管道给一个 shell 命令。
 
 ## 命令提示符
 
@@ -134,14 +136,21 @@ lumux source-file <path>                          # 实时重载配置
 | `kill-pane [-t .N]` | 关闭当前窗格，或窗格 N |
 | `swap-pane [-U\|-D] [-t .N]` | 与上/下一个窗格交换，或与窗格 N 交换 |
 | `break-pane` | 把当前窗格移入独立窗口 |
-| `join-pane [-h\|-v] [-s N]` | 把窗口 N 的窗格拉入当前窗口 |
+| `join-pane [-h\|-v] [-s N]` | 把窗口 N 的窗格（或已标记的窗格）拉入当前窗口 |
+| `rotate-window [-U]` | 旋转当前窗口中的窗格 |
+| `swap-window [-s A] -t B` | 按序号交换两个窗口 |
+| `move-window -t N` | 把当前窗口移到序号 N |
 | `select-layout [NAME]` | 应用预设布局（`even-horizontal`、`even-vertical`、`main-vertical`、`main-horizontal`、`tiled`）；不带名字则循环 |
 | `rename-window <name>` / `rename-session <name>` | |
 | `find-window <query>` | 切换到第一个名字匹配的窗口 |
 | `synchronize-panes [on\|off]` | 同时向所有窗格输入 |
 | `display-panes` | 显示窗格编号 |
 | `display-message <text>` | 在状态栏闪现一条消息 |
-| `send-keys <text>` | 向当前窗格注入文本（原样） |
+| `send-keys [-l] <keys>` | 向当前窗格发送按键（`Enter` / `C-c` 等键名，或用 `-l` 发送字面文本） |
+| `set-buffer [-b name] <text>` | 把文本存入粘贴缓冲区 |
+| `paste-buffer [-b name]` | 粘贴缓冲区（指定名字或最近的） |
+| `save-buffer [-b name] <path>` / `load-buffer <path>` | 缓冲区文件读写 |
+| `delete-buffer -b name` | 删除命名缓冲区 |
 | `capture-pane` | 把可见窗格文本复制到粘贴缓冲区 |
 | `respawn-pane` | 在已死窗格中重启 shell |
 | `run-shell <cmd>` | 运行 shell 命令；其输出进入粘贴缓冲区 |
@@ -151,6 +160,8 @@ lumux source-file <path>                          # 实时重载配置
 **链式命令：** 用 `;` 连接多条命令按顺序执行——`split-window -h ; select-layout tiled`。
 
 **目标（`-t`）：** `kill-pane` 和 `swap-pane` 接受目标——`-t N` / `-t :N` 指窗口（作用于其活动窗格），`-t .N` 指当前窗口中按序号的窗格。序号遵循 `base-index`。
+
+**标记窗格：** `prefix m` 标记当前窗格；随后 `join-pane` 或 `swap-pane` 在没有显式来源时作用于被标记的窗格，而它可以位于另一个窗口——在一个窗口标记窗格，再把它拉入或交换到另一个窗口。
 
 ## 配置
 
@@ -196,6 +207,16 @@ set -g default-command "powershell.exe -NoLogo"
 ```
 
 或者在 TOML 中通过命名配置（`default_shell` + `[[shells]]`，见示例）。在 Windows 上，若未配置任何内容，lumux 默认使用 PowerShell。
+
+### 复制到系统剪贴板工具
+
+复制（yank）已通过 OSC-52 送达本地终端剪贴板。若还想把每次复制模式的复制*同时*管道给一个 shell 命令（tmux 的 copy-pipe），设置 `copy-command`：
+
+```
+set -s copy-command "xclip -selection clipboard -in"   # 或：pbcopy、wl-copy
+```
+
+每次复制（键盘或鼠标拖动）都会把选中文本喂给该命令的 stdin。仅限 Unix。
 
 ```toml
 prefix = "C-a"            # 把前缀键改为 Ctrl-a
