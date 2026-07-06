@@ -289,6 +289,8 @@ where
         );
         let _ = reply.send(client_id);
         self.render_client(client_id);
+        // tmux fires client-attached once a client connects to a session.
+        self.fire_hook(session, "client-attached");
     }
 
     /// Determine the session+size for an attach/new-session first message,
@@ -1514,6 +1516,7 @@ where
             // pane was spawned at the content height; the split means both panes
             // are now smaller).
             self.daemon.resize_session(session, size);
+            self.fire_hook(session, "after-split-window");
         }
     }
 
@@ -1527,6 +1530,7 @@ where
             self.pane_session.insert(pid, session);
             spawn_pane_reader(pid, reader, self.tx.clone());
             self.daemon.resize_session(session, size);
+            self.fire_hook(session, "after-new-window");
         }
     }
 
@@ -1705,11 +1709,20 @@ where
         }
         // Fire the pane-exited hook if the session still exists.
         if self.daemon.server.session(session).is_some() {
-            if let Some(cmd) = self.daemon.hook_command("pane-exited") {
-                if let Some(client) = self.session_clients(session).first().copied() {
-                    self.dispatch_command_line(client, session, &cmd);
-                }
-            }
+            self.fire_hook(session, "pane-exited");
+        }
+    }
+
+    /// Run the configured command for hook `event` (tmux `set-hook`), if any, in
+    /// the context of `session`'s first client. A no-op when the hook is unset or
+    /// the session has no client. Centralizes hook dispatch so every fire site
+    /// (pane-exited, window-linked, client-attached, …) shares one path.
+    fn fire_hook(&mut self, session: SessionId, event: &str) {
+        let Some(cmd) = self.daemon.hook_command(event) else {
+            return;
+        };
+        if let Some(client) = self.session_clients(session).first().copied() {
+            self.dispatch_command_line(client, session, &cmd);
         }
     }
 

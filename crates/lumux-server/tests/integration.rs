@@ -1857,6 +1857,32 @@ fn command_prompt_join_pane_merges_windows() {
 }
 
 #[test]
+fn after_new_window_hook_fires() {
+    // set-hook wires a command to an event; creating a window must fire the
+    // after-new-window hook. Bind it to display-message and assert the flash
+    // shows after `prefix c`.
+    let path = start_daemon_with_tmux(
+        "set-hook -g after-new-window \"display-message HOOKWINQZ\"",
+    );
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("hookwin".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b'c'])); // new window
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("HOOKWINQZ"),
+        "after-new-window hook should flash its message; got:\n{vt}"
+    );
+}
+
+#[test]
 fn marked_pane_swaps_across_windows() {
     // Pane marking (prefix m) lets swap-pane exchange panes across windows. Print
     // a marker in window 0's pane, mark it, create window 1, then `:swap-pane`
