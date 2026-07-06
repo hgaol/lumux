@@ -78,6 +78,25 @@ fn start_daemon_status_right(fmt: &str) -> std::path::PathBuf {
     path
 }
 
+/// Like [`start_daemon`] but seeded with tmux-syntax config text (for testing
+/// user bindings end-to-end).
+fn start_daemon_with_tmux(conf: &str) -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(7_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let cfg = lumux_core::config::Config::from_tmux(conf).expect("config parses");
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
 /// Like [`start_daemon`] but with remain-on-exit enabled, so a pane whose child
 /// exits stays on screen (dead) instead of cascade-closing.
 fn start_daemon_remain() -> std::path::PathBuf {
@@ -1570,6 +1589,35 @@ fn keymap_and_command_prompt_new_window_agree() {
     assert!(
         has_window(&vt, 0) && has_window(&vt, 1) && has_window(&vt, 2),
         "keymap and command-prompt new-window should both create a window; got:\n{vt}"
+    );
+}
+
+#[test]
+fn bound_key_runs_a_command_chain() {
+    // A config `bind` with a `\;` chain must run every command with its real
+    // args. Bind `prefix g` to `new-window \; split-window -h`; pressing it once
+    // should create a new window AND split it (a vertical divider appears).
+    let path = start_daemon_with_tmux("bind g new-window \\; split-window -h");
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("boundchain".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Press the prefix (Ctrl-b) then g.
+    c.send(&ClientMsg::Input(vec![0x02, b'g']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        has_window(&vt, 0) && has_window(&vt, 1),
+        "the chain's new-window must have created a second window; got:\n{vt}"
+    );
+    assert!(
+        vt.contains('│'),
+        "the chain's split-window -h must have drawn a vertical divider; got:\n{vt}"
     );
 }
 

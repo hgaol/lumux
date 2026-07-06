@@ -15,6 +15,13 @@ pub mod tmux;
 
 pub use tmux::TmuxParse;
 
+/// Internal marker prefixing a binding value that is a raw command line rather
+/// than a single action name. Used by the tmux `bind` parser to hand a full
+/// `;`-chained command line to [`parse_action`], which turns it into an
+/// [`Action::RunCommands`]. Contains a control char so it can't collide with a
+/// user-typed action name or TOML value.
+pub const CMD_SENTINEL: &str = "\u{1}cmd:";
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -267,7 +274,19 @@ fn single_char(s: &str) -> Option<char> {
 }
 
 /// Map an action name to an [`Action`].
+///
+/// A value prefixed with [`CMD_SENTINEL`] is a raw command line (one or more
+/// `;`-separated command-prompt commands); it is parsed into an
+/// [`Action::RunCommands`] so a bound key runs exactly what the `:` prompt would.
 pub fn parse_action(s: &str) -> Option<Action> {
+    if let Some(line) = s.strip_prefix(CMD_SENTINEL) {
+        let cmds = crate::command::parse_commands(line);
+        return if cmds.is_empty() {
+            None
+        } else {
+            Some(Action::RunCommands(cmds))
+        };
+    }
     let action = match s {
         "split-horizontal" => Action::SplitHorizontal,
         "split-vertical" => Action::SplitVertical,

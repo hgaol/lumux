@@ -14,9 +14,10 @@
 //! - `bind[-key] [-n|-T root] <key> <command> [args…]` and `unbind[-key]`.
 //!
 //! Line continuations (`\` at end of line), `#` comments, and quoted arguments
-//! (single or double) are handled. Commands joined with `\;` (tmux's command
-//! separator) keep only the first command on the line — enough for the common
-//! `bind r source-file … \; display "…"` pattern.
+//! (single or double) are handled. A `bind` whose command tail is chained with
+//! `\;` (tmux's command separator) keeps the whole chain — each command runs in
+//! order (e.g. `bind r new-window \; split-window -h`). For non-`bind`
+//! directives a stray `\;` tail is still dropped (they act on one command).
 //!
 //! Config variables are supported: `%hidden NAME=value` (or a bare
 //! `NAME=value`) defines a variable, referenced as `$NAME` / `${NAME}` and
@@ -58,8 +59,16 @@ impl Config {
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            // Only act on the first sub-command of a `\;`-joined line.
-            let line = line.split(" \\; ").next().unwrap_or(line).trim();
+            let line = line.trim();
+            // `bind` may chain commands with `\;` (tmux's separator); the whole
+            // line must reach apply_bind so the chain is preserved. Every other
+            // directive acts on a single command, so a stray `\;` tail is dropped.
+            let first_word = line.split_whitespace().next().unwrap_or("");
+            let line = if matches!(first_word, "bind" | "bind-key") {
+                line
+            } else {
+                line.split(" \\; ").next().unwrap_or(line).trim()
+            };
             let tokens = match tokenize(line) {
                 Some(t) if !t.is_empty() => t,
                 _ => continue,
@@ -477,16 +486,19 @@ fn apply_bind(
     let Some(key) = rest.get(i) else {
         return Ok(());
     };
-    let tmux_cmd = &rest[i + 1..];
-    let Some(action) = map_bind_command(tmux_cmd) else {
-        warnings.push(format!("unsupported binding command: {}", tmux_cmd.join(" ")));
-        return Ok(());
-    };
     // Validate the key now so a bad spec surfaces as an error (consistent with
     // the TOML path's to_bindings validation).
     if super::parse_key(key).is_none() {
         return Err(ConfigError::BadKey(key.clone()));
     }
+    let tmux_cmd = &rest[i + 1..];
+    let action = match resolve_bind_action(tmux_cmd) {
+        Some(a) => a,
+        None => {
+            warnings.push(format!("unsupported binding command: {}", tmux_cmd.join(" ")));
+            return Ok(());
+        }
+    };
     let table = if root {
         &mut cfg.root_bindings
     } else {
@@ -494,6 +506,42 @@ fn apply_bind(
     };
     table.insert(key.clone(), action);
     Ok(())
+}
+
+/// Resolve a tmux binding's command tail to a lumux binding-value string (the
+/// value later parsed by [`super::parse_action`] in `to_bindings`). Prefers the
+/// unified command parser so a bind carries real arguments and `;`/`\;` chains
+/// (e.g. `bind X new-window \; split-window -h`); falls back to the single-action
+/// mapper for keymap-only verbs the command parser doesn't cover (select-pane,
+/// resize-pane, copy-mode and the other overlay openers). None if unsupported.
+///
+/// A command chain is stored as the raw command line behind [`CMD_SENTINEL`] so
+/// `parse_action` can re-parse it into an [`Action::RunCommands`]; storing the
+/// line (not a serialized command list) keeps the config value a plain string.
+fn resolve_bind_action(tmux_cmd: &[String]) -> Option<String> {
+    // Reconstruct the command line (tmux joins the tail tokens; `\;` separates
+    // chained commands). The tokenizer already stripped surrounding quotes, so
+    // rejoin with spaces and let parse_commands re-split on `;`.
+    let line = tmux_cmd
+        .iter()
+        .map(|t| if t == "\\;" { ";" } else { t.as_str() })
+        .collect::<Vec<_>>()
+        .join(" ");
+    let cmds = crate::command::parse_commands(&line);
+    // Use the command chain only if every segment is a recognized command (no
+    // Unknown/BadArgs) — otherwise the verb belongs to the keymap-only set and
+    // the single-action mapper handles it (or reports it unsupported).
+    let all_known = !cmds.is_empty()
+        && cmds.iter().all(|c| {
+            !matches!(
+                c,
+                crate::command::ParsedCommand::Unknown(_) | crate::command::ParsedCommand::BadArgs(_)
+            )
+        });
+    if all_known {
+        return Some(format!("{}{}", super::CMD_SENTINEL, line));
+    }
+    map_bind_command(tmux_cmd)
 }
 
 /// Map a tmux binding command (e.g. `split-window -h`) to a lumux action name
@@ -691,14 +739,33 @@ mod tests {
             bind | split-window -h
             bind - split-window -v
             bind -n M-Left select-pane -L
-            bind r source-file ~/.tmux.conf \; display "reloaded"
+            bind D new-window \; split-window -h
         "#;
         let c = Config::from_tmux(conf).unwrap();
         let b = c.to_bindings().unwrap();
+        use crate::command::{Dir, ParsedCommand};
         use crate::keymap::{Action, Key, KeyCode};
-        assert_eq!(b.lookup(&Key::char('|')), Some(&Action::SplitHorizontal));
-        assert_eq!(b.lookup(&Key::char('-')), Some(&Action::SplitVertical));
-        assert_eq!(b.lookup(&Key::char('r')), Some(&Action::ReloadConfig));
+        // split-window now flows through the command parser so it carries its
+        // -h/-v argument (a RunCommands chain), instead of collapsing to a fixed
+        // split-horizontal/-vertical action.
+        assert_eq!(
+            b.lookup(&Key::char('|')),
+            Some(&Action::RunCommands(vec![ParsedCommand::SplitWindow(Dir::Horizontal)]))
+        );
+        assert_eq!(
+            b.lookup(&Key::char('-')),
+            Some(&Action::RunCommands(vec![ParsedCommand::SplitWindow(Dir::Vertical)]))
+        );
+        // A `\;` chain of two command verbs is preserved in order.
+        assert_eq!(
+            b.lookup(&Key::char('D')),
+            Some(&Action::RunCommands(vec![
+                ParsedCommand::NewWindow,
+                ParsedCommand::SplitWindow(Dir::Horizontal),
+            ]))
+        );
+        // select-pane is a keymap-only verb (no command equivalent), so it still
+        // resolves to the directional action via the fallback mapper.
         assert_eq!(
             b.lookup_root(&Key {
                 code: KeyCode::Left,
@@ -710,13 +777,29 @@ mod tests {
     }
 
     #[test]
+    fn source_file_bind_still_reloads() {
+        // A keymap-only verb chained with a command verb can't be represented as
+        // a RunCommands chain (source-file isn't a command); it falls back to the
+        // single-action mapper, keeping the reload (the display tail is dropped,
+        // same as before this feature — documented limitation, not a regression).
+        use crate::keymap::{Action, Key};
+        let c = Config::from_tmux("bind r source-file ~/.tmux.conf \\; display \"reloaded\"").unwrap();
+        let b = c.to_bindings().unwrap();
+        assert_eq!(b.lookup(&Key::char('r')), Some(&Action::ReloadConfig));
+    }
+
+    #[test]
     fn dash_key_and_flags_parse_correctly() {
+        use crate::command::{Dir, ParsedCommand};
         use crate::keymap::{Action, Key, KeyCode};
         // Regression: a key that looks like a flag (`-`) must not be consumed as
         // one. `bind - split-window -v` binds the literal minus key.
         let c = Config::from_tmux("bind - split-window -v").unwrap();
         let b = c.to_bindings().unwrap();
-        assert_eq!(b.lookup(&Key::char('-')), Some(&Action::SplitVertical));
+        assert_eq!(
+            b.lookup(&Key::char('-')),
+            Some(&Action::RunCommands(vec![ParsedCommand::SplitWindow(Dir::Vertical)]))
+        );
 
         // Real bind flags are still consumed: -r (repeat) and -N <note> before
         // the key; -n routes to the root table. Bind zoom to a NON-default key
@@ -726,15 +809,17 @@ mod tests {
         )
         .unwrap();
         let b = c.to_bindings().unwrap();
+        // resize-pane is keymap-only → directional/zoom actions via the fallback.
         assert_eq!(b.lookup(&Key::char('H')), Some(&Action::ResizePaneLeft));
         assert_eq!(b.lookup(&Key::char('g')), Some(&Action::ZoomPane));
+        // kill-pane is a command verb → a RunCommands chain of one.
         assert_eq!(
             b.lookup_root(&Key {
                 code: KeyCode::Char('x'),
                 ctrl: false,
                 alt: true
             }),
-            Some(&Action::KillPane)
+            Some(&Action::RunCommands(vec![ParsedCommand::KillPane]))
         );
     }
 
@@ -856,9 +941,17 @@ mod tests {
         assert_eq!(c.shell_argv(None), Some(vec!["powershell.exe".to_string()]));
         // Bindings compile, including the splits, zoom, and root nav.
         let b = c.to_bindings().expect("bindings build");
+        use crate::command::{Dir, ParsedCommand};
         use crate::keymap::{Action, Key, KeyCode};
-        assert_eq!(b.lookup(&Key::char('|')), Some(&Action::SplitHorizontal));
-        assert_eq!(b.lookup(&Key::char('-')), Some(&Action::SplitVertical));
+        // split-window carries its -h/-v arg through the command parser now.
+        assert_eq!(
+            b.lookup(&Key::char('|')),
+            Some(&Action::RunCommands(vec![ParsedCommand::SplitWindow(Dir::Horizontal)]))
+        );
+        assert_eq!(
+            b.lookup(&Key::char('-')),
+            Some(&Action::RunCommands(vec![ParsedCommand::SplitWindow(Dir::Vertical)]))
+        );
         assert_eq!(b.lookup(&Key::char('z')), Some(&Action::ZoomPane));
         assert_eq!(b.lookup(&Key::char('r')), Some(&Action::ReloadConfig));
         assert_eq!(

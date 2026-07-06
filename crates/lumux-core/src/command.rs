@@ -46,6 +46,8 @@ pub enum ParsedCommand {
     RespawnPane,
     /// `run-shell <cmd>`: run a shell command; its output goes to a paste buffer.
     RunShell(String),
+    /// `display-message <text>` / `display <text>`: flash a status-line message.
+    DisplayMessage(String),
     /// `save-state`: write the session snapshot to disk now (tmux-resurrect save).
     SaveState,
     Detach,
@@ -213,6 +215,10 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             ParsedCommand::SynchronizePanes(state)
         }
         "display-panes" | "displayp" => ParsedCommand::DisplayPanes,
+        "display-message" | "display" => match join_rest(args) {
+            Some(text) => ParsedCommand::DisplayMessage(unquote(&text)),
+            None => ParsedCommand::BadArgs("usage: display-message TEXT"),
+        },
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
         "save-state" | "saves" => ParsedCommand::SaveState,
@@ -246,6 +252,18 @@ fn join_rest(args: &[&str]) -> Option<String> {
         None
     } else {
         Some(words.join(" "))
+    }
+}
+
+/// Strip a single pair of matching surrounding quotes (`'…'` or `"…"`). The `:`
+/// prompt tokenizer is whitespace-based, so a quoted argument arrives with its
+/// quotes intact; commands that take free text (display-message) unquote here.
+fn unquote(s: &str) -> String {
+    let b = s.as_bytes();
+    if b.len() >= 2 && (b[0] == b'"' || b[0] == b'\'') && b[b.len() - 1] == b[0] {
+        s[1..s.len() - 1].to_string()
+    } else {
+        s.to_string()
     }
 }
 
@@ -433,5 +451,22 @@ mod tests {
             parse_commands("split-window -h"),
             vec![ParsedCommand::SplitWindow(Dir::Horizontal)]
         );
+    }
+
+    #[test]
+    fn display_message_takes_text_and_unquotes() {
+        assert_eq!(
+            parse_command("display-message hello there"),
+            Some(ParsedCommand::DisplayMessage("hello there".to_string()))
+        );
+        // A single quoted word is unquoted (the `:` tokenizer keeps the quotes).
+        assert_eq!(
+            parse_command("display \"reloaded\""),
+            Some(ParsedCommand::DisplayMessage("reloaded".to_string()))
+        );
+        assert!(matches!(
+            parse_command("display-message"),
+            Some(ParsedCommand::BadArgs(_))
+        ));
     }
 }

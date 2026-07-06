@@ -628,6 +628,13 @@ where
             }
             // SendPrefix is handled as pass-through in the keymap, never here.
             Action::SendPrefix => {}
+            // A bound command chain (tmux `bind key cmd1 \; cmd2`): run each
+            // parsed command through the same executor as the `:` prompt.
+            Action::RunCommands(cmds) => {
+                for cmd in cmds {
+                    self.dispatch_parsed(client_id, session, cmd);
+                }
+            }
         }
     }
 
@@ -1199,6 +1206,9 @@ where
             ParsedCommand::RunShell(cmd) => {
                 let status = self.daemon.run_shell(&cmd);
                 self.daemon.flash_message(client_id, status);
+            }
+            ParsedCommand::DisplayMessage(text) => {
+                self.daemon.flash_message(client_id, text);
             }
             ParsedCommand::SaveState => {
                 let path = self.state_path.clone();

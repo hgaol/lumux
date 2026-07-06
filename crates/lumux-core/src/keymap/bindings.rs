@@ -73,6 +73,11 @@ pub enum Action {
     ChooseBuffer,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
+    /// Run a chain of command-prompt commands (tmux `bind key cmd1 \; cmd2`).
+    /// The binding carries the parsed commands verbatim, so a bound key executes
+    /// exactly what the `:` prompt would — with real arguments and `;`/`\;`
+    /// chaining — instead of collapsing to a single fixed action.
+    RunCommands(Vec<crate::command::ParsedCommand>),
 }
 
 impl Action {
@@ -118,6 +123,7 @@ impl Action {
             Action::PasteBuffer => "paste the most recent buffer",
             Action::ChooseBuffer => "choose a paste buffer",
             Action::SendPrefix => "send the prefix key to the shell",
+            Action::RunCommands(_) => "run bound command(s)",
         }
     }
 }
