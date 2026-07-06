@@ -1628,8 +1628,9 @@ fn select_layout_by_name_rearranges_panes() {
 
 #[test]
 fn send_keys_injects_text_into_the_active_pane() {
-    // `send-keys TEXT` injects verbatim into the active pane. Send a command
-    // ending in a newline and confirm its echoed output appears.
+    // `send-keys` translates key names: `-l "text"` sends the literal string and
+    // `Enter` sends a carriage return. A chained line runs the command in the
+    // pane. We confirm the echoed marker appears.
     let path = start_daemon();
     let mut c = TestClient::connect(&path);
     c.send(&ClientMsg::NewSession {
@@ -1640,17 +1641,15 @@ fn send_keys_injects_text_into_the_active_pane() {
     c.collect_until(Duration::from_secs(2), |m| {
         matches!(m, ServerMsg::Attached { .. })
     });
+    // Literal text, then a separate send-keys Enter to run it (chained with `;`).
     c.send(&ClientMsg::Input(vec![0x02, b':']));
-    // The trailing space + \r in the typed line is consumed by the prompt; the
-    // newline that runs the command is part of the send-keys payload.
-    c.send(&ClientMsg::Input(b"send-keys echo SENDKEYS_OK_QW\r".to_vec()));
-    c.collect_until(Duration::from_millis(300), |_| false);
-    // send-keys injected the text but not a newline; press Enter in the pane.
-    c.send(&ClientMsg::Input(b"\r".to_vec()));
+    c.send(&ClientMsg::Input(
+        b"send-keys -l \"echo SENDKEYS_OK_QW\" ; send-keys Enter\r".to_vec(),
+    ));
     let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
     assert!(
         vt.contains("SENDKEYS_OK_QW"),
-        "send-keys should inject text into the active pane; got:\n{vt}"
+        "send-keys should inject text (via -l) and run it (via Enter); got:\n{vt}"
     );
 }
 

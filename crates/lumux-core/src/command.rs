@@ -75,9 +75,11 @@ pub enum ParsedCommand {
     RunShell(String),
     /// `display-message <text>` / `display <text>`: flash a status-line message.
     DisplayMessage(String),
-    /// `send-keys <text>`: inject text into the active pane (verbatim; no tmux
-    /// key-name translation). Usable from a binding or the `:` prompt.
-    SendKeys(String),
+    /// `send-keys [-l] KEYS…`: send keys to the active pane. Without `-l`, each
+    /// whitespace-separated token is translated as a tmux key name (`Enter`,
+    /// `C-c`, `Space`, arrows, …) where recognized, else sent literally; `-l`
+    /// forces every token literal. The resolved bytes are computed at parse time.
+    SendKeys(Vec<u8>),
     /// `select-layout [NAME]`: apply a named preset layout (even-horizontal,
     /// even-vertical, main-vertical, main-horizontal, tiled), or cycle to the
     /// next preset when no name is given (like `next-layout`).
@@ -112,19 +114,25 @@ pub fn parse_command(line: &str) -> Option<ParsedCommand> {
     if line == "run-shell" || line == "run" {
         return Some(ParsedCommand::BadArgs("usage: run-shell COMMAND"));
     }
-    // send-keys injects its argument verbatim (it may contain flag-looking text
-    // like `ls -la`), so take the rest of the line rather than splitting flags.
+    // send-keys sends key names (Enter, C-c, Space, arrows, …) translated to the
+    // bytes a terminal would send, or literal text with -l. It takes the rest of
+    // the line (may contain flag-looking tokens like `-la` as literal text).
     for prefix in ["send-keys ", "send ", "send-keys\t", "send\t"] {
         if let Some(rest) = line.strip_prefix(prefix) {
-            let text = rest.trim();
-            if text.is_empty() {
-                return Some(ParsedCommand::BadArgs("usage: send-keys TEXT"));
+            let rest = rest.trim();
+            // -l anywhere in the leading flags forces literal (no translation).
+            let (literal, body) = match rest.strip_prefix("-l") {
+                Some(after) => (true, after.trim_start()),
+                None => (false, rest),
+            };
+            if body.is_empty() {
+                return Some(ParsedCommand::BadArgs("usage: send-keys [-l] KEYS"));
             }
-            return Some(ParsedCommand::SendKeys(unquote(text)));
+            return Some(ParsedCommand::SendKeys(encode_send_keys(body, literal)));
         }
     }
     if line == "send-keys" || line == "send" {
-        return Some(ParsedCommand::BadArgs("usage: send-keys TEXT"));
+        return Some(ParsedCommand::BadArgs("usage: send-keys [-l] KEYS"));
     }
     let mut parts = line.split_whitespace();
     let verb = parts.next()?;
@@ -330,6 +338,28 @@ fn unquote(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+/// Resolve a `send-keys` body to the bytes to inject. With `literal`, the body
+/// (unquoted) is sent verbatim. Otherwise each whitespace-separated token is a
+/// tmux key name — `Enter`, `Space`, `Tab`, `C-c`, `M-x`, arrows, etc. —
+/// translated via [`parse_key`](crate::config::parse_key) +
+/// [`encode_key`](crate::keymap::encode_key); a token that isn't a known key
+/// name is sent as its literal characters (so `send-keys hello Enter` types
+/// "hello" then a carriage return).
+fn encode_send_keys(body: &str, literal: bool) -> Vec<u8> {
+    if literal {
+        return unquote(body).into_bytes();
+    }
+    let mut out = Vec::new();
+    for tok in body.split_whitespace() {
+        match crate::config::parse_key(tok) {
+            Some(key) => out.extend(crate::keymap::encode_key(&key)),
+            // Not a key name: send its characters literally.
+            None => out.extend(unquote(tok).as_bytes()),
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -568,16 +598,31 @@ mod tests {
     }
 
     #[test]
-    fn send_keys_and_select_layout_parse() {
+    fn send_keys_translates_key_names() {
+        // Named keys translate to their byte sequences; Enter -> CR.
         assert_eq!(
-            parse_command("send-keys ls -la"),
-            Some(ParsedCommand::SendKeys("ls -la".to_string()))
+            parse_command("send-keys Enter"),
+            Some(ParsedCommand::SendKeys(b"\r".to_vec()))
+        );
+        // C-c -> 0x03; a plain word is sent as its literal chars.
+        assert_eq!(
+            parse_command("send-keys C-c"),
+            Some(ParsedCommand::SendKeys(vec![0x03]))
         );
         assert_eq!(
-            parse_command("send \"echo hi\""),
-            Some(ParsedCommand::SendKeys("echo hi".to_string()))
+            parse_command("send-keys hello Enter"),
+            Some(ParsedCommand::SendKeys(b"hello\r".to_vec()))
+        );
+        // -l forces literal: the body is sent verbatim, "Enter" as text.
+        assert_eq!(
+            parse_command("send-keys -l Enter"),
+            Some(ParsedCommand::SendKeys(b"Enter".to_vec()))
         );
         assert!(matches!(parse_command("send-keys"), Some(ParsedCommand::BadArgs(_))));
+    }
+
+    #[test]
+    fn select_layout_parse() {
         // select-layout: bare cycles (None), a name applies that preset.
         assert_eq!(
             parse_command("select-layout"),

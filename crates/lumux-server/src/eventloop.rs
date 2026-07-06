@@ -1247,10 +1247,10 @@ where
             ParsedCommand::DisplayMessage(text) => {
                 self.daemon.flash_message(client_id, text);
             }
-            ParsedCommand::SendKeys(text) => {
-                // Inject verbatim into the active pane (tmux send-keys -l style;
-                // no key-name translation).
-                self.daemon.write_input(session, text.as_bytes());
+            ParsedCommand::SendKeys(bytes) => {
+                // Bytes were already resolved from key names / literal text at
+                // parse time; inject them into the active pane.
+                self.daemon.write_input(session, &bytes);
             }
             ParsedCommand::SelectLayout(name) => match name {
                 // A named preset applies that layout; a bad name flashes an error.
