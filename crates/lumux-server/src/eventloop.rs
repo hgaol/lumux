@@ -560,35 +560,16 @@ where
             Action::SplitHorizontal => self.do_split(session, SplitDir::Horizontal),
             Action::SplitVertical => self.do_split(session, SplitDir::Vertical),
             Action::NewWindow => self.do_new_window(session),
-            Action::NextWindow => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.focus_next_window();
-                }
-            }
-            Action::PrevWindow => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.focus_prev_window();
-                }
-            }
+            Action::NextWindow => self.do_next_window(session),
+            Action::PrevWindow => self.do_prev_window(session),
             Action::SelectWindow(n) => self.select_window_by_number(session, n),
-            Action::LastWindow => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.focus_last_window();
-                }
-            }
+            Action::LastWindow => self.do_last_window(session),
             Action::KillWindow => self.do_kill_window(session),
             Action::SelectPaneLeft => self.select_pane(session, Direction::Left),
             Action::SelectPaneRight => self.select_pane(session, Direction::Right),
             Action::SelectPaneUp => self.select_pane(session, Direction::Up),
             Action::SelectPaneDown => self.select_pane(session, Direction::Down),
-            Action::LastPane => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    let wid = s.active_window();
-                    if let Some(w) = s.window_mut(wid) {
-                        w.focus_last_pane();
-                    }
-                }
-            }
+            Action::LastPane => self.do_last_pane(session),
             Action::ResizePaneLeft => self.resize_pane(session, SplitDir::Horizontal, -RESIZE_STEP),
             Action::ResizePaneRight => self.resize_pane(session, SplitDir::Horizontal, RESIZE_STEP),
             Action::ResizePaneUp => self.resize_pane(session, SplitDir::Vertical, -RESIZE_STEP),
@@ -614,13 +595,7 @@ where
                 self.daemon
                     .open_prompt(client_id, session, crate::daemon::PromptTarget::Command);
             }
-            Action::KillPane => {
-                if let Some(pid) = self.active_pane(session) {
-                    let result = self.daemon.close_pane(session, pid);
-                    self.pane_session.remove(&pid);
-                    self.on_pane_exit(session, pid, result);
-                }
-            }
+            Action::KillPane => self.do_kill_pane(session),
             Action::EnterCopyMode => {
                 self.daemon.enter_copy_mode(client_id, session);
             }
@@ -1167,12 +1142,12 @@ where
         match cmd {
             ParsedCommand::SplitWindow(d) => self.do_split(session, dir_to_split(d)),
             ParsedCommand::NewWindow => self.do_new_window(session),
-            ParsedCommand::KillPane => self.apply_action(client_id, session, Action::KillPane),
+            ParsedCommand::KillPane => self.do_kill_pane(session),
             ParsedCommand::KillWindow => self.do_kill_window(session),
-            ParsedCommand::NextWindow => self.apply_action(client_id, session, Action::NextWindow),
-            ParsedCommand::PrevWindow => self.apply_action(client_id, session, Action::PrevWindow),
-            ParsedCommand::LastWindow => self.apply_action(client_id, session, Action::LastWindow),
-            ParsedCommand::LastPane => self.apply_action(client_id, session, Action::LastPane),
+            ParsedCommand::NextWindow => self.do_next_window(session),
+            ParsedCommand::PrevWindow => self.do_prev_window(session),
+            ParsedCommand::LastWindow => self.do_last_window(session),
+            ParsedCommand::LastPane => self.do_last_pane(session),
             ParsedCommand::SelectWindow(n) => self.select_window_by_number(session, n),
             ParsedCommand::RenameWindow(name) => {
                 if let Some(s) = self.daemon.server.session_mut(session) {
@@ -1470,6 +1445,45 @@ where
             self.pane_session.insert(pid, session);
             spawn_pane_reader(pid, reader, self.tx.clone());
             self.daemon.resize_session(session, size);
+        }
+    }
+
+    /// Focus the next / previous / last-active window (tmux next/previous/last-
+    /// window). Extracted so the keymap and `:` command surfaces share one impl.
+    fn do_next_window(&mut self, session: SessionId) {
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            s.focus_next_window();
+        }
+    }
+
+    fn do_prev_window(&mut self, session: SessionId) {
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            s.focus_prev_window();
+        }
+    }
+
+    fn do_last_window(&mut self, session: SessionId) {
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            s.focus_last_window();
+        }
+    }
+
+    /// Focus the previously-active pane in the active window (tmux `last-pane`).
+    fn do_last_pane(&mut self, session: SessionId) {
+        if let Some(s) = self.daemon.server.session_mut(session) {
+            let wid = s.active_window();
+            if let Some(w) = s.window_mut(wid) {
+                w.focus_last_pane();
+            }
+        }
+    }
+
+    /// Kill the active pane and run the pane-exit cascade (tmux `kill-pane`).
+    fn do_kill_pane(&mut self, session: SessionId) {
+        if let Some(pid) = self.active_pane(session) {
+            let result = self.daemon.close_pane(session, pid);
+            self.pane_session.remove(&pid);
+            self.on_pane_exit(session, pid, result);
         }
     }
 

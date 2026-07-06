@@ -1544,6 +1544,36 @@ fn find_window_switches_to_named_window() {
 }
 
 #[test]
+fn keymap_and_command_prompt_new_window_agree() {
+    // Commit-2 consolidation guard: the keymap `prefix c` and the `:new-window`
+    // command must go through the same executor and produce identical state — a
+    // new window either way. Drives both on one session and asserts three
+    // windows result (the initial 0, plus one from each surface).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("parity".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Keymap surface: prefix c.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    // Command surface: :new-window.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"new-window\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        has_window(&vt, 0) && has_window(&vt, 1) && has_window(&vt, 2),
+        "keymap and command-prompt new-window should both create a window; got:\n{vt}"
+    );
+}
+
+#[test]
 fn command_prompt_runs_a_split() {
     // tmux command-prompt (prefix :): typing "split-window -h" and Enter splits
     // the active window. We confirm a second pane appears (a vertical divider is
