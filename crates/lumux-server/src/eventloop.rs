@@ -638,6 +638,7 @@ where
                 );
                 self.invalidate_session(session);
             }
+            Action::RotateWindow => self.do_rotate_window(session, true),
             // A bound command chain (tmux `bind key cmd1 \; cmd2`): run each
             // parsed command through the same executor as the `:` prompt.
             Action::RunCommands(cmds) => {
@@ -1223,6 +1224,9 @@ where
                 }
             }
             ParsedCommand::BreakPane => self.do_break_pane(session),
+            ParsedCommand::RotateWindow { down } => self.do_rotate_window(session, down),
+            ParsedCommand::SwapWindow { src, dst } => self.do_swap_window(client_id, session, src, dst),
+            ParsedCommand::MoveWindow { dst } => self.do_move_window_to(client_id, session, dst),
             ParsedCommand::SwapPane { next, target } => {
                 self.do_swap_pane_target(client_id, session, next, target)
             }
@@ -1500,6 +1504,70 @@ where
             .unwrap_or(false);
         if moved {
             self.invalidate_session(session);
+        }
+    }
+
+    /// Rotate the panes in the active window (tmux `rotate-window`, `C-o`) and
+    /// re-fit them to their new slots.
+    fn do_rotate_window(&mut self, session: SessionId, down: bool) {
+        let rotated = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let wid = s.active_window();
+                s.window_mut(wid).map(|w| w.rotate_panes(down)).unwrap_or(false)
+            })
+            .unwrap_or(false);
+        if rotated {
+            let size = self
+                .daemon
+                .server
+                .effective_size(session)
+                .unwrap_or(PtySize::new(80, 24));
+            self.daemon.resize_session(session, size);
+            self.invalidate_session(session);
+        }
+    }
+
+    /// Swap two windows by index (tmux `swap-window -s A -t B`); source defaults
+    /// to the active window. Indexes are base-index-adjusted.
+    fn do_swap_window(&mut self, client_id: u64, session: SessionId, src: Option<u32>, dst: u32) {
+        let base = self.daemon.base_index();
+        let swapped = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let ids = s.window_ids();
+                let a = match src {
+                    Some(n) => (n.saturating_sub(base)) as usize,
+                    None => ids.iter().position(|&w| w == s.active_window()).unwrap_or(0),
+                };
+                let b = (dst.saturating_sub(base)) as usize;
+                s.swap_windows(a, b)
+            })
+            .unwrap_or(false);
+        if swapped {
+            self.invalidate_session(session);
+        } else {
+            self.daemon.flash_message(client_id, "swap-window: bad index");
+        }
+    }
+
+    /// Move the active window to an index (tmux `move-window -t N`).
+    fn do_move_window_to(&mut self, client_id: u64, session: SessionId, dst: u32) {
+        let base = self.daemon.base_index();
+        let moved = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| s.move_active_window_to((dst.saturating_sub(base)) as usize))
+            .unwrap_or(false);
+        if moved {
+            self.invalidate_session(session);
+        } else {
+            self.daemon.flash_message(client_id, "move-window: bad index");
         }
     }
 

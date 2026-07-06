@@ -289,6 +289,34 @@ impl Window {
         self.layout.pane_ids()
     }
 
+    /// Rotate the panes within this window (tmux `rotate-window`, `C-o`): each
+    /// pane's content shifts to the next slot in layout order, the last wrapping
+    /// to the first (`downward = true`), or the reverse. Implemented as a chain
+    /// of adjacent position-swaps (`swap_ids`), so pane ids — and the grids keyed
+    /// by them elsewhere — stay valid; only which slot shows which pane rotates.
+    /// No-op for a single pane. Returns true if anything moved.
+    pub fn rotate_panes(&mut self, downward: bool) -> bool {
+        let ids = self.pane_ids();
+        let n = ids.len();
+        if n < 2 {
+            return false;
+        }
+        // A full rotation = n-1 adjacent transpositions. Rotating "down" moves the
+        // last pane to the front: swap it leftwards along the chain.
+        if downward {
+            for i in (1..n).rev() {
+                self.layout.swap_ids(ids[i], ids[i - 1]);
+            }
+        } else {
+            for i in 0..n - 1 {
+                self.layout.swap_ids(ids[i], ids[i + 1]);
+            }
+        }
+        self.zoomed = None;
+        self.layout_kind = None;
+        true
+    }
+
     pub fn pane(&self, id: PaneId) -> Option<&Pane> {
         self.panes.get(&id)
     }
@@ -533,6 +561,38 @@ impl Session {
             return false;
         }
         self.windows.swap(pos, target);
+        true
+    }
+
+    /// Swap the windows at list positions `a` and `b` (tmux `swap-window -s -t`,
+    /// by 0-based index into the window list). Unlike [`move_active_window`], the
+    /// active window is unaffected unless it's one of the two. No-op if either
+    /// index is out of range or they're equal. Returns true if the order changed.
+    pub fn swap_windows(&mut self, a: usize, b: usize) -> bool {
+        let n = self.windows.len();
+        if a == b || a >= n || b >= n {
+            return false;
+        }
+        self.windows.swap(a, b);
+        true
+    }
+
+    /// Move the active window to list position `target` (tmux `move-window -t`),
+    /// shifting the windows in between. No-op if `target` is out of range or the
+    /// window is already there. Returns true if the order changed.
+    pub fn move_active_window_to(&mut self, target: usize) -> bool {
+        let n = self.windows.len();
+        if target >= n {
+            return false;
+        }
+        let Some(pos) = self.windows.iter().position(|w| w.id == self.active_window) else {
+            return false;
+        };
+        if pos == target {
+            return false;
+        }
+        let w = self.windows.remove(pos);
+        self.windows.insert(target, w);
         true
     }
 

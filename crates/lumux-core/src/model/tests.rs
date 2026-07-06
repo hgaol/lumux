@@ -856,3 +856,49 @@ fn join_specific_pane_pulls_a_named_pane_into_the_active_window() {
     assert_eq!(srv.window_of_pane(sid, p0), Some(w0));
     assert_no_empty_containers(&srv);
 }
+
+#[test]
+fn rotate_panes_cycles_pane_positions() {
+    // Three panes p0,p1,p2 in layout order. Rotating down moves each pane's
+    // content to the next slot; ids stay valid (only slots rotate).
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let p0 = srv.session(sid).unwrap().window(srv.session(sid).unwrap().active_window()).unwrap().active_pane();
+    let p1 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    let p2 = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    let w = srv.session_mut(sid).unwrap().active_window_mut();
+    let before = w.pane_ids();
+    assert_eq!(before.len(), 3);
+    assert!(w.rotate_panes(true), "rotate should move panes");
+    let after = w.pane_ids();
+    // The set of panes is unchanged; the order is a rotation of the original.
+    assert_eq!(after.len(), 3);
+    let mut sorted_before = before.clone();
+    let mut sorted_after = after.clone();
+    sorted_before.sort();
+    sorted_after.sort();
+    assert_eq!(sorted_before, sorted_after, "same panes, different order");
+    assert_ne!(before, after, "the order actually changed");
+    let _ = (p0, p1, p2);
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn swap_and_move_windows_by_index() {
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let w1 = srv.new_window(sid, "1", sh()).unwrap();
+    let w2 = srv.new_window(sid, "2", sh()).unwrap();
+    assert_eq!(srv.session(sid).unwrap().window_ids(), vec![w0, w1, w2]);
+    // swap positions 0 and 2.
+    assert!(srv.session_mut(sid).unwrap().swap_windows(0, 2));
+    assert_eq!(srv.session(sid).unwrap().window_ids(), vec![w2, w1, w0]);
+    // Active window is w2 (last created); move it to index 1.
+    assert_eq!(srv.session(sid).unwrap().active_window(), w2);
+    assert!(srv.session_mut(sid).unwrap().move_active_window_to(1));
+    assert_eq!(srv.session(sid).unwrap().window_ids(), vec![w1, w2, w0]);
+    // Out-of-range is a no-op.
+    assert!(!srv.session_mut(sid).unwrap().swap_windows(0, 9));
+    assert!(!srv.session_mut(sid).unwrap().move_active_window_to(9));
+}

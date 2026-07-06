@@ -57,6 +57,14 @@ pub enum ParsedCommand {
     /// `find-window <query>` / `findw <query>`.
     FindWindow(String),
     BreakPane,
+    /// `rotate-window [-D|-U]`: rotate the panes in the active window (down by
+    /// default). tmux prefix `C-o`.
+    RotateWindow { down: bool },
+    /// `swap-window -s A -t B` / `swap-window -t B`: swap two windows by index
+    /// (source defaults to the active window). Indexes are base-index-adjusted.
+    SwapWindow { src: Option<u32>, dst: u32 },
+    /// `move-window -t N`: move the active window to index N.
+    MoveWindow { dst: u32 },
     /// `swap-pane -U` (previous) / `-D` (next). Defaults to next. `-t .N` swaps
     /// the active pane with pane N in the active window instead of a sibling.
     SwapPane { next: bool, target: Option<Target> },
@@ -238,6 +246,24 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             None => ParsedCommand::BadArgs("usage: find-window QUERY"),
         },
         "break-pane" | "breakp" => ParsedCommand::BreakPane,
+        "rotate-window" | "rotatew" => {
+            // -U rotates up; default (or -D) rotates down.
+            let down = !args.contains(&"-U");
+            ParsedCommand::RotateWindow { down }
+        }
+        "swap-window" | "swapw" => {
+            let src = flag_value(args, "-s").and_then(|v| v.trim_start_matches([':', '.']).parse().ok());
+            match flag_value(args, "-t").and_then(|v| v.trim_start_matches([':', '.']).parse().ok()) {
+                Some(dst) => ParsedCommand::SwapWindow { src, dst },
+                None => ParsedCommand::BadArgs("usage: swap-window [-s A] -t B"),
+            }
+        }
+        "move-window" | "movew" => {
+            match flag_value(args, "-t").and_then(|v| v.trim_start_matches([':', '.']).parse().ok()) {
+                Some(dst) => ParsedCommand::MoveWindow { dst },
+                None => ParsedCommand::BadArgs("usage: move-window -t N"),
+            }
+        }
         "swap-pane" | "swapp" => {
             // -U = swap with previous (up), -D = with next (down). Default next.
             // -t .N targets a specific pane in the active window.

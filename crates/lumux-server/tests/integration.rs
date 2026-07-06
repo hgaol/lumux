@@ -1856,6 +1856,45 @@ fn command_prompt_join_pane_merges_windows() {
 }
 
 #[test]
+fn rotate_window_moves_pane_content_between_slots() {
+    // rotate-window (prefix C-o) rotates panes within the window. Split left/
+    // right: left pane (0) prints a marker; the right pane (1, active) is empty.
+    // After rotate, the marker that was on the LEFT should now be on the RIGHT
+    // (its column position changed), proving the panes rotated.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("rotw".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Left pane prints a marker, then split left/right (marker stays left).
+    c.send(&ClientMsg::Input(b"echo ROTMARK_QZ\n".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split left/right
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, split) = c.collect_until(Duration::from_secs(1), |_| false);
+    let left_col = columns_of(&split, "ROTMARK_QZ").into_iter().next();
+    assert!(
+        left_col.is_some_and(|col| col < 40),
+        "precondition: the marker starts in the left pane (col < 40); got:\n{split}"
+    );
+    // Rotate the panes (prefix C-o = Ctrl-o = 0x0f).
+    c.send(&ClientMsg::Input(vec![0x02, 0x0f]));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    let new_col = columns_of(after, "ROTMARK_QZ").into_iter().next();
+    assert!(
+        new_col.is_some_and(|col| col >= 40),
+        "after rotate, the marker should have moved to the right pane (col >= 40); got:\n{after}"
+    );
+}
+
+#[test]
 fn after_new_window_hook_fires() {
     // set-hook wires a command to an event; creating a window must fire the
     // after-new-window hook. Bind it to display-message and assert the flash

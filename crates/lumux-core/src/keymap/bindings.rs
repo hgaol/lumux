@@ -73,6 +73,8 @@ pub enum Action {
     ChooseBuffer,
     /// Toggle the mark on the active pane (tmux `select-pane -m`, prefix `m`).
     MarkPane,
+    /// Rotate the panes in the active window (tmux `rotate-window`, prefix C-o).
+    RotateWindow,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
     /// Run a chain of command-prompt commands (tmux `bind key cmd1 \; cmd2`).
@@ -126,6 +128,7 @@ impl Action {
             Action::ChooseBuffer => "choose a paste buffer",
             Action::SendPrefix => "send the prefix key to the shell",
             Action::MarkPane => "mark/unmark the active pane",
+            Action::RotateWindow => "rotate the panes in the window",
             Action::RunCommands(_) => "run bound command(s)",
         }
     }
@@ -192,6 +195,8 @@ impl Bindings {
         table.insert(Key::char('}'), Action::SwapPaneNext);
         // Mark/unmark the active pane (tmux prefix m / select-pane -m).
         table.insert(Key::char('m'), Action::MarkPane);
+        // Rotate the panes in the active window (tmux prefix C-o).
+        table.insert(Key::ctrl('o'), Action::RotateWindow);
         // Cycle preset layouts (tmux prefix Space / next-layout).
         table.insert(Key::plain(KeyCode::Space), Action::NextLayout);
         // Directional resize on the real tmux keys: Ctrl+arrows and Alt+arrows

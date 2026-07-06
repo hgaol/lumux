@@ -315,6 +315,7 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "show-help" => Action::ShowHelp,
         "choose-session" => Action::ChooseSession,
         "mark-pane" => Action::MarkPane,
+        "rotate-window" => Action::RotateWindow,
         _ => return None,
     };
     Some(action)
