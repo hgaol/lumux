@@ -819,7 +819,7 @@ mod tests {
                 ctrl: false,
                 alt: true
             }),
-            Some(&Action::RunCommands(vec![ParsedCommand::KillPane]))
+            Some(&Action::RunCommands(vec![ParsedCommand::KillPane(None)]))
         );
     }
 
