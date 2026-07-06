@@ -11,18 +11,26 @@ const BUFFER_LIMIT: usize = 50;
 
 /// One stored buffer: its text plus the auto-assigned ordinal used to build a
 /// stable tmux-style name (`buffer<N>`). The ordinal is monotonic, so a buffer
-/// keeps its name as newer ones are added in front of it.
+/// keeps its name as newer ones are added in front of it. A buffer may also
+/// carry an explicit user-assigned name (tmux `set-buffer -b name`), which takes
+/// precedence over the ordinal name.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Buffer {
     /// Monotonic id assigned at push time; never reused within a run.
     pub ordinal: u64,
     pub text: String,
+    /// User-assigned name (tmux `-b`), if any. When set, this is the buffer's
+    /// name instead of `buffer<ordinal>`.
+    pub explicit_name: Option<String>,
 }
 
 impl Buffer {
-    /// The tmux-style name, e.g. `buffer3`.
+    /// The buffer's name: the explicit name if set, else the tmux-style
+    /// `buffer<ordinal>` (e.g. `buffer3`).
     pub fn name(&self) -> String {
-        format!("buffer{}", self.ordinal)
+        self.explicit_name
+            .clone()
+            .unwrap_or_else(|| format!("buffer{}", self.ordinal))
     }
 }
 
@@ -60,12 +68,53 @@ impl PasteBuffers {
         let buf = Buffer {
             ordinal: self.next_ordinal,
             text,
+            explicit_name: None,
         };
         self.next_ordinal += 1;
         let name = buf.name();
         self.buffers.insert(0, buf);
         self.buffers.truncate(BUFFER_LIMIT);
         Some(name)
+    }
+
+    /// Store `text` under an explicit `name` (tmux `set-buffer -b name`). If a
+    /// buffer with that name already exists it is replaced in place (keeping its
+    /// position); otherwise a new most-recent buffer is created. Empty text is
+    /// ignored. Returns the name.
+    pub fn push_named(&mut self, name: impl Into<String>, text: impl Into<String>) -> Option<String> {
+        let name = name.into();
+        let text = text.into();
+        if text.is_empty() {
+            return None;
+        }
+        if let Some(b) = self.buffers.iter_mut().find(|b| b.name() == name) {
+            b.text = text;
+            return Some(name);
+        }
+        let buf = Buffer {
+            ordinal: self.next_ordinal,
+            text,
+            explicit_name: Some(name.clone()),
+        };
+        self.next_ordinal += 1;
+        self.buffers.insert(0, buf);
+        self.buffers.truncate(BUFFER_LIMIT);
+        Some(name)
+    }
+
+    /// The text of the buffer named `name` (explicit or `buffer<N>`), if present.
+    pub fn text_of(&self, name: &str) -> Option<&str> {
+        self.buffers.iter().find(|b| b.name() == name).map(|b| b.text.as_str())
+    }
+
+    /// Delete the buffer named `name`. Returns true if one was removed.
+    pub fn delete_named(&mut self, name: &str) -> bool {
+        if let Some(pos) = self.buffers.iter().position(|b| b.name() == name) {
+            self.buffers.remove(pos);
+            true
+        } else {
+            false
+        }
     }
 
     /// The most-recent buffer's text (tmux's default `paste-buffer` target).
@@ -147,5 +196,43 @@ mod tests {
         assert_eq!(b.len(), BUFFER_LIMIT);
         // The most-recent push is still on top.
         assert_eq!(b.top(), Some(format!("line{}", BUFFER_LIMIT + 9).as_str()));
+    }
+
+    #[test]
+    fn named_buffer_stores_and_looks_up_by_name() {
+        let mut b = PasteBuffers::new();
+        assert_eq!(b.push_named("greeting", "hello"), Some("greeting".to_string()));
+        assert_eq!(b.text_of("greeting"), Some("hello"));
+        // The explicit name is used, not buffer<N>.
+        assert_eq!(b.get(0).unwrap().name(), "greeting");
+    }
+
+    #[test]
+    fn named_buffer_replaces_in_place() {
+        let mut b = PasteBuffers::new();
+        b.push_named("x", "one");
+        b.push("other");
+        b.push_named("x", "two"); // replace, not add
+        assert_eq!(b.text_of("x"), Some("two"));
+        // Only two buffers: "other" and the replaced "x".
+        assert_eq!(b.len(), 2);
+    }
+
+    #[test]
+    fn delete_named_removes_the_named_buffer() {
+        let mut b = PasteBuffers::new();
+        b.push_named("keep", "a");
+        b.push_named("drop", "b");
+        assert!(b.delete_named("drop"));
+        assert_eq!(b.text_of("drop"), None);
+        assert_eq!(b.text_of("keep"), Some("a"));
+        assert!(!b.delete_named("nope"));
+    }
+
+    #[test]
+    fn text_of_finds_auto_named_buffers_too() {
+        let mut b = PasteBuffers::new();
+        b.push("auto"); // buffer0
+        assert_eq!(b.text_of("buffer0"), Some("auto"));
     }
 }

@@ -875,6 +875,62 @@ impl<S: PtySystem> Daemon<S> {
         true
     }
 
+    /// Paste a specific named buffer (tmux `paste-buffer -b name`); falls back to
+    /// the most-recent buffer when `name` is None. Returns false if the target
+    /// buffer doesn't exist.
+    pub fn paste_named_buffer(&mut self, session: SessionId, name: Option<&str>) -> bool {
+        let text = match name {
+            Some(n) => self.buffers.text_of(n).map(str::to_string),
+            None => self.buffers.top().map(str::to_string),
+        };
+        let Some(text) = text else {
+            return false;
+        };
+        if let Some(pid) = self.active_pane(session) {
+            let _ = self.write_pane(pid, text.as_bytes());
+        }
+        true
+    }
+
+    /// Store text in a paste buffer (tmux `set-buffer`), named or auto-named.
+    pub fn set_buffer(&mut self, name: Option<&str>, text: &str) {
+        match name {
+            Some(n) => {
+                self.buffers.push_named(n, text);
+            }
+            None => {
+                self.buffers.push(text);
+            }
+        }
+    }
+
+    /// Delete a named buffer (tmux `delete-buffer -b`). Returns true if removed.
+    pub fn delete_named_buffer(&mut self, name: &str) -> bool {
+        self.buffers.delete_named(name)
+    }
+
+    /// Write a buffer's text to a file (tmux `save-buffer`). `name` None saves the
+    /// most-recent buffer. Returns Ok on success, Err(message) otherwise.
+    pub fn save_buffer(&self, name: Option<&str>, path: &str) -> Result<(), String> {
+        let text = match name {
+            Some(n) => self.buffers.text_of(n),
+            None => self.buffers.top(),
+        };
+        let Some(text) = text else {
+            return Err("no such buffer".to_string());
+        };
+        std::fs::write(path, text).map_err(|e| format!("save-buffer: {e}"))
+    }
+
+    /// Read a file into a new paste buffer (tmux `load-buffer`). Returns the new
+    /// buffer's name, or Err(message) on an I/O error.
+    pub fn load_buffer(&mut self, path: &str) -> Result<String, String> {
+        let text = std::fs::read_to_string(path).map_err(|e| format!("load-buffer: {e}"))?;
+        self.buffers
+            .push(text)
+            .ok_or_else(|| "load-buffer: file was empty".to_string())
+    }
+
     /// Capture the active pane's visible text into a new paste buffer (tmux
     /// capture-pane). Trailing blank lines are dropped. Returns the buffer name,
     /// or None if there's no active pane / nothing to capture.

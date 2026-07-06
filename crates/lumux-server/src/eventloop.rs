@@ -1272,6 +1272,29 @@ where
                     Err(e) => self.daemon.flash_message(client_id, format!("save failed: {e}")),
                 }
             }
+            ParsedCommand::SetBuffer { name, text } => {
+                self.daemon.set_buffer(name.as_deref(), &text);
+            }
+            ParsedCommand::PasteNamedBuffer { name } => {
+                if !self.daemon.paste_named_buffer(session, name.as_deref()) {
+                    self.daemon.flash_message(client_id, "no such buffer");
+                }
+            }
+            ParsedCommand::SaveBuffer { name, path } => {
+                match self.daemon.save_buffer(name.as_deref(), &path) {
+                    Ok(()) => self.daemon.flash_message(client_id, format!("saved to {path}")),
+                    Err(e) => self.daemon.flash_message(client_id, e),
+                }
+            }
+            ParsedCommand::LoadBuffer { path } => match self.daemon.load_buffer(&path) {
+                Ok(name) => self.daemon.flash_message(client_id, format!("loaded {name}")),
+                Err(e) => self.daemon.flash_message(client_id, e),
+            },
+            ParsedCommand::DeleteBuffer { name } => {
+                if !self.daemon.delete_named_buffer(&name) {
+                    self.daemon.flash_message(client_id, "no such buffer");
+                }
+            }
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);

@@ -1856,6 +1856,36 @@ fn command_prompt_join_pane_merges_windows() {
 }
 
 #[test]
+fn named_buffer_set_and_paste() {
+    // set-buffer stores text under a name; paste-buffer -b name injects it into
+    // the active pane. `cat` echoes what's pasted so we can see it on screen.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("namedbuf".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Store a named buffer, then run cat so pasted bytes echo back.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"set-buffer -b greet NAMEDBUF_QZ\r".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    c.send(&ClientMsg::Input(b"cat\n".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    // Paste the named buffer into the pane (cat echoes it).
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"paste-buffer -b greet\r".to_vec()));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("NAMEDBUF_QZ"),
+        "paste-buffer -b greet should inject the named buffer's text; got:\n{vt}"
+    );
+}
+
+#[test]
 fn rotate_window_moves_pane_content_between_slots() {
     // rotate-window (prefix C-o) rotates panes within the window. Split left/
     // right: left pane (0) prints a marker; the right pane (1, active) is empty.

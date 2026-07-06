@@ -94,6 +94,16 @@ pub enum ParsedCommand {
     SelectLayout(Option<String>),
     /// `save-state`: write the session snapshot to disk now (tmux-resurrect save).
     SaveState,
+    /// `set-buffer [-b name] TEXT`: store text in a paste buffer (named or auto).
+    SetBuffer { name: Option<String>, text: String },
+    /// `paste-buffer [-b name]`: paste the named buffer (or the most recent).
+    PasteNamedBuffer { name: Option<String> },
+    /// `save-buffer [-b name] PATH`: write a buffer's text to a file.
+    SaveBuffer { name: Option<String>, path: String },
+    /// `load-buffer PATH`: read a file into a new paste buffer.
+    LoadBuffer { path: String },
+    /// `delete-buffer -b name`: delete the named buffer.
+    DeleteBuffer { name: String },
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -314,6 +324,31 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
         "save-state" | "saves" => ParsedCommand::SaveState,
+        "set-buffer" | "setb" => {
+            let name = flag_value(args, "-b").map(str::to_string);
+            match non_flag_tail(args, "-b") {
+                Some(text) => ParsedCommand::SetBuffer { name, text: unquote(&text) },
+                None => ParsedCommand::BadArgs("usage: set-buffer [-b name] TEXT"),
+            }
+        }
+        "paste-buffer" | "pasteb" => ParsedCommand::PasteNamedBuffer {
+            name: flag_value(args, "-b").map(str::to_string),
+        },
+        "save-buffer" | "saveb" => {
+            let name = flag_value(args, "-b").map(str::to_string);
+            match non_flag_tail(args, "-b") {
+                Some(path) => ParsedCommand::SaveBuffer { name, path: unquote(&path) },
+                None => ParsedCommand::BadArgs("usage: save-buffer [-b name] PATH"),
+            }
+        }
+        "load-buffer" | "loadb" => match non_flag_tail(args, "-b") {
+            Some(path) => ParsedCommand::LoadBuffer { path: unquote(&path) },
+            None => ParsedCommand::BadArgs("usage: load-buffer PATH"),
+        },
+        "delete-buffer" | "deleteb" => match flag_value(args, "-b").map(str::to_string) {
+            Some(name) => ParsedCommand::DeleteBuffer { name },
+            None => ParsedCommand::BadArgs("usage: delete-buffer -b name"),
+        },
         "detach-client" | "detach" => ParsedCommand::Detach,
         other => ParsedCommand::Unknown(other.to_string()),
     }
@@ -334,6 +369,27 @@ fn parse_target_index(args: &[&str]) -> Option<u32> {
 /// The value following `flag` in `args`, if present (`-t 3` → "3").
 fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1).copied())
+}
+
+/// Join the args that are neither `flag` nor its value into a space-separated
+/// string — the free-text/path tail after removing a `-b name`-style option.
+/// None when nothing remains.
+fn non_flag_tail(args: &[&str], flag: &str) -> Option<String> {
+    let mut out: Vec<&str> = Vec::new();
+    let mut i = 0;
+    while i < args.len() {
+        if args[i] == flag {
+            i += 2; // skip the flag and its value
+            continue;
+        }
+        out.push(args[i]);
+        i += 1;
+    }
+    if out.is_empty() {
+        None
+    } else {
+        Some(out.join(" "))
+    }
 }
 
 /// Parse an optional `-t TARGET` from args into a [`Target`]. Absent flag → None
@@ -658,5 +714,39 @@ mod tests {
             parse_command("select-layout main-vertical"),
             Some(ParsedCommand::SelectLayout(Some("main-vertical".to_string())))
         );
+    }
+
+    #[test]
+    fn buffer_commands_parse() {
+        assert_eq!(
+            parse_command("set-buffer hello world"),
+            Some(ParsedCommand::SetBuffer { name: None, text: "hello world".to_string() })
+        );
+        assert_eq!(
+            parse_command("set-buffer -b greet hi"),
+            Some(ParsedCommand::SetBuffer { name: Some("greet".to_string()), text: "hi".to_string() })
+        );
+        assert_eq!(
+            parse_command("paste-buffer -b greet"),
+            Some(ParsedCommand::PasteNamedBuffer { name: Some("greet".to_string()) })
+        );
+        assert_eq!(
+            parse_command("paste-buffer"),
+            Some(ParsedCommand::PasteNamedBuffer { name: None })
+        );
+        assert_eq!(
+            parse_command("save-buffer -b greet /tmp/x"),
+            Some(ParsedCommand::SaveBuffer { name: Some("greet".to_string()), path: "/tmp/x".to_string() })
+        );
+        assert_eq!(
+            parse_command("load-buffer /tmp/y"),
+            Some(ParsedCommand::LoadBuffer { path: "/tmp/y".to_string() })
+        );
+        assert_eq!(
+            parse_command("delete-buffer -b greet"),
+            Some(ParsedCommand::DeleteBuffer { name: "greet".to_string() })
+        );
+        assert!(matches!(parse_command("set-buffer"), Some(ParsedCommand::BadArgs(_))));
+        assert!(matches!(parse_command("delete-buffer"), Some(ParsedCommand::BadArgs(_))));
     }
 }
