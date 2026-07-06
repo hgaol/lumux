@@ -1,10 +1,10 @@
-//! Parse a typed command line (tmux's command-prompt, prefix `:`) into a
-//! [`ParsedCommand`] the daemon can dispatch. This is pure, unit-testable
+//! Parse a typed command line (tmux's command-prompt, prefix `:`) into
+//! [`ParsedCommand`]s the daemon can dispatch. This is pure, unit-testable
 //! parsing — no I/O — covering the subset of tmux commands lumux implements.
 //!
-//! Only the first command on the line is parsed (no `;`-separated chains).
-//! Unknown verbs yield [`ParsedCommand::Unknown`] so the daemon can flash a
-//! helpful message instead of silently ignoring the input.
+//! A line may chain several commands with `;` ([`parse_commands`]); each segment
+//! is parsed by [`parse_command`]. Unknown verbs yield [`ParsedCommand::Unknown`]
+//! so the daemon can flash a helpful message instead of silently ignoring input.
 
 /// A direction argument for split/join (`-h` horizontal, `-v` vertical).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +81,69 @@ pub fn parse_command(line: &str) -> Option<ParsedCommand> {
     let args: Vec<&str> = parts.collect();
     Some(dispatch(verb, &args))
 }
+
+/// Parse a command line that may contain several commands joined by `;` (tmux's
+/// command separator). Each segment is parsed with [`parse_command`]; empty
+/// segments are skipped. A `;` inside single/double quotes is literal, and the
+/// verbatim tail of a `run-shell`/`run` segment keeps its `;` (so
+/// `run-shell "a; b"` and `run echo hi ; next-window` both behave correctly).
+///
+/// Returns the commands in order (possibly empty for a blank line).
+pub fn parse_commands(line: &str) -> Vec<ParsedCommand> {
+    split_commands(line)
+        .into_iter()
+        .filter_map(|seg| parse_command(&seg))
+        .collect()
+}
+
+/// Split a line into command segments on top-level (unquoted) `;`. Quotes are
+/// honored so a `;` inside `'...'`/`"..."` doesn't split. A segment whose verb
+/// is `run-shell`/`run` swallows the rest of the line verbatim (its shell
+/// command may contain `;`), matching how [`parse_command`] treats that tail.
+fn split_commands(line: &str) -> Vec<String> {
+    let mut segments = Vec::new();
+    let mut cur = String::new();
+    let mut quote: Option<char> = None;
+    let mut chars = line.chars().peekable();
+    while let Some(c) = chars.next() {
+        // Once the current segment is a run-shell/run command, the remainder is
+        // its verbatim shell command line — take all of it (no more splitting).
+        if quote.is_none() && is_run_shell_head(&cur) {
+            cur.push(c);
+            cur.extend(chars);
+            break;
+        }
+        match quote {
+            Some(q) => {
+                cur.push(c);
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                '\'' | '"' => {
+                    quote = Some(c);
+                    cur.push(c);
+                }
+                ';' => {
+                    segments.push(std::mem::take(&mut cur));
+                }
+                _ => cur.push(c),
+            },
+        }
+    }
+    segments.push(cur);
+    segments
+}
+
+/// Whether the accumulated segment text so far begins with the `run-shell`/`run`
+/// verb followed by a space (so its tail must be taken verbatim). Only the first
+/// word matters; leading whitespace is ignored.
+fn is_run_shell_head(seg: &str) -> bool {
+    let s = seg.trim_start();
+    matches!(s.split_whitespace().next(), Some("run-shell" | "run")) && s.contains(char::is_whitespace)
+}
+
 
 fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
     match verb {
@@ -305,5 +368,70 @@ mod tests {
     fn save_state_and_alias() {
         assert_eq!(parse_command("save-state"), Some(ParsedCommand::SaveState));
         assert_eq!(parse_command("saves"), Some(ParsedCommand::SaveState));
+    }
+
+    #[test]
+    fn parse_commands_splits_on_semicolons() {
+        assert_eq!(
+            parse_commands("split-window ; new-window"),
+            vec![
+                ParsedCommand::SplitWindow(Dir::Vertical),
+                ParsedCommand::NewWindow
+            ]
+        );
+        // No spaces around the separator.
+        assert_eq!(
+            parse_commands("new-window;next-window"),
+            vec![ParsedCommand::NewWindow, ParsedCommand::NextWindow]
+        );
+    }
+
+    #[test]
+    fn parse_commands_skips_empty_segments() {
+        assert_eq!(
+            parse_commands("  ; new-window ;; next-window ; "),
+            vec![ParsedCommand::NewWindow, ParsedCommand::NextWindow]
+        );
+        assert!(parse_commands("").is_empty());
+        assert!(parse_commands("   ;  ; ").is_empty());
+    }
+
+    #[test]
+    fn parse_commands_keeps_semicolon_inside_quotes() {
+        // A `;` inside a quoted rename argument is literal, not a separator.
+        assert_eq!(
+            parse_commands("rename-window \"a; b\" ; new-window"),
+            vec![
+                // The tokenizer here is whitespace-based, so the quotes are kept
+                // in the name; what matters is the `;` did NOT split the segment.
+                ParsedCommand::RenameWindow("\"a; b\"".to_string()),
+                ParsedCommand::NewWindow
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_commands_run_shell_tail_keeps_semicolons() {
+        // run-shell swallows the rest of the line verbatim, `;` included.
+        assert_eq!(
+            parse_commands("run-shell echo a; echo b ; next-window"),
+            vec![ParsedCommand::RunShell("echo a; echo b ; next-window".to_string())]
+        );
+        // But a command BEFORE run-shell still splits normally.
+        assert_eq!(
+            parse_commands("new-window ; run echo hi ; there"),
+            vec![
+                ParsedCommand::NewWindow,
+                ParsedCommand::RunShell("echo hi ; there".to_string())
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_commands_single_command_unchanged() {
+        assert_eq!(
+            parse_commands("split-window -h"),
+            vec![ParsedCommand::SplitWindow(Dir::Horizontal)]
+        );
     }
 }

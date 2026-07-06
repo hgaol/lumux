@@ -1571,6 +1571,37 @@ fn command_prompt_runs_a_split() {
 }
 
 #[test]
+fn command_prompt_runs_a_chain_of_commands() {
+    // tmux command-prompt supports `;`-separated command chains. A single line
+    // `new-window ; new-window` must create BOTH windows, so a fresh session
+    // (one window, index 0) ends up with three (0, 1, 2).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("chain".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    let (_b, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        has_window(&before, 0) && !has_window(&before, 1),
+        "precondition: a fresh session has exactly one window; got:\n{before}"
+    );
+    // One command line, two commands joined by `;`.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"new-window ; new-window\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        has_window(&after, 0) && has_window(&after, 1) && has_window(&after, 2),
+        "a `;`-chained command line must run every command; got:\n{after}"
+    );
+}
+
+#[test]
 fn command_prompt_unknown_command_flashes() {
     // An unrecognized verb flashes a message rather than doing nothing silently.
     let path = start_daemon();

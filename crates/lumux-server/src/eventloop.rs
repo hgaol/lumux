@@ -1146,13 +1146,23 @@ where
     /// Parse and run a tmux command-prompt line (prefix `:`). Reuses the same
     /// action paths as the keybindings so behavior is identical.
     fn dispatch_command_line(&mut self, client_id: u64, session: SessionId, line: &str) {
-        use lumux_core::command::{parse_command, Dir, ParsedCommand};
+        use lumux_core::command::parse_commands;
+        // A command line may chain several commands with `;` (tmux separator).
+        // Execute each in order; render once at the end.
+        for cmd in parse_commands(line) {
+            self.dispatch_parsed(client_id, session, cmd);
+        }
+        self.render_session(session);
+    }
+
+    /// Execute a single parsed command-prompt command. Split out of
+    /// [`Self::dispatch_command_line`] so a `;`-chained line runs each segment
+    /// through the same logic. Rendering is done once by the caller.
+    fn dispatch_parsed(&mut self, client_id: u64, session: SessionId, cmd: lumux_core::command::ParsedCommand) {
+        use lumux_core::command::{Dir, ParsedCommand};
         let dir_to_split = |d: Dir| match d {
             Dir::Horizontal => SplitDir::Horizontal,
             Dir::Vertical => SplitDir::Vertical,
-        };
-        let Some(cmd) = parse_command(line) else {
-            return; // empty line
         };
         match cmd {
             ParsedCommand::SplitWindow(d) => self.do_split(session, dir_to_split(d)),
@@ -1232,7 +1242,6 @@ where
                 self.daemon.flash_message(client_id, format!("unknown command: {verb}"));
             }
         }
-        self.render_session(session);
     }
     /// q/Escape quits.
     fn handle_copy_key(&mut self, client_id: u64, session: SessionId, ck: CopyKey) {
