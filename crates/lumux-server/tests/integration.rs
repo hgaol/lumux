@@ -1593,6 +1593,57 @@ fn keymap_and_command_prompt_new_window_agree() {
 }
 
 #[test]
+fn kill_pane_target_kills_the_indexed_pane_not_the_active_one() {
+    // `kill-pane -t .N` must kill pane N, not the active pane. Split into two
+    // panes (left = pane 0 with a unique marker; the new right pane = pane 1 and
+    // is active). `:kill-pane -t .0` kills the LEFT pane: its marker disappears
+    // and the split collapses (no divider) — proving the target, not the active
+    // pane (pane 1), was killed.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("killtarget".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Print a marker in the left pane (pane 0), then split left/right so a new
+    // active pane 1 appears on the right.
+    c.send(&ClientMsg::Input(b"echo KILLTARGET_LEFT_QZ\n".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split left/right
+    let (_d0, split) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        split.contains('│') && split.contains("KILLTARGET_LEFT_QZ"),
+        "precondition: two panes with the left marker visible; got:\n{split}"
+    );
+    // Kill pane 0 (the left one) by index, while pane 1 (right) is active.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"kill-pane -t .0\r".to_vec()));
+    // Drain the kill + prompt-teardown frames, THEN force one clean full repaint
+    // so the assertion sees only the final single-pane state (collect_until
+    // accumulates every frame, including the prompt overlay drawn over the old
+    // split).
+    c.collect_until(Duration::from_millis(500), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    // Assert on the final repaint only: the resize emits ESC[2J then redraws, so
+    // take everything after the last clear-screen (collect_until accumulates all
+    // frames, including the pre-kill split still under the prompt overlay).
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    assert!(
+        !after.contains('│'),
+        "killing one of two panes should remove the divider; got:\n{after}"
+    );
+    assert!(
+        !after.contains("KILLTARGET_LEFT_QZ"),
+        "the LEFT pane (pane 0) should be gone, not the active right pane; got:\n{after}"
+    );
+}
+
+#[test]
 fn bound_key_runs_a_command_chain() {
     // A config `bind` with a `\;` chain must run every command with its real
     // args. Bind `prefix g` to `new-window \; split-window -h`; pressing it once

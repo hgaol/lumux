@@ -13,12 +13,38 @@ pub enum Dir {
     Vertical,
 }
 
+/// A parsed `-t` target. tmux target syntax is rich; v1 handles the numeric
+/// forms lumux can resolve: a window by index (`-t N` / `-t :N`) and a pane by
+/// index within the active window (`-t .N`). `None`-valued commands act on the
+/// active window/pane as before.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target {
+    /// A window by its (base-index-adjusted) position: `-t 2`, `-t :2`.
+    Window(u32),
+    /// A pane by its index within the active window: `-t .1`.
+    Pane(u32),
+}
+
+impl Target {
+    /// Parse a `-t` value into a [`Target`]. `.N` is a pane index; `N` or `:N`
+    /// (a leading `:` names a window in tmux) is a window index. Returns None if
+    /// the value isn't one of these numeric forms.
+    pub fn parse(v: &str) -> Option<Target> {
+        if let Some(rest) = v.strip_prefix('.') {
+            return rest.parse().ok().map(Target::Pane);
+        }
+        let rest = v.strip_prefix(':').unwrap_or(v);
+        rest.parse().ok().map(Target::Window)
+    }
+}
+
 /// A parsed command-prompt line.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParsedCommand {
     SplitWindow(Dir),
     NewWindow,
-    KillPane,
+    /// `kill-pane [-t TARGET]`: kill the target pane (None = the active pane).
+    KillPane(Option<Target>),
     KillWindow,
     NextWindow,
     PrevWindow,
@@ -31,8 +57,9 @@ pub enum ParsedCommand {
     /// `find-window <query>` / `findw <query>`.
     FindWindow(String),
     BreakPane,
-    /// `swap-pane -U` (previous) / `-D` (next). Defaults to next.
-    SwapPane { next: bool },
+    /// `swap-pane -U` (previous) / `-D` (next). Defaults to next. `-t .N` swaps
+    /// the active pane with pane N in the active window instead of a sibling.
+    SwapPane { next: bool, target: Option<Target> },
     /// `join-pane [-h|-v] [-s SRC]`: move the active pane of source window `src`
     /// (an index; None = the last-active window) into the current window,
     /// splitting in `dir`.
@@ -159,7 +186,7 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             ParsedCommand::SplitWindow(dir)
         }
         "new-window" | "neww" => ParsedCommand::NewWindow,
-        "kill-pane" | "killp" => ParsedCommand::KillPane,
+        "kill-pane" | "killp" => ParsedCommand::KillPane(parse_target(args)),
         "kill-window" | "killw" => ParsedCommand::KillWindow,
         "next-window" | "next" => ParsedCommand::NextWindow,
         "previous-window" | "prev" => ParsedCommand::PrevWindow,
@@ -184,8 +211,12 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
         "break-pane" | "breakp" => ParsedCommand::BreakPane,
         "swap-pane" | "swapp" => {
             // -U = swap with previous (up), -D = with next (down). Default next.
+            // -t .N targets a specific pane in the active window.
             let next = !args.contains(&"-U");
-            ParsedCommand::SwapPane { next }
+            ParsedCommand::SwapPane {
+                next,
+                target: parse_target(args),
+            }
         }
         "join-pane" | "joinp" => {
             let dir = if args.contains(&"-h") {
@@ -244,6 +275,13 @@ fn flag_value<'a>(args: &[&'a str], flag: &str) -> Option<&'a str> {
     args.iter().position(|a| *a == flag).and_then(|i| args.get(i + 1).copied())
 }
 
+/// Parse an optional `-t TARGET` from args into a [`Target`]. Absent flag → None
+/// (act on the active window/pane); present-but-unparsable → None too (a bad
+/// target degrades to the active default rather than failing the command).
+fn parse_target(args: &[&str]) -> Option<Target> {
+    flag_value(args, "-t").and_then(Target::parse)
+}
+
 /// Join all non-flag args into a single space-separated string (for names /
 /// queries). None if there are no such args.
 fn join_rest(args: &[&str]) -> Option<String> {
@@ -288,7 +326,7 @@ mod tests {
     fn simple_verbs_and_aliases() {
         assert_eq!(parse_command("new-window"), Some(ParsedCommand::NewWindow));
         assert_eq!(parse_command("neww"), Some(ParsedCommand::NewWindow));
-        assert_eq!(parse_command("killp"), Some(ParsedCommand::KillPane));
+        assert_eq!(parse_command("killp"), Some(ParsedCommand::KillPane(None)));
         assert_eq!(parse_command("next"), Some(ParsedCommand::NextWindow));
         assert_eq!(parse_command("prev"), Some(ParsedCommand::PrevWindow));
         assert_eq!(parse_command("last"), Some(ParsedCommand::LastWindow));
@@ -319,9 +357,9 @@ mod tests {
 
     #[test]
     fn swap_pane_direction() {
-        assert_eq!(parse_command("swap-pane -U"), Some(ParsedCommand::SwapPane { next: false }));
-        assert_eq!(parse_command("swap-pane -D"), Some(ParsedCommand::SwapPane { next: true }));
-        assert_eq!(parse_command("swapp"), Some(ParsedCommand::SwapPane { next: true }));
+        assert_eq!(parse_command("swap-pane -U"), Some(ParsedCommand::SwapPane { next: false, target: None }));
+        assert_eq!(parse_command("swap-pane -D"), Some(ParsedCommand::SwapPane { next: true, target: None }));
+        assert_eq!(parse_command("swapp"), Some(ParsedCommand::SwapPane { next: true, target: None }));
     }
 
     #[test]
@@ -468,5 +506,37 @@ mod tests {
             parse_command("display-message"),
             Some(ParsedCommand::BadArgs(_))
         ));
+    }
+
+    #[test]
+    fn target_parses_window_and_pane_forms() {
+        assert_eq!(Target::parse("2"), Some(Target::Window(2)));
+        assert_eq!(Target::parse(":3"), Some(Target::Window(3)));
+        assert_eq!(Target::parse(".1"), Some(Target::Pane(1)));
+        assert_eq!(Target::parse("notanum"), None);
+        assert_eq!(Target::parse(".x"), None);
+    }
+
+    #[test]
+    fn kill_pane_and_swap_pane_carry_targets() {
+        assert_eq!(parse_command("kill-pane"), Some(ParsedCommand::KillPane(None)));
+        assert_eq!(
+            parse_command("kill-pane -t .2"),
+            Some(ParsedCommand::KillPane(Some(Target::Pane(2))))
+        );
+        assert_eq!(
+            parse_command("swap-pane -t .1"),
+            Some(ParsedCommand::SwapPane {
+                next: true,
+                target: Some(Target::Pane(1))
+            })
+        );
+        assert_eq!(
+            parse_command("swap-pane -U"),
+            Some(ParsedCommand::SwapPane {
+                next: false,
+                target: None
+            })
+        );
     }
 }

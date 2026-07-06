@@ -1149,7 +1149,7 @@ where
         match cmd {
             ParsedCommand::SplitWindow(d) => self.do_split(session, dir_to_split(d)),
             ParsedCommand::NewWindow => self.do_new_window(session),
-            ParsedCommand::KillPane => self.do_kill_pane(session),
+            ParsedCommand::KillPane(target) => self.do_kill_pane_target(client_id, session, target),
             ParsedCommand::KillWindow => self.do_kill_window(session),
             ParsedCommand::NextWindow => self.do_next_window(session),
             ParsedCommand::PrevWindow => self.do_prev_window(session),
@@ -1188,7 +1188,9 @@ where
                 }
             }
             ParsedCommand::BreakPane => self.do_break_pane(session),
-            ParsedCommand::SwapPane { next } => self.do_swap_pane(session, next),
+            ParsedCommand::SwapPane { next, target } => {
+                self.do_swap_pane_target(client_id, session, next, target)
+            }
             ParsedCommand::JoinPane { dir, src } => self.do_join_pane(client_id, session, dir_to_split(dir), src),
             ParsedCommand::SynchronizePanes(state) => {
                 let on_now = self.daemon.is_synchronized(session);
@@ -1494,6 +1496,92 @@ where
             let result = self.daemon.close_pane(session, pid);
             self.pane_session.remove(&pid);
             self.on_pane_exit(session, pid, result);
+        }
+    }
+
+    /// `kill-pane [-t TARGET]`: kill the target pane (or the active pane when no
+    /// target). A `-t .N` pane index that doesn't resolve flashes an error rather
+    /// than silently killing the active pane.
+    fn do_kill_pane_target(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        target: Option<lumux_core::command::Target>,
+    ) {
+        let pid = match self.resolve_target_pane(session, target) {
+            Ok(pid) => pid,
+            Err(msg) => return self.daemon.flash_message(client_id, msg),
+        };
+        let result = self.daemon.close_pane(session, pid);
+        self.pane_session.remove(&pid);
+        self.on_pane_exit(session, pid, result);
+    }
+
+    /// `swap-pane [-U|-D] [-t .N]`: swap the active pane with a sibling
+    /// (prev/next) or, with `-t .N`, with pane N in the active window.
+    fn do_swap_pane_target(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        next: bool,
+        target: Option<lumux_core::command::Target>,
+    ) {
+        // No target → the existing sibling-swap behavior.
+        let Some(target) = target else {
+            return self.do_swap_pane(session, next);
+        };
+        let other = match self.resolve_target_pane(session, Some(target)) {
+            Ok(pid) => pid,
+            Err(msg) => return self.daemon.flash_message(client_id, msg),
+        };
+        if self.daemon.server.swap_active_pane(session, other) {
+            let size = self
+                .daemon
+                .server
+                .effective_size(session)
+                .unwrap_or(PtySize::new(80, 24));
+            self.daemon.resize_session(session, size);
+            self.invalidate_session(session);
+        }
+    }
+
+    /// Resolve a `-t` target to a concrete pane id in `session`. `None` → the
+    /// active pane. A window target (`-t N`) resolves to that window's active
+    /// pane; a pane target (`-t .N`) to pane N of the active window. Returns an
+    /// error message (for the caller to flash) when the index doesn't exist.
+    fn resolve_target_pane(
+        &self,
+        session: SessionId,
+        target: Option<lumux_core::command::Target>,
+    ) -> Result<PaneId, String> {
+        use lumux_core::command::Target;
+        let base = self.daemon.base_index();
+        let Some(s) = self.daemon.server.session(session) else {
+            return Err("no such session".to_string());
+        };
+        match target {
+            None => Ok(s.window(s.active_window()).map(|w| w.active_pane()).unwrap_or_else(|| {
+                // active_window always resolves in a live session; unreachable in
+                // practice, but avoid an unwrap.
+                s.window_ids()
+                    .first()
+                    .and_then(|&w| s.window(w))
+                    .map(|w| w.active_pane())
+                    .expect("session has at least one window")
+            })),
+            Some(Target::Window(n)) => {
+                let pos = n.saturating_sub(base) as usize;
+                s.window_ids()
+                    .get(pos)
+                    .and_then(|&wid| s.window(wid))
+                    .map(|w| w.active_pane())
+                    .ok_or_else(|| format!("no window {n}"))
+            }
+            Some(Target::Pane(n)) => {
+                let pos = n.saturating_sub(base) as usize;
+                let w = s.window(s.active_window()).ok_or("no active window")?;
+                w.pane_ids().get(pos).copied().ok_or_else(|| format!("no pane {n}"))
+            }
         }
     }
 
