@@ -159,6 +159,18 @@ pub enum CopyKey {
     HalfPageDown,
     Home,
     End,
+    /// Word-wise motion (tmux copy-mode-vi `w` / `b` / `e`): next word start,
+    /// previous word start, next word end.
+    WordForward,
+    WordBackward,
+    WordEnd,
+    /// First column of the line (`0`) and first non-blank column (`^`). `End`
+    /// already covers `$` (end of line content).
+    LineStart,
+    LineFirstNonBlank,
+    /// Jump to the top (`g`) or bottom (`G`) of the scrollback buffer.
+    Top,
+    Bottom,
     /// Begin/extend a selection at the cursor (Space / 'v').
     StartSelection,
     /// Toggle rectangle (block) selection (tmux rectangle-toggle, `Ctrl-v` / `R`).
@@ -603,6 +615,16 @@ fn copy_key(key: &Key, mode_keys: ModeKeys) -> Option<CopyKey> {
         // vi half-page scroll (tmux copy-mode-vi u/d).
         KeyCode::Char('u') => CopyKey::HalfPageUp,
         KeyCode::Char('d') => CopyKey::HalfPageDown,
+        // vi word motions (w/b/e) and line/goto motions.
+        KeyCode::Char('w') => CopyKey::WordForward,
+        KeyCode::Char('b') => CopyKey::WordBackward,
+        KeyCode::Char('e') => CopyKey::WordEnd,
+        KeyCode::Char('0') => CopyKey::LineStart,
+        KeyCode::Char('^') => CopyKey::LineFirstNonBlank,
+        KeyCode::Char('$') => CopyKey::End,
+        // g = top of buffer, G = bottom (tmux copy-mode-vi history-top/-bottom).
+        KeyCode::Char('g') => CopyKey::Top,
+        KeyCode::Char('G') => CopyKey::Bottom,
         _ => return None,
     };
     Some(ck)

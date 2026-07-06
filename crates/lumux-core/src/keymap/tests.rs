@@ -196,6 +196,20 @@ fn copy_mode_page_navigation() {
 }
 
 #[test]
+fn copy_mode_vi_word_and_goto_motions() {
+    let mut k = km();
+    k.feed(&[0x02, b'[']); // enter copy-mode
+    assert_eq!(k.feed(b"w"), vec![Reaction::Copy(CopyKey::WordForward)]);
+    assert_eq!(k.feed(b"b"), vec![Reaction::Copy(CopyKey::WordBackward)]);
+    assert_eq!(k.feed(b"e"), vec![Reaction::Copy(CopyKey::WordEnd)]);
+    assert_eq!(k.feed(b"0"), vec![Reaction::Copy(CopyKey::LineStart)]);
+    assert_eq!(k.feed(b"^"), vec![Reaction::Copy(CopyKey::LineFirstNonBlank)]);
+    assert_eq!(k.feed(b"$"), vec![Reaction::Copy(CopyKey::End)]);
+    assert_eq!(k.feed(b"g"), vec![Reaction::Copy(CopyKey::Top)]);
+    assert_eq!(k.feed(b"G"), vec![Reaction::Copy(CopyKey::Bottom)]);
+}
+
+#[test]
 fn copy_mode_ignores_non_nav_keys() {
     let mut k = km();
     k.feed(&[0x02, b'[']);

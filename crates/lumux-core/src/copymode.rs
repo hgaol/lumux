@@ -239,6 +239,35 @@ impl CopyMode {
                     self.cursor.col = row.to_trimmed_string().chars().count();
                 }
             }
+            CopyKey::LineStart => {
+                self.cursor.col = 0;
+            }
+            CopyKey::LineFirstNonBlank => {
+                self.cursor.col = first_non_blank(grid, self.cursor.row);
+            }
+            CopyKey::Top => {
+                self.cursor.row = 0;
+                self.cursor.col = 0;
+            }
+            CopyKey::Bottom => {
+                self.cursor.row = max_row;
+                self.cursor.col = 0;
+            }
+            CopyKey::WordForward => {
+                let (r, c) = next_word_start(grid, self.cursor.row, self.cursor.col, max_row);
+                self.cursor.row = r;
+                self.cursor.col = c;
+            }
+            CopyKey::WordBackward => {
+                let (r, c) = prev_word_start(grid, self.cursor.row, self.cursor.col);
+                self.cursor.row = r;
+                self.cursor.col = c;
+            }
+            CopyKey::WordEnd => {
+                let (r, c) = next_word_end(grid, self.cursor.row, self.cursor.col, max_row);
+                self.cursor.row = r;
+                self.cursor.col = c;
+            }
         }
         self.scroll_to_cursor(grid);
         true
@@ -383,6 +412,104 @@ fn order(a: Pos, b: Pos) -> (Pos, Pos) {
 /// lines up with visible content.
 fn row_chars(grid: &Grid, row: usize) -> Option<Vec<char>> {
     Some(grid.combined_row(row)?.to_string_full().trim_end().chars().collect())
+}
+
+/// Whether `c` is part of a "word" for copy-mode word motions. tmux treats
+/// alphanumerics and underscore as word characters; everything else (spaces,
+/// punctuation) is a separator. Blank rows contain only separators.
+fn is_word_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
+}
+
+/// Column of the first non-blank character on `row` (0 if the row is blank or
+/// missing). Backs the vi `^` motion.
+fn first_non_blank(grid: &Grid, row: usize) -> usize {
+    match row_chars(grid, row) {
+        Some(chars) => chars.iter().position(|c| !c.is_whitespace()).unwrap_or(0),
+        None => 0,
+    }
+}
+
+/// Next word-start at or after (`row`,`col+1`), scanning forward across rows up
+/// to `max_row` (vi `w`). A word start is a word char whose predecessor on the
+/// same row is a non-word char (or column 0). Returns the last position if none
+/// is found, so the cursor advances to the buffer end rather than sticking.
+fn next_word_start(grid: &Grid, row: usize, col: usize, max_row: usize) -> (usize, usize) {
+    let mut r = row;
+    let mut c = col + 1;
+    while r <= max_row {
+        let chars = row_chars(grid, r).unwrap_or_default();
+        while c <= chars.len() {
+            // At end-of-row, fall through to the next row's start.
+            if c == chars.len() {
+                break;
+            }
+            let here = is_word_char(chars[c]);
+            let prev_sep = c == 0 || !is_word_char(chars[c - 1]);
+            if here && prev_sep {
+                return (r, c);
+            }
+            c += 1;
+        }
+        r += 1;
+        c = 0;
+        // A word can start at column 0 of the next row.
+        if r <= max_row {
+            let chars = row_chars(grid, r).unwrap_or_default();
+            if chars.first().is_some_and(|&ch| is_word_char(ch)) {
+                return (r, 0);
+            }
+        }
+    }
+    (max_row, row_chars(grid, max_row).map(|c| c.len()).unwrap_or(0))
+}
+
+/// Previous word-start strictly before (`row`,`col`), scanning backward across
+/// rows (vi `b`). Returns (0,0) if there is no earlier word.
+fn prev_word_start(grid: &Grid, row: usize, col: usize) -> (usize, usize) {
+    let mut r = row;
+    // Start just left of the cursor; if at column 0, drop to the previous row.
+    let mut c = col;
+    loop {
+        let chars = row_chars(grid, r).unwrap_or_default();
+        // Step left within this row looking for a word-start we can land on.
+        let mut i = c;
+        while i > 0 {
+            i -= 1;
+            let here = i < chars.len() && is_word_char(chars[i]);
+            let prev_sep = i == 0 || i > chars.len() || !is_word_char(chars[i - 1]);
+            if here && prev_sep {
+                return (r, i);
+            }
+        }
+        if r == 0 {
+            return (0, 0);
+        }
+        r -= 1;
+        c = row_chars(grid, r).map(|c| c.len()).unwrap_or(0);
+    }
+}
+
+/// Next word-end at or after the cursor, scanning forward (vi `e`). A word end
+/// is a word char whose successor is a non-word char (or end of row). Advances
+/// past the current position so repeated `e` walks through words.
+fn next_word_end(grid: &Grid, row: usize, col: usize, max_row: usize) -> (usize, usize) {
+    let mut r = row;
+    let mut c = col + 1;
+    while r <= max_row {
+        let chars = row_chars(grid, r).unwrap_or_default();
+        while c < chars.len() {
+            let here = is_word_char(chars[c]);
+            let next_sep = c + 1 >= chars.len() || !is_word_char(chars[c + 1]);
+            if here && next_sep {
+                return (r, c);
+            }
+            c += 1;
+        }
+        r += 1;
+        c = 0;
+    }
+    (max_row, row_chars(grid, max_row).map(|c| c.len().saturating_sub(1)).unwrap_or(0))
 }
 
 /// First column >= `start` in `hay` where `needle` matches, scanning forward.
@@ -755,5 +882,74 @@ mod tests {
         assert_eq!(base64_encode(b"hello"), "aGVsbG8=");
         let seq = String::from_utf8(osc52("hi")).unwrap();
         assert_eq!(seq, "\x1b]52;c;aGk=\x07");
+    }
+
+    // Grid with a known single line of words for motion tests. 40 wide so the
+    // whole sentence fits on row 0 of a fresh (no-scrollback) grid.
+    fn word_grid() -> Grid {
+        let mut g = Grid::new(40, 3, 50);
+        g.feed(b"foo bar_baz  qux.zap");
+        g
+    }
+
+    #[test]
+    fn word_forward_lands_on_word_starts() {
+        let g = word_grid();
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 0 }; // on 'f' of foo
+        cm.navigate(CopyKey::WordForward, &g);
+        assert_eq!(cm.cursor().col, 4, "w -> start of bar_baz");
+        cm.navigate(CopyKey::WordForward, &g);
+        // "bar_baz" is one word (underscore is a word char); next is "qux".
+        assert_eq!(cm.cursor().col, 13, "w -> start of qux");
+        cm.navigate(CopyKey::WordForward, &g);
+        // '.' separates qux and zap.
+        assert_eq!(cm.cursor().col, 17, "w -> start of zap after the dot");
+    }
+
+    #[test]
+    fn word_backward_lands_on_word_starts() {
+        let g = word_grid();
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 17 }; // on 'z' of zap
+        cm.navigate(CopyKey::WordBackward, &g);
+        assert_eq!(cm.cursor().col, 13, "b -> start of qux");
+        cm.navigate(CopyKey::WordBackward, &g);
+        assert_eq!(cm.cursor().col, 4, "b -> start of bar_baz");
+        cm.navigate(CopyKey::WordBackward, &g);
+        assert_eq!(cm.cursor().col, 0, "b -> start of foo");
+    }
+
+    #[test]
+    fn word_end_lands_on_word_ends() {
+        let g = word_grid();
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 0 };
+        cm.navigate(CopyKey::WordEnd, &g);
+        assert_eq!(cm.cursor().col, 2, "e -> last char of foo");
+        cm.navigate(CopyKey::WordEnd, &g);
+        assert_eq!(cm.cursor().col, 10, "e -> last char of bar_baz");
+    }
+
+    #[test]
+    fn line_start_and_first_non_blank() {
+        let mut g = Grid::new(20, 2, 50);
+        g.feed(b"   indented");
+        let mut cm = CopyMode::enter(&g);
+        cm.cursor = Pos { row: 0, col: 8 };
+        cm.navigate(CopyKey::LineStart, &g);
+        assert_eq!(cm.cursor().col, 0, "0 -> column 0");
+        cm.navigate(CopyKey::LineFirstNonBlank, &g);
+        assert_eq!(cm.cursor().col, 3, "^ -> first non-blank");
+    }
+
+    #[test]
+    fn top_and_bottom_jump_to_buffer_ends() {
+        let g = grid_with_history();
+        let mut cm = CopyMode::enter(&g);
+        cm.navigate(CopyKey::Top, &g);
+        assert_eq!(cm.cursor().row, 0, "g -> top of buffer");
+        cm.navigate(CopyKey::Bottom, &g);
+        assert_eq!(cm.cursor().row, g.combined_len() - 1, "G -> bottom of buffer");
     }
 }
