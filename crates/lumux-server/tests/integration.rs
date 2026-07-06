@@ -1857,6 +1857,48 @@ fn command_prompt_join_pane_merges_windows() {
 }
 
 #[test]
+fn marked_pane_swaps_across_windows() {
+    // Pane marking (prefix m) lets swap-pane exchange panes across windows. Print
+    // a marker in window 0's pane, mark it, create window 1, then `:swap-pane`
+    // with no target — the marked pane (win 0) and win 1's active pane swap, so
+    // win 1 now shows the marker that used to be in win 0.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("markswap".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Window 0: print a unique marker, then mark this pane (prefix m).
+    c.send(&ClientMsg::Input(b"echo MARKSWAP_ZERO_QW\n".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b'm'])); // mark
+    c.collect_until(Duration::from_millis(200), |_| false);
+    // Window 1: fresh pane with no marker.
+    c.send(&ClientMsg::Input(vec![0x02, b'c']));
+    c.collect_until(Duration::from_millis(400), |_| false);
+    let (_d0, on_w1) = c.collect_until(Duration::from_millis(300), |_| false);
+    assert!(
+        !on_w1.contains("MARKSWAP_ZERO_QW"),
+        "precondition: window 1 shouldn't show window 0's marker; got:\n{on_w1}"
+    );
+    // Swap the active (win 1) pane with the marked (win 0) pane.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"swap-pane\r".to_vec()));
+    c.collect_until(Duration::from_millis(400), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    assert!(
+        after.contains("MARKSWAP_ZERO_QW"),
+        "after swap, window 1 should show the marked pane's content; got:\n{after}"
+    );
+}
+
+#[test]
 fn capture_pane_saves_screen_to_a_buffer() {
     // tmux capture-pane: ":capture-pane" copies the pane's visible text into a
     // paste buffer. We print a marker, capture, then open the buffer chooser

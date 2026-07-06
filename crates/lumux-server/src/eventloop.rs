@@ -628,6 +628,14 @@ where
             }
             // SendPrefix is handled as pass-through in the keymap, never here.
             Action::SendPrefix => {}
+            Action::MarkPane => {
+                let marked = self.daemon.toggle_marked_pane(session);
+                self.daemon.flash_message(
+                    client_id,
+                    if marked { "pane marked" } else { "mark cleared" },
+                );
+                self.invalidate_session(session);
+            }
             // A bound command chain (tmux `bind key cmd1 \; cmd2`): run each
             // parsed command through the same executor as the `:` prompt.
             Action::RunCommands(cmds) => {
@@ -1383,6 +1391,29 @@ where
     /// active window. The moved pane keeps its PTY/grid; if the source window
     /// empties it is closed. Re-fits all windows since two changed.
     fn do_join_pane(&mut self, client_id: u64, session: SessionId, dir: SplitDir, src: Option<u32>) {
+        // With no -s, tmux joins the MARKED pane if one is set (which may live in
+        // another window) — that's the pane-marking workflow. Fall back to the
+        // last window's active pane when nothing is marked.
+        if src.is_none() {
+            if let Some((msid, mpid)) = self.daemon.marked_pane() {
+                if msid == session {
+                    match self.daemon.server.join_specific_pane(session, mpid, dir) {
+                        Some(_) => {
+                            self.daemon.clear_mark_if(mpid);
+                            let size = self
+                                .daemon
+                                .server
+                                .effective_size(session)
+                                .unwrap_or(PtySize::new(80, 24));
+                            self.daemon.resize_all_windows(session, size);
+                            self.invalidate_session(session);
+                            return;
+                        }
+                        None => { /* marked pane already here / gone: fall through */ }
+                    }
+                }
+            }
+        }
         // Resolve the source window id.
         let src_wid = {
             let Some(s) = self.daemon.server.session(session) else {
@@ -1565,22 +1596,43 @@ where
         next: bool,
         target: Option<lumux_core::command::Target>,
     ) {
-        // No target → the existing sibling-swap behavior.
+        // No explicit target: swap with the MARKED pane if one is set (tmux's
+        // swap-pane default), which may be in another window; otherwise do the
+        // sibling swap (prefix {/}).
         let Some(target) = target else {
+            if let Some((msid, mpid)) = self.daemon.marked_pane() {
+                if msid == session {
+                    if let Some(active) = self.active_pane(session) {
+                        if self.daemon.server.swap_panes(session, active, mpid) {
+                            let size = self
+                                .daemon
+                                .server
+                                .effective_size(session)
+                                .unwrap_or(PtySize::new(80, 24));
+                            self.daemon.resize_all_windows(session, size);
+                            self.invalidate_session(session);
+                        }
+                    }
+                    return;
+                }
+            }
             return self.do_swap_pane(session, next);
         };
         let other = match self.resolve_target_pane(session, Some(target)) {
             Ok(pid) => pid,
             Err(msg) => return self.daemon.flash_message(client_id, msg),
         };
-        if self.daemon.server.swap_active_pane(session, other) {
-            let size = self
-                .daemon
-                .server
-                .effective_size(session)
-                .unwrap_or(PtySize::new(80, 24));
-            self.daemon.resize_session(session, size);
-            self.invalidate_session(session);
+        // Swap across windows if needed (target may be in another window).
+        if let Some(active) = self.active_pane(session) {
+            if self.daemon.server.swap_panes(session, active, other) {
+                let size = self
+                    .daemon
+                    .server
+                    .effective_size(session)
+                    .unwrap_or(PtySize::new(80, 24));
+                self.daemon.resize_all_windows(session, size);
+                self.invalidate_session(session);
+            }
         }
     }
 
@@ -1662,6 +1714,8 @@ where
     }
 
     fn on_pane_exit(&mut self, session: SessionId, pane: PaneId, result: CascadeResult) {
+        // A closed pane can't stay marked.
+        self.daemon.clear_mark_if(pane);
         match result {
             CascadeResult::SessionClosed => {
                 let gone: Vec<u64> = self

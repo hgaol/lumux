@@ -133,6 +133,10 @@ pub struct Daemon<S: PtySystem> {
     choosing_buffer: BTreeMap<u64, usize>,
     /// Clients showing the display-panes number overlay (tmux prefix q).
     showing_panes: std::collections::BTreeSet<u64>,
+    /// The server-global marked pane (tmux `select-pane -m` / prefix `m`), if
+    /// any. join-pane / swap-pane with no explicit source default to it, so a
+    /// pane can be marked in one window and pulled/swapped into another.
+    marked_pane: Option<(SessionId, PaneId)>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -236,6 +240,7 @@ impl<S: PtySystem> Daemon<S> {
             buffers: lumux_core::buffers::PasteBuffers::new(),
             choosing_buffer: BTreeMap::new(),
             showing_panes: std::collections::BTreeSet::new(),
+            marked_pane: None,
             clipboard,
             config: Config::default(),
         }
@@ -1386,6 +1391,35 @@ impl<S: PtySystem> Daemon<S> {
     fn active_pane(&self, session: SessionId) -> Option<PaneId> {
         let s = self.server.session(session)?;
         Some(s.window(s.active_window())?.active_pane())
+    }
+
+    /// The currently marked pane (tmux `select-pane -m`), if any.
+    pub fn marked_pane(&self) -> Option<(SessionId, PaneId)> {
+        self.marked_pane
+    }
+
+    /// Toggle the mark on the active pane of `session` (tmux prefix `m`). Marking
+    /// the already-marked pane clears the mark; marking a different pane moves
+    /// it. Returns true if a pane is now marked, false if the mark was cleared.
+    pub fn toggle_marked_pane(&mut self, session: SessionId) -> bool {
+        let Some(pid) = self.active_pane(session) else {
+            return false;
+        };
+        if self.marked_pane == Some((session, pid)) {
+            self.marked_pane = None;
+            false
+        } else {
+            self.marked_pane = Some((session, pid));
+            true
+        }
+    }
+
+    /// Clear the mark if it points at `pid` (called when a pane closes so a stale
+    /// mark can't dangle).
+    pub fn clear_mark_if(&mut self, pid: PaneId) {
+        if matches!(self.marked_pane, Some((_, m)) if m == pid) {
+            self.marked_pane = None;
+        }
     }
 
     /// Whether `pid`'s pane is currently on the alternate screen (a full-screen

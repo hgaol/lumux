@@ -741,6 +741,95 @@ impl Server {
         }
     }
 
+    /// The window id (within `sid`) that holds `pid`, if any. Panes are keyed
+    /// globally but windows aren't indexed by pane, so this scans.
+    pub fn window_of_pane(&self, sid: SessionId, pid: PaneId) -> Option<WindowId> {
+        let session = self.sessions.get(&sid)?;
+        session
+            .windows
+            .iter()
+            .find(|w| w.layout.contains(pid))
+            .map(|w| w.id)
+    }
+
+    /// Swap two panes that may live in different windows of the same session
+    /// (tmux `swap-pane -s -t`). Both panes keep their ids (and grids); only
+    /// their positions in the layout trees swap. Returns false if either pane is
+    /// missing or they're the same pane.
+    pub fn swap_panes(&mut self, sid: SessionId, a: PaneId, b: PaneId) -> bool {
+        if a == b {
+            return false;
+        }
+        let (Some(wa), Some(wb)) = (self.window_of_pane(sid, a), self.window_of_pane(sid, b)) else {
+            return false;
+        };
+        let Some(session) = self.sessions.get_mut(&sid) else {
+            return false;
+        };
+        if wa == wb {
+            // Same window: swap within its layout tree.
+            return session
+                .window_mut(wa)
+                .map(|w| w.layout.swap_ids(a, b))
+                .unwrap_or(false);
+        }
+        // Cross-window: pull each pane's [`Pane`] value out and re-insert it into
+        // the other window's tree at the sibling's slot. Simpler and layout-safe:
+        // swap the ids in each tree by grafting. We move the panes between the
+        // windows' pane maps and swap their layout leaves.
+        let pane_a = session.window_mut(wa).and_then(|w| w.panes.remove(&a));
+        let pane_b = session.window_mut(wb).and_then(|w| w.panes.remove(&b));
+        let (Some(pane_a), Some(pane_b)) = (pane_a, pane_b) else {
+            return false;
+        };
+        if let Some(w) = session.window_mut(wa) {
+            w.layout.replace_leaf(a, b);
+            w.panes.insert(b, pane_b);
+            if w.active_pane == a {
+                w.active_pane = b;
+            }
+        }
+        if let Some(w) = session.window_mut(wb) {
+            w.layout.replace_leaf(b, a);
+            w.panes.insert(a, pane_a);
+            if w.active_pane == b {
+                w.active_pane = a;
+            }
+        }
+        true
+    }
+
+    /// Pull a specific pane (`src_pid`, from whichever window of `sid` holds it)
+    /// into the active window, splitting in `dir` (tmux `join-pane -s`). Unlike
+    /// [`join_pane`], the source pane is chosen by id, not "the source window's
+    /// active pane", so a marked pane can be joined. Returns None on self-join or
+    /// a missing pane.
+    pub fn join_specific_pane(
+        &mut self,
+        sid: SessionId,
+        src_pid: PaneId,
+        dir: SplitDir,
+    ) -> Option<CascadeResult> {
+        let src_wid = self.window_of_pane(sid, src_pid)?;
+        let session = self.sessions.get_mut(&sid)?;
+        let dest_wid = session.active_window();
+        if src_wid == dest_wid {
+            return None; // already here
+        }
+        let src = session.window_mut(src_wid)?;
+        let pane = src.pane(src_pid)?.clone();
+        let src_now_empty = src.remove_pane(src_pid);
+        if let Some(dest) = session.window_mut(dest_wid) {
+            dest.join_pane(pane, dir);
+        }
+        if src_now_empty {
+            session.remove_window(src_wid);
+            Some(CascadeResult::WindowClosed)
+        } else {
+            Some(CascadeResult::PaneClosed)
+        }
+    }
+
     /// The pane that comes before/after the active pane in the active window's
     /// traversal order (wraps), or None for a single-pane window. Used to pick
     /// the swap target for prefix `{` (previous) and `}` (next).

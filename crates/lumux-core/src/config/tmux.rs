@@ -610,6 +610,8 @@ fn map_bind_command(cmd: &[String]) -> Option<String> {
                 "select-pane-up"
             } else if has("-D") {
                 "select-pane-down"
+            } else if has("-m") {
+                "mark-pane"
             } else {
                 return None;
             }

@@ -814,3 +814,45 @@ fn restore_empty_snapshot_is_none() {
     let snap = SessionSnap { name: "x".into(), windows: vec![], active_window: 0 };
     assert!(srv.restore_session(&snap).is_none());
 }
+
+#[test]
+fn swap_panes_across_windows_exchanges_positions() {
+    // window 0 holds p0; window 1 holds p1 (each a lone pane). Swapping them
+    // moves each pane into the other window, keeping ids.
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let p0 = srv.session(sid).unwrap().window(w0).unwrap().active_pane();
+    let w1 = srv.new_window(sid, "1", sh()).unwrap();
+    let p1 = srv.session(sid).unwrap().window(w1).unwrap().active_pane();
+    assert_eq!(srv.window_of_pane(sid, p0), Some(w0));
+    assert_eq!(srv.window_of_pane(sid, p1), Some(w1));
+
+    assert!(srv.swap_panes(sid, p0, p1), "swap should succeed");
+    // p0 now lives in w1, p1 in w0.
+    assert_eq!(srv.window_of_pane(sid, p0), Some(w1), "p0 moved to window 1");
+    assert_eq!(srv.window_of_pane(sid, p1), Some(w0), "p1 moved to window 0");
+    assert_no_empty_containers(&srv);
+}
+
+#[test]
+fn join_specific_pane_pulls_a_named_pane_into_the_active_window() {
+    // Two windows: active = w0 (single pane p0); w1 has two panes (a,b). Joining
+    // pane `b` (specifically, not w1's active) into w0 leaves w1 with just `a`.
+    let mut srv = Server::new();
+    let sid = srv.new_session("s", sh());
+    let w0 = srv.session(sid).unwrap().active_window();
+    let p0 = srv.session(sid).unwrap().window(w0).unwrap().active_pane();
+    let w1 = srv.new_window(sid, "1", sh()).unwrap();
+    let a = srv.session(sid).unwrap().window(w1).unwrap().active_pane();
+    let b = srv.split_active(sid, sh(), SplitDir::Horizontal).unwrap();
+    // Focus back to w0 so it's the destination.
+    srv.session_mut(sid).unwrap().focus_window(w0);
+
+    let res = srv.join_specific_pane(sid, b, SplitDir::Horizontal);
+    assert!(res.is_some(), "join should succeed");
+    assert_eq!(srv.window_of_pane(sid, b), Some(w0), "b joined the active window");
+    assert_eq!(srv.window_of_pane(sid, a), Some(w1), "a stayed in window 1");
+    assert_eq!(srv.window_of_pane(sid, p0), Some(w0));
+    assert_no_empty_containers(&srv);
+}

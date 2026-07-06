@@ -157,6 +157,25 @@ impl PaneNode {
         }
     }
 
+    /// Replace the single leaf equal to `from` with `to` (one-way; used when
+    /// grafting a pane from another window into this one's slot). No-op if `from`
+    /// isn't present. Returns true if a leaf was replaced.
+    pub fn replace_leaf(&mut self, from: PaneId, to: PaneId) -> bool {
+        match self {
+            PaneNode::Leaf(id) => {
+                if *id == from {
+                    *id = to;
+                    true
+                } else {
+                    false
+                }
+            }
+            PaneNode::Split { first, second, .. } => {
+                first.replace_leaf(from, to) || second.replace_leaf(from, to)
+            }
+        }
+    }
+
     /// Remove pane `target`, collapsing its parent split so the sibling takes
     /// the split's place. Returns:
     /// - `Removed::Gone` if the whole subtree was just that leaf (caller must

@@ -314,6 +314,7 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "reload-config" => Action::ReloadConfig,
         "show-help" => Action::ShowHelp,
         "choose-session" => Action::ChooseSession,
+        "mark-pane" => Action::MarkPane,
         _ => return None,
     };
     Some(action)
