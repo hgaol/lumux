@@ -1441,7 +1441,35 @@ impl<S: PtySystem> Daemon<S> {
         // newest buffer) as well as the system/OSC-52 clipboard.
         self.buffers.push(text.clone());
         let _ = self.clipboard.set_text(&text);
+        // If a copy-command is configured (tmux copy-pipe integration), also pipe
+        // the selection to it (e.g. `set -s copy-command 'xclip -i'`).
+        let copy_command = self.config.copy_command.clone();
+        if !copy_command.is_empty() {
+            self.pipe_to_command(&copy_command, &text);
+        }
         Some(text)
+    }
+
+    /// Spawn `sh -c cmd` and write `input` to its stdin (best-effort; errors are
+    /// swallowed — a failed pipe shouldn't crash the daemon). Used by the
+    /// copy-command (copy-pipe) integration on yank.
+    fn pipe_to_command(&self, cmd: &str, input: &str) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(mut child) = child {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(input.as_bytes());
+            }
+            // Reap so the child doesn't linger as a zombie.
+            let _ = child.wait();
+        }
     }
 
     fn active_pane(&self, session: SessionId) -> Option<PaneId> {

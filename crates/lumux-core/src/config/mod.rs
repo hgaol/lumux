@@ -96,6 +96,10 @@ pub struct Config {
     /// When true, the daemon saves session structure to disk periodically and
     /// rebuilds it on restart (tmux-resurrect/-continuum style). Off by default.
     pub persist: bool,
+    /// Shell command a copy-mode yank pipes the selection to (tmux `copy-command`
+    /// / `set -s copy-command 'xclip -i'`). Empty = don't pipe. This is lumux's
+    /// copy-pipe integration: with it set, `y`/Enter both copies AND pipes.
+    pub copy_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -141,6 +145,7 @@ impl Default for Config {
             remain_on_exit: false,
             mode_keys: "vi".to_string(),
             persist: false,
+            copy_command: String::new(),
         }
     }
 }

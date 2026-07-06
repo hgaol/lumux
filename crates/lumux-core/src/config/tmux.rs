@@ -396,6 +396,7 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
                 cfg.mode_keys = v;
             }
         }
+        "copy-command" => cfg.copy_command = value.trim().to_string(),
         // Known-but-irrelevant to lumux: silently accept the common ones so a
         // typical tmux.conf doesn't spew warnings for things that are simply the
         // default behavior in lumux, or features it doesn't have (copy-mode

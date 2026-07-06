@@ -707,6 +707,46 @@ fn mouse_drag_selects_and_copies_text() {
 }
 
 #[test]
+fn copy_command_pipes_the_selection_on_yank() {
+    // tmux copy-pipe integration: with `set -s copy-command <cmd>`, a copy-mode
+    // yank pipes the selection to that command's stdin. We set copy-command to
+    // write the selection to a temp file, drag-copy a marker, then read the file.
+    let out = std::env::temp_dir().join(format!("lumux-copypipe-{}.txt", std::process::id()));
+    let _ = std::fs::remove_file(&out);
+    let conf = format!(
+        "set -g mouse on\nset -s copy-command \"cat > {}\"",
+        out.display()
+    );
+    let path = start_daemon_with_tmux(&conf);
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("copypipe".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(b"echo COPYPIPE_MARKER_QZ\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Drag-copy a wide region (press, drag, release) — this yanks, which pipes.
+    c.send(&ClientMsg::Input(b"\x1b[<0;1;1M".to_vec()));
+    c.collect_until(Duration::from_millis(100), |_| false);
+    c.send(&ClientMsg::Input(b"\x1b[<32;80;20M".to_vec()));
+    c.collect_until(Duration::from_millis(100), |_| false);
+    c.send(&ClientMsg::Input(b"\x1b[<0;80;20m".to_vec())); // release -> yank -> pipe
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Give the piped child a moment to write, then read the file.
+    std::thread::sleep(Duration::from_millis(300));
+    let piped = std::fs::read_to_string(&out).unwrap_or_default();
+    let _ = std::fs::remove_file(&out);
+    assert!(
+        piped.contains("COPYPIPE_MARKER_QZ"),
+        "copy-command should have received the selection on yank; got:\n{piped:?}"
+    );
+}
+
+#[test]
 fn mouse_drag_release_split_across_reads_still_copies() {
     // Regression: over SSH/mosh a mouse report can arrive split across reads. A
     // release `ESC [ < 0 ; x ; y m` split *inside its `ESC [ <` introducer* used
