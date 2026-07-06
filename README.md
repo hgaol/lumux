@@ -149,6 +149,42 @@ selection and `Ctrl-v` / `R` toggles a rectangular (block) selection; `Enter` or
 onto the paste-buffer stack); `q` or `Escape` exits. Paste the most recent
 buffer with `prefix ]`, or pick an older one with `prefix =`.
 
+## Command prompt
+
+Press **`prefix :`** to type a command; the same commands can be bound to keys
+in your config (see below). The commands lumux implements:
+
+| Command | Notes |
+|---------|-------|
+| `split-window [-h]` | split the active pane (`-h` = left/right) |
+| `new-window` / `kill-window` | |
+| `next-window` / `previous-window` / `last-window` | |
+| `select-window -t N` | switch to window N |
+| `last-pane` | jump to the previously-active pane |
+| `kill-pane [-t .N]` | kill the active pane, or pane N |
+| `swap-pane [-U\|-D] [-t .N]` | swap with the previous / next pane, or pane N |
+| `break-pane` | move the active pane into its own window |
+| `join-pane [-h\|-v] [-s N]` | pull a pane from window N into this one |
+| `select-layout [NAME]` | apply a preset (`even-horizontal`, `even-vertical`, `main-vertical`, `main-horizontal`, `tiled`); bare cycles |
+| `rename-window <name>` / `rename-session <name>` | |
+| `find-window <query>` | switch to the first window whose name matches |
+| `synchronize-panes [on\|off]` | type into every pane at once |
+| `display-panes` | show pane numbers |
+| `display-message <text>` | flash a message in the status line |
+| `send-keys <text>` | inject text into the active pane (verbatim) |
+| `capture-pane` | copy the visible pane text into a paste buffer |
+| `respawn-pane` | restart the shell in a dead pane |
+| `run-shell <cmd>` | run a shell command; its output goes to a paste buffer |
+| `save-state` | write the session snapshot to disk now |
+| `detach-client` | detach |
+
+**Chaining:** join commands with `;` to run them in order —
+`split-window -h ; select-layout tiled`.
+
+**Targets (`-t`):** `kill-pane` and `swap-pane` take a target — `-t N` / `-t :N`
+for a window (acts on its active pane), `-t .N` for a pane by index in the active
+window. Indexes honor `base-index`.
+
 ## Configuration
 
 lumux reads its config from the first of these that exists (override the whole
@@ -178,6 +214,15 @@ lumux reads the directives it supports (`prefix`, `mouse`, `history-limit`,
 `bind -n` for the actions it has) and **ignores everything else with a
 warning**, so a full real-world tmux.conf loads cleanly. A ready example is in
 [`examples/lumux.conf`](examples/lumux.conf).
+
+A `bind` runs the same commands as the command prompt, with their real arguments
+and `\;` chains — e.g. `bind X new-window \; split-window -h` runs both, and
+`bind M-l select-layout tiled` applies that exact layout:
+
+```
+bind | split-window -h              # bind carries the -h argument
+bind r source-file ~/.lumux.conf \; display "reloaded"
+```
 
 ### Native TOML
 

@@ -110,6 +110,38 @@ lumux source-file <path>                          # 实时重载配置
 
 **复制模式：** 用方向键 / PageUp / PageDown / Home / End 或 vi 键（`hjkl`）移动；`u` / `d` 半页滚动；`Space` 或 `v` 开始选择；`Enter` 或 `y` 复制（并通过 OSC-52 复制到本地终端的剪贴板）；`q` 或 `Escape` 退出。
 
+## 命令提示符
+
+按 **`prefix :`** 输入命令；这些命令同样可以在配置中绑定到按键（见下文）。lumux 实现的命令：
+
+| 命令 | 说明 |
+|------|------|
+| `split-window [-h]` | 分割当前窗格（`-h` = 左/右） |
+| `new-window` / `kill-window` | |
+| `next-window` / `previous-window` / `last-window` | |
+| `select-window -t N` | 切换到窗口 N |
+| `last-pane` | 跳到上一个聚焦的窗格 |
+| `kill-pane [-t .N]` | 关闭当前窗格，或窗格 N |
+| `swap-pane [-U\|-D] [-t .N]` | 与上/下一个窗格交换，或与窗格 N 交换 |
+| `break-pane` | 把当前窗格移入独立窗口 |
+| `join-pane [-h\|-v] [-s N]` | 把窗口 N 的窗格拉入当前窗口 |
+| `select-layout [NAME]` | 应用预设布局（`even-horizontal`、`even-vertical`、`main-vertical`、`main-horizontal`、`tiled`）；不带名字则循环 |
+| `rename-window <name>` / `rename-session <name>` | |
+| `find-window <query>` | 切换到第一个名字匹配的窗口 |
+| `synchronize-panes [on\|off]` | 同时向所有窗格输入 |
+| `display-panes` | 显示窗格编号 |
+| `display-message <text>` | 在状态栏闪现一条消息 |
+| `send-keys <text>` | 向当前窗格注入文本（原样） |
+| `capture-pane` | 把可见窗格文本复制到粘贴缓冲区 |
+| `respawn-pane` | 在已死窗格中重启 shell |
+| `run-shell <cmd>` | 运行 shell 命令；其输出进入粘贴缓冲区 |
+| `save-state` | 立即把会话快照写入磁盘 |
+| `detach-client` | 分离 |
+
+**链式命令：** 用 `;` 连接多条命令按顺序执行——`split-window -h ; select-layout tiled`。
+
+**目标（`-t`）：** `kill-pane` 和 `swap-pane` 接受目标——`-t N` / `-t :N` 指窗口（作用于其活动窗格），`-t .N` 指当前窗口中按序号的窗格。序号遵循 `base-index`。
+
 ## 配置
 
 lumux 会从以下路径中第一个存在的文件读取配置（用 `$LUMUX_CONFIG` 可覆盖整个查找过程）：
@@ -131,6 +163,13 @@ cp ~/.tmux.conf ~/.lumux.conf
 ```
 
 lumux 会读取它支持的指令（`prefix`、`mouse`、`history-limit`、`base-index`、`default-shell`/`default-command`、`status-justify`、`status-left`/`-right`、`status-style`，以及它已实现动作的 `bind` / `bind -n`），并**对其他一切发出警告后忽略**，因此一份完整的真实 tmux.conf 也能干净加载。一个现成示例见 [`examples/lumux.conf`](examples/lumux.conf)。
+
+`bind` 运行与命令提示符相同的命令，携带真实参数并支持 `\;` 链式——例如 `bind X new-window \; split-window -h` 会执行两条命令，`bind M-l select-layout tiled` 会应用该确切布局：
+
+```
+bind | split-window -h              # 绑定会携带 -h 参数
+bind r source-file ~/.lumux.conf \; display "reloaded"
+```
 
 ### 原生 TOML
 
