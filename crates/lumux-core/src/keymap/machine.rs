@@ -37,6 +37,12 @@ pub enum Mode {
     /// forwarded verbatim to the pane, so pasted content can't trigger the
     /// prefix or any binding. tmux behaves the same.
     Paste,
+    /// A repeatable prefix binding just fired (tmux `bind -r`): pressing the
+    /// SAME key again (without the prefix) re-fires it, for a short window
+    /// (`repeat-time`) the daemon/eventloop tracks with a wall-clock deadline
+    /// and clears via [`Keymap::cancel_repeat`] on timeout. Any other key exits
+    /// repeat mode and is reprocessed as if from `Normal` (see `feed`).
+    Repeat(Key),
 }
 
 /// Bracketed-paste markers (DECSET 2004). The terminal wraps pasted text in
@@ -346,7 +352,16 @@ impl Keymap {
                             self.mode = Mode::Prompt;
                             reactions.push(Reaction::Do(action));
                         }
-                        Some(action) => reactions.push(Reaction::Do(action)),
+                        Some(action) => {
+                            // A repeatable binding (tmux -r, e.g. resize-pane)
+                            // stays armed on this key so it re-fires without
+                            // needing the prefix again, until the repeat window
+                            // (tracked by the caller) elapses.
+                            if self.bindings.is_repeatable(&key) {
+                                self.mode = Mode::Repeat(key);
+                            }
+                            reactions.push(Reaction::Do(action));
+                        }
                         None => { /* unknown command: no-op, back to Normal */ }
                     }
                 }
@@ -441,6 +456,21 @@ impl Keymap {
                 // never reaches here. Forward the byte defensively rather than
                 // panicking if that ever changes.
                 Mode::Paste => passthrough.extend_from_slice(raw),
+                Mode::Repeat(rep_key) => {
+                    if key == rep_key {
+                        if let Some(action) = self.bindings.lookup(&key).cloned() {
+                            reactions.push(Reaction::Do(action));
+                            continue;
+                        }
+                    }
+                    // A different key (or the binding vanished): exit repeat and
+                    // reprocess this key from Normal — rewind so the same bytes
+                    // are re-decoded under Mode::Normal next iteration, instead
+                    // of being silently dropped.
+                    self.mode = Mode::Normal;
+                    i -= consumed;
+                    continue;
+                }
             }
         }
         if !passthrough.is_empty() {
@@ -460,6 +490,15 @@ impl Keymap {
     /// Force-exit copy mode (e.g. on detach).
     pub fn reset(&mut self) {
         self.mode = Mode::Normal;
+    }
+
+    /// End a repeat window (tmux `repeat-time` elapsed with no matching
+    /// keypress). No-op unless currently in [`Mode::Repeat`]. The eventloop
+    /// calls this from its periodic tick once the deadline it tracks passes.
+    pub fn cancel_repeat(&mut self) {
+        if matches!(self.mode, Mode::Repeat(_)) {
+            self.mode = Mode::Normal;
+        }
     }
 }
 

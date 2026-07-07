@@ -100,6 +100,10 @@ pub struct Config {
     /// / `set -s copy-command 'xclip -i'`). Empty = don't pipe. This is lumux's
     /// copy-pipe integration: with it set, `y`/Enter both copies AND pipes.
     pub copy_command: String,
+    /// Key strings (from either `bindings` or `root_bindings`) bound with tmux
+    /// `bind -r` (repeatable): the key re-fires without the prefix for a short
+    /// window after it first fires (tmux `repeat-time`).
+    pub repeat_bindings: std::collections::BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +150,7 @@ impl Default for Config {
             mode_keys: "vi".to_string(),
             persist: false,
             copy_command: String::new(),
+            repeat_bindings: std::collections::BTreeSet::new(),
         }
     }
 }
@@ -210,12 +215,18 @@ impl Config {
             let action = parse_action(action_str)
                 .ok_or_else(|| ConfigError::BadAction(action_str.clone()))?;
             b.bind(key, action);
+            if self.repeat_bindings.contains(key_str) {
+                b.mark_repeatable(key);
+            }
         }
         for (key_str, action_str) in &self.root_bindings {
             let key = parse_key(key_str).ok_or_else(|| ConfigError::BadKey(key_str.clone()))?;
             let action = parse_action(action_str)
                 .ok_or_else(|| ConfigError::BadAction(action_str.clone()))?;
             b.bind_root(key, action);
+            if self.repeat_bindings.contains(key_str) {
+                b.mark_repeatable(key);
+            }
         }
         Ok(b)
     }

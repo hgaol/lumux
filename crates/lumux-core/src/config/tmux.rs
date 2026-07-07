@@ -462,6 +462,7 @@ fn apply_bind(
 ) -> Result<(), ConfigError> {
     let mut i = 0;
     let mut root = false;
+    let mut repeat = false;
     // Consume only *recognized* bind flags, stopping at the first token that
     // isn't one — that token is the key. A blind "starts_with('-')" would be
     // wrong because tmux keys can be a dash (`bind - …`). tmux's bind flags are a
@@ -472,7 +473,11 @@ fn apply_bind(
                 root = true;
                 i += 1;
             }
-            "-r" | "-a" => i += 1,
+            "-r" => {
+                repeat = true;
+                i += 1;
+            }
+            "-a" => i += 1,
             "-N" => i += 2, // takes a note argument
             "-T" => {
                 // -T root means the root (no-prefix) table; other tables ignored.
@@ -506,6 +511,9 @@ fn apply_bind(
         &mut cfg.bindings
     };
     table.insert(key.clone(), action);
+    if repeat {
+        cfg.repeat_bindings.insert(key.clone());
+    }
     Ok(())
 }
 
@@ -815,6 +823,10 @@ mod tests {
         // resize-pane is keymap-only → directional/zoom actions via the fallback.
         assert_eq!(b.lookup(&Key::char('H')), Some(&Action::ResizePaneLeft));
         assert_eq!(b.lookup(&Key::char('g')), Some(&Action::ZoomPane));
+        // -r on `bind -r H ...` marks H repeatable; the other two binds didn't
+        // request -r, so they're not.
+        assert!(b.is_repeatable(&Key::char('H')));
+        assert!(!b.is_repeatable(&Key::char('g')));
         // kill-pane is a command verb → a RunCommands chain of one.
         assert_eq!(
             b.lookup_root(&Key {

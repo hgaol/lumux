@@ -528,3 +528,48 @@ fn prompt_space_is_captured_as_char() {
     k.feed(&[0x02, b',']);
     assert_eq!(k.feed(b" "), vec![Reaction::Prompt(PromptKey::Char(' '))]);
 }
+
+#[test]
+fn repeatable_binding_repeats_without_reprefixing() {
+    use crate::keymap::KeyCode;
+    let mut k = km();
+    k.feed(&[0x02]); // prefix
+    // Ctrl-Left (ESC[1;5D) is resize-pane-left, bound with tmux's default -r.
+    let r = k.feed(b"\x1b[1;5D");
+    assert_eq!(r, vec![Reaction::Do(Action::ResizePaneLeft)]);
+    let rep_key = Key { code: KeyCode::Left, ctrl: true, alt: false };
+    assert_eq!(k.mode(), Mode::Repeat(rep_key));
+
+    // Same key again, WITHOUT the prefix: repeats.
+    let r2 = k.feed(b"\x1b[1;5D");
+    assert_eq!(r2, vec![Reaction::Do(Action::ResizePaneLeft)]);
+    assert_eq!(k.mode(), Mode::Repeat(rep_key), "still repeating");
+
+    // A different key exits repeat mode and is reprocessed as ordinary Normal
+    // input (here: plain passthrough text, since 'x' isn't a root binding).
+    let r3 = k.feed(b"x");
+    assert_eq!(r3, vec![Reaction::PassThrough(b"x".to_vec())]);
+    assert_eq!(k.mode(), Mode::Normal);
+}
+
+#[test]
+fn non_repeatable_binding_returns_straight_to_normal() {
+    let mut k = km();
+    // 'c' (new-window) is NOT marked repeatable.
+    let r = k.feed(&[0x02, b'c']);
+    assert_eq!(r, vec![Reaction::Do(Action::NewWindow)]);
+    assert_eq!(k.mode(), Mode::Normal, "non-repeatable bindings don't arm Repeat");
+}
+
+#[test]
+fn cancel_repeat_forces_normal_mode() {
+    let mut k = km();
+    k.feed(&[0x02]);
+    k.feed(b"\x1b[1;5D");
+    assert!(matches!(k.mode(), Mode::Repeat(_)));
+    k.cancel_repeat();
+    assert_eq!(k.mode(), Mode::Normal);
+    // A no-op when already Normal.
+    k.cancel_repeat();
+    assert_eq!(k.mode(), Mode::Normal);
+}

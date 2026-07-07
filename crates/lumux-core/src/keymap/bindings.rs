@@ -143,6 +143,11 @@ pub struct Bindings {
     /// Root bindings that fire WITHOUT the prefix (tmux `bind -n`), checked on
     /// every key in Normal mode before pass-through.
     root: HashMap<Key, Action>,
+    /// Prefix-table keys bound with tmux `-r` (repeatable): after firing once,
+    /// the same key re-fires without the prefix for a short window (tmux
+    /// `repeat-time`), so e.g. holding a resize key doesn't need re-pressing the
+    /// prefix each step. See [`Mode::Repeat`](super::machine::Mode::Repeat).
+    repeatable: std::collections::HashSet<Key>,
 }
 
 impl Default for Bindings {
@@ -203,11 +208,20 @@ impl Bindings {
         // (tmux's repeatable resize-pane bindings; plain arrows are select-pane
         // above). lumux resizes by a fixed ratio per press, so Ctrl and Alt map
         // to the same step rather than tmux's 1-vs-5 cell amounts.
+        let mut repeatable = std::collections::HashSet::new();
         for (ctrl, alt) in [(true, false), (false, true)] {
-            table.insert(Key::modified(KeyCode::Left, ctrl, alt), Action::ResizePaneLeft);
-            table.insert(Key::modified(KeyCode::Right, ctrl, alt), Action::ResizePaneRight);
-            table.insert(Key::modified(KeyCode::Up, ctrl, alt), Action::ResizePaneUp);
-            table.insert(Key::modified(KeyCode::Down, ctrl, alt), Action::ResizePaneDown);
+            let keys = [
+                (Key::modified(KeyCode::Left, ctrl, alt), Action::ResizePaneLeft),
+                (Key::modified(KeyCode::Right, ctrl, alt), Action::ResizePaneRight),
+                (Key::modified(KeyCode::Up, ctrl, alt), Action::ResizePaneUp),
+                (Key::modified(KeyCode::Down, ctrl, alt), Action::ResizePaneDown),
+            ];
+            for (key, action) in keys {
+                table.insert(key, action);
+                // tmux binds these with -r: holding the key resizes repeatedly
+                // without re-pressing the prefix each step.
+                repeatable.insert(key);
+            }
         }
         // Rename prompts (tmux prefix , and $).
         table.insert(Key::char(','), Action::RenameWindow);
@@ -225,6 +239,7 @@ impl Bindings {
             prefix,
             table,
             root: HashMap::new(),
+            repeatable,
         }
     }
 
@@ -251,6 +266,17 @@ impl Bindings {
 
     pub fn lookup(&self, key: &Key) -> Option<&Action> {
         self.table.get(key)
+    }
+
+    /// Mark a prefix-table key as repeatable (tmux `bind -r`): after it fires,
+    /// the same key re-fires without the prefix until the repeat window elapses.
+    pub fn mark_repeatable(&mut self, key: Key) {
+        self.repeatable.insert(key);
+    }
+
+    /// Whether `key` was bound with `-r` (repeatable).
+    pub fn is_repeatable(&self, key: &Key) -> bool {
+        self.repeatable.contains(key)
     }
 
     /// Enumerate bindings for the help overlay as (binding-label, description),

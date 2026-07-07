@@ -1745,6 +1745,35 @@ fn kill_pane_target_kills_the_indexed_pane_not_the_active_one() {
 }
 
 #[test]
+fn repeatable_bind_fires_again_without_the_prefix() {
+    // tmux `bind -r`: after the bound key fires once (with the prefix), the SAME
+    // key fires again on its own within the repeat window — no re-pressing the
+    // prefix. Bind `-r k` to new-window; press prefix+k (1 new window), then k
+    // alone (a 2nd new window), landing at 3 windows total (0 initial + 2 new).
+    let path = start_daemon_with_tmux("bind -r k new-window");
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("repeatbind".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Prefix + k: first new-window.
+    c.send(&ClientMsg::Input(vec![0x02, b'k']));
+    c.collect_until(Duration::from_millis(200), |_| false);
+    // k alone (no prefix): repeats within the repeat window.
+    c.send(&ClientMsg::Input(vec![b'k']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        has_window(&vt, 0) && has_window(&vt, 1) && has_window(&vt, 2),
+        "a repeatable bind should fire again on the bare key; got:\n{vt}"
+    );
+}
+
+#[test]
 fn bound_key_runs_a_command_chain() {
     // A config `bind` with a `\;` chain must run every command with its real
     // args. Bind `prefix g` to `new-window \; split-window -h`; pressing it once

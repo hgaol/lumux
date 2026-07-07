@@ -74,7 +74,15 @@ struct Loop<S: PtySystem> {
     last_autosave: std::time::Instant,
     /// Where the session snapshot is saved/restored (tmux-resurrect).
     state_path: std::path::PathBuf,
+    /// Per-client deadline for an active repeat window (tmux `bind -r`): while
+    /// the keymap is in `Mode::Repeat`, the same key re-fires without the
+    /// prefix until this deadline; `Msg::Tick` expires it back to Normal.
+    repeat_deadlines: HashMap<u64, std::time::Instant>,
 }
+
+/// How long a repeatable binding (tmux `bind -r`) stays armed after firing,
+/// matching tmux's `repeat-time` default (500ms).
+const REPEAT_TIME: std::time::Duration = std::time::Duration::from_millis(500);
 
 /// Run the control loop until no sessions and no clients remain. Spawns one
 /// accept thread for `listener` and blocks driving the loop.
@@ -129,6 +137,7 @@ where
         tx: tx.clone(),
         last_autosave: std::time::Instant::now(),
         state_path,
+        repeat_deadlines: HashMap::new(),
     };
     // Hold one tx so the loop never sees a disconnected channel while idle.
     drop(tx);
@@ -248,6 +257,21 @@ where
                 {
                     let _ = self.daemon.save_state(&self.state_path);
                     self.last_autosave = std::time::Instant::now();
+                }
+                // Expire any repeat window (tmux `bind -r`) whose deadline has
+                // passed with no matching keypress.
+                let now = std::time::Instant::now();
+                let expired: Vec<u64> = self
+                    .repeat_deadlines
+                    .iter()
+                    .filter(|(_, &deadline)| now >= deadline)
+                    .map(|(&id, _)| id)
+                    .collect();
+                for id in expired {
+                    self.repeat_deadlines.remove(&id);
+                    if let Some(k) = self.daemon.keymap_mut(id) {
+                        k.cancel_repeat();
+                    }
                 }
             }
         }
@@ -376,6 +400,19 @@ where
                     .keymap_mut(client_id)
                     .map(|k| k.feed(&keyboard))
                     .unwrap_or_default();
+                // Track (or clear) the repeat-window deadline: Msg::Tick expires
+                // it back to Normal if no matching key arrives within
+                // repeat-time, so a repeatable binding doesn't stay armed
+                // forever if the user just stops pressing it.
+                match self.daemon.keymap_mut(client_id).map(|k| k.mode()) {
+                    Some(lumux_core::keymap::Mode::Repeat(_)) => {
+                        self.repeat_deadlines
+                            .insert(client_id, std::time::Instant::now() + REPEAT_TIME);
+                    }
+                    _ => {
+                        self.repeat_deadlines.remove(&client_id);
+                    }
+                }
                 let mut session = session;
                 for r in reactions {
                     match r {
