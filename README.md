@@ -120,6 +120,7 @@ Prefix is **`Ctrl-b`** (rebindable). After the prefix:
 | `{` / `}` | swap the active pane with the previous / next one |
 | `m` | mark / unmark the active pane (for cross-window join/swap) |
 | `Ctrl-o` | rotate the panes in the active window |
+| `t` | show the clock (any key closes it) |
 | `S` | toggle synchronize-panes (type into all panes at once) |
 | `q` | show pane numbers, then press one to focus it |
 | `Space` | cycle preset layouts (even-horizontal/vertical, main, tiled) |
@@ -174,6 +175,8 @@ in your config (see below). The commands lumux implements:
 | `swap-window [-s A] -t B` | swap two windows by index |
 | `move-window -t N` | move the active window to index N |
 | `select-layout [NAME]` | apply a preset (`even-horizontal`, `even-vertical`, `main-vertical`, `main-horizontal`, `tiled`); bare cycles |
+| `previous-layout` | cycle to the previous preset layout (reverse of `select-layout`'s bare cycle) |
+| `resize-pane -L\|-R\|-U\|-D [N]` | resize the active pane by N cells (bare = the interactive nudge amount) |
 | `rename-window <name>` / `rename-session <name>` | |
 | `find-window <query>` | switch to the first window whose name matches |
 | `synchronize-panes [on\|off]` | type into every pane at once |
@@ -187,6 +190,10 @@ in your config (see below). The commands lumux implements:
 | `capture-pane` | copy the visible pane text into a paste buffer |
 | `respawn-pane` | restart the shell in a dead pane |
 | `run-shell <cmd>` | run a shell command; its output goes to a paste buffer |
+| `new-session [-s NAME] [-d]` | create a session, switching to it unless `-d` |
+| `kill-session [-t NAME]` | kill a session (the current one if omitted) |
+| `kill-server` | kill every session and detach every client |
+| `switch-client -t NAME` | switch the current client to another session by name |
 | `save-state` | write the session snapshot to disk now |
 | `detach-client` | detach |
 

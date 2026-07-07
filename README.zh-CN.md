@@ -101,6 +101,7 @@ lumux source-file <path>                          # 实时重载配置
 | `{` / `}` | 与上一个 / 下一个窗格交换 |
 | `m` | 标记 / 取消标记当前窗格（用于跨窗口 join/swap） |
 | `Ctrl-o` | 旋转当前窗口中的窗格 |
+| `t` | 显示时钟（按任意键关闭） |
 | `S` | 切换 synchronize-panes（同时向所有窗格输入） |
 | `q` | 显示窗格编号，然后按其一聚焦该窗格 |
 | `Space` | 循环切换预设布局（even-horizontal/vertical、main、tiled） |
@@ -141,6 +142,8 @@ lumux source-file <path>                          # 实时重载配置
 | `swap-window [-s A] -t B` | 按序号交换两个窗口 |
 | `move-window -t N` | 把当前窗口移到序号 N |
 | `select-layout [NAME]` | 应用预设布局（`even-horizontal`、`even-vertical`、`main-vertical`、`main-horizontal`、`tiled`）；不带名字则循环 |
+| `previous-layout` | 循环到上一个预设布局（`select-layout` 裸循环的反方向） |
+| `resize-pane -L\|-R\|-U\|-D [N]` | 把当前窗格按 N 个字符调整大小（不带 N 则用交互式的微调步长） |
 | `rename-window <name>` / `rename-session <name>` | |
 | `find-window <query>` | 切换到第一个名字匹配的窗口 |
 | `synchronize-panes [on\|off]` | 同时向所有窗格输入 |
@@ -154,6 +157,10 @@ lumux source-file <path>                          # 实时重载配置
 | `capture-pane` | 把可见窗格文本复制到粘贴缓冲区 |
 | `respawn-pane` | 在已死窗格中重启 shell |
 | `run-shell <cmd>` | 运行 shell 命令；其输出进入粘贴缓冲区 |
+| `new-session [-s NAME] [-d]` | 创建一个会话，除非带 `-d` 否则切换过去 |
+| `kill-session [-t NAME]` | 关闭一个会话（不指定则关闭当前会话） |
+| `kill-server` | 关闭所有会话并断开所有客户端 |
+| `switch-client -t NAME` | 按名字把当前客户端切换到另一个会话 |
 | `save-state` | 立即把会话快照写入磁盘 |
 | `detach-client` | 分离 |
 
