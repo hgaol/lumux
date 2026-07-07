@@ -43,6 +43,9 @@ pub enum Mode {
     /// and clears via [`Keymap::cancel_repeat`] on timeout. Any other key exits
     /// repeat mode and is reprocessed as if from `Normal` (see `feed`).
     Repeat(Key),
+    /// Showing the big-digit clock overlay (tmux `clock-mode`, prefix `t`); any
+    /// key closes it.
+    Clock,
 }
 
 /// Bracketed-paste markers (DECSET 2004). The terminal wraps pasted text in
@@ -341,6 +344,10 @@ impl Keymap {
                             self.mode = Mode::DisplayPanes;
                             reactions.push(Reaction::Do(Action::DisplayPanes));
                         }
+                        Some(Action::ClockMode) => {
+                            self.mode = Mode::Clock;
+                            reactions.push(Reaction::Do(Action::ClockMode));
+                        }
                         Some(
                             action @ (Action::RenameWindow
                             | Action::RenameSession
@@ -470,6 +477,13 @@ impl Keymap {
                     self.mode = Mode::Normal;
                     i -= consumed;
                     continue;
+                }
+                Mode::Clock => {
+                    // Any key closes the clock overlay (tmux clock-mode). Toggle
+                    // it off via the same action that opened it.
+                    flush_passthrough!();
+                    self.mode = Mode::Normal;
+                    reactions.push(Reaction::Do(Action::ClockMode));
                 }
             }
         }

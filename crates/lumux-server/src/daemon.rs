@@ -133,6 +133,9 @@ pub struct Daemon<S: PtySystem> {
     choosing_buffer: BTreeMap<u64, usize>,
     /// Clients showing the display-panes number overlay (tmux prefix q).
     showing_panes: std::collections::BTreeSet<u64>,
+    /// Clients showing the big-digit clock overlay (tmux `clock-mode`, prefix
+    /// `t`); any key closes it.
+    clock: std::collections::BTreeSet<u64>,
     /// The server-global marked pane (tmux `select-pane -m` / prefix `m`), if
     /// any. join-pane / swap-pane with no explicit source default to it, so a
     /// pane can be marked in one window and pulled/swapped into another.
@@ -240,6 +243,7 @@ impl<S: PtySystem> Daemon<S> {
             buffers: lumux_core::buffers::PasteBuffers::new(),
             choosing_buffer: BTreeMap::new(),
             showing_panes: std::collections::BTreeSet::new(),
+            clock: std::collections::BTreeSet::new(),
             marked_pane: None,
             clipboard,
             config: Config::default(),
@@ -1105,6 +1109,16 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
+    /// Toggle the big-digit clock overlay (tmux `clock-mode`, prefix `t`).
+    pub fn toggle_clock(&mut self, client_id: u64) {
+        if !self.clock.remove(&client_id) {
+            self.clock.insert(client_id);
+        }
+        if let Some(r) = self.renderers.get_mut(&client_id) {
+            r.invalidate();
+        }
+    }
+
     /// Scroll the help overlay for a client (tmux-style up/down/paging). The
     /// offset is clamped against the list length at render time, so this only
     /// needs to move it; over-scrolling is harmless.
@@ -1852,6 +1866,10 @@ impl<S: PtySystem> Daemon<S> {
     /// Render the active window of `session` for `client_id`, returning VT bytes
     /// to send (empty if nothing changed).
     pub fn render_for_client(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        // The clock overlay takes over the whole screen when active.
+        if self.clock.contains(&client_id) {
+            return self.render_clock(client_id, session);
+        }
         // The help overlay takes over the whole screen when active.
         if self.help.contains(&client_id) {
             return self.render_help(client_id, session);
@@ -2324,6 +2342,43 @@ impl<S: PtySystem> Daemon<S> {
             "-- HELP --  q / Escape closes".to_string()
         };
         screen.status_line(rows.saturating_sub(1), &status);
+        screen.set_cursor(None);
+
+        let renderer = self.renderers.get_mut(&client_id)?;
+        Some(renderer.render(screen))
+    }
+
+    /// Render the big-digit clock overlay (tmux `clock-mode`, prefix `t`): the
+    /// current HH:MM in a large block font, centered on screen.
+    fn render_clock(&mut self, client_id: u64, session: SessionId) -> Option<String> {
+        use lumux_core::render::Screen;
+        let size = self.server.effective_size(session)?;
+        let cols = size.cols as usize;
+        let rows = size.rows as usize;
+        let mut screen = Screen::new(cols, rows);
+
+        let t = now_parts();
+        let text = format!("{:02}:{:02}", t.hour, t.minute);
+        let glyphs: Vec<&[&str; 5]> = text.chars().map(clock_glyph).collect();
+        let glyph_w = 3; // each digit/colon glyph is 3 columns wide
+        let gap = 1; // one blank column between glyphs
+        let art_w = glyphs.len() * glyph_w + glyphs.len().saturating_sub(1) * gap;
+        let art_h = 5;
+        let content_rows = rows.saturating_sub(1);
+        let ox = (cols.saturating_sub(art_w)) / 2;
+        let oy = (content_rows.saturating_sub(art_h)) / 2;
+
+        for (gi, glyph) in glyphs.iter().enumerate() {
+            let gx = ox + gi * (glyph_w + gap);
+            for (row, line) in glyph.iter().enumerate() {
+                for (col, ch) in line.chars().enumerate() {
+                    if ch != ' ' {
+                        screen.write_plain(gx + col, oy + row, "█");
+                    }
+                }
+            }
+        }
+        screen.status_line(rows.saturating_sub(1), "-- CLOCK --  any key closes");
         screen.set_cursor(None);
 
         let renderer = self.renderers.get_mut(&client_id)?;
@@ -2804,6 +2859,39 @@ fn hostname() -> String {
     std::env::var("HOSTNAME")
         .or_else(|_| std::env::var("COMPUTERNAME"))
         .unwrap_or_else(|_| "localhost".to_string())
+}
+
+/// A 5-row-tall, 3-column-wide block-digit glyph for `c` (used by clock-mode).
+/// Each row is a 3-char string; a non-space character means "filled" (drawn as
+/// a solid block). Falls back to a blank glyph for any character not in the
+/// small set clock-mode actually needs (digits + colon).
+fn clock_glyph(c: char) -> &'static [&'static str; 5] {
+    const BLANK: [&str; 5] = ["   ", "   ", "   ", "   ", "   "];
+    const ZERO: [&str; 5] = ["###", "# #", "# #", "# #", "###"];
+    const ONE: [&str; 5] = ["  #", "  #", "  #", "  #", "  #"];
+    const TWO: [&str; 5] = ["###", "  #", "###", "#  ", "###"];
+    const THREE: [&str; 5] = ["###", "  #", "###", "  #", "###"];
+    const FOUR: [&str; 5] = ["# #", "# #", "###", "  #", "  #"];
+    const FIVE: [&str; 5] = ["###", "#  ", "###", "  #", "###"];
+    const SIX: [&str; 5] = ["###", "#  ", "###", "# #", "###"];
+    const SEVEN: [&str; 5] = ["###", "  #", "  #", "  #", "  #"];
+    const EIGHT: [&str; 5] = ["###", "# #", "###", "# #", "###"];
+    const NINE: [&str; 5] = ["###", "# #", "###", "  #", "###"];
+    const COLON: [&str; 5] = ["   ", " # ", "   ", " # ", "   "];
+    match c {
+        '0' => &ZERO,
+        '1' => &ONE,
+        '2' => &TWO,
+        '3' => &THREE,
+        '4' => &FOUR,
+        '5' => &FIVE,
+        '6' => &SIX,
+        '7' => &SEVEN,
+        '8' => &EIGHT,
+        '9' => &NINE,
+        ':' => &COLON,
+        _ => &BLANK,
+    }
 }
 
 /// Current local time broken into the parts the status formatter needs.

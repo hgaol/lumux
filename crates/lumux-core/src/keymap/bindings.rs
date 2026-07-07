@@ -79,6 +79,9 @@ pub enum Action {
     MarkPane,
     /// Rotate the panes in the active window (tmux `rotate-window`, prefix C-o).
     RotateWindow,
+    /// Show the big-digit clock overlay (tmux `clock-mode`, prefix `t`). Any key
+    /// closes it.
+    ClockMode,
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
     /// Run a chain of command-prompt commands (tmux `bind key cmd1 \; cmd2`).
@@ -134,6 +137,7 @@ impl Action {
             Action::SendPrefix => "send the prefix key to the shell",
             Action::MarkPane => "mark/unmark the active pane",
             Action::RotateWindow => "rotate the panes in the window",
+            Action::ClockMode => "show the clock",
             Action::RunCommands(_) => "run bound command(s)",
         }
     }
@@ -207,6 +211,8 @@ impl Bindings {
         table.insert(Key::char('m'), Action::MarkPane);
         // Rotate the panes in the active window (tmux prefix C-o).
         table.insert(Key::ctrl('o'), Action::RotateWindow);
+        // Show the clock overlay (tmux prefix t).
+        table.insert(Key::char('t'), Action::ClockMode);
         // Cycle preset layouts (tmux prefix Space / next-layout).
         table.insert(Key::plain(KeyCode::Space), Action::NextLayout);
         // Directional resize on the real tmux keys: Ctrl+arrows and Alt+arrows

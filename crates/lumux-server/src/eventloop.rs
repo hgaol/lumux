@@ -711,6 +711,7 @@ where
                 self.invalidate_session(session);
             }
             Action::RotateWindow => self.do_rotate_window(session, true),
+            Action::ClockMode => self.daemon.toggle_clock(client_id),
             // A bound command chain (tmux `bind key cmd1 \; cmd2`): run each
             // parsed command through the same executor as the `:` prompt.
             Action::RunCommands(cmds) => {

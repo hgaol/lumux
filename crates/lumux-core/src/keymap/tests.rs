@@ -573,3 +573,15 @@ fn cancel_repeat_forces_normal_mode() {
     k.cancel_repeat();
     assert_eq!(k.mode(), Mode::Normal);
 }
+
+#[test]
+fn clock_mode_opens_and_any_key_closes_it() {
+    let mut k = km();
+    let r = k.feed(&[0x02, b't']);
+    assert_eq!(r, vec![Reaction::Do(Action::ClockMode)]);
+    assert_eq!(k.mode(), Mode::Clock);
+    // ANY key closes it — even an unrelated letter — by toggling ClockMode off.
+    let r2 = k.feed(b"x");
+    assert_eq!(r2, vec![Reaction::Do(Action::ClockMode)]);
+    assert_eq!(k.mode(), Mode::Normal);
+}

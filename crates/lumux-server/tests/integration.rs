@@ -1980,6 +1980,38 @@ fn resize_pane_honors_the_cell_amount() {
 }
 
 #[test]
+fn clock_mode_shows_big_digits_and_any_key_closes_it() {
+    // prefix t opens a full-screen overlay with the time in a large block font;
+    // any key closes it back to the live pane view.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("clockmode".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b't']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("CLOCK") && vt.contains('█'),
+        "clock-mode should show its status line and block-digit art; got:\n{vt}"
+    );
+    // Any key closes it — back to the normal session view (name in status bar).
+    c.send(&ClientMsg::Input(b"x".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    assert!(
+        after.contains("clockmode") && !after.contains("CLOCK"),
+        "any key should close clock-mode, back to the live view; got:\n{after}"
+    );
+}
+
+#[test]
 fn repeatable_bind_fires_again_without_the_prefix() {
     // tmux `bind -r`: after the bound key fires once (with the prefix), the SAME
     // key fires again on its own within the repeat window — no re-pressing the
