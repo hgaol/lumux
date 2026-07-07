@@ -92,6 +92,9 @@ pub enum ParsedCommand {
     /// even-vertical, main-vertical, main-horizontal, tiled), or cycle to the
     /// next preset when no name is given (like `next-layout`).
     SelectLayout(Option<String>),
+    /// `previous-layout`: cycle to the previous preset layout (reverse of
+    /// `select-layout`'s bare-cycle direction).
+    PreviousLayout,
     /// `save-state`: write the session snapshot to disk now (tmux-resurrect save).
     SaveState,
     /// `set-buffer [-b name] TEXT`: store text in a paste buffer (named or auto).
@@ -339,6 +342,7 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             // Bare = cycle (like next-layout); a name applies that preset.
             ParsedCommand::SelectLayout(join_rest(args))
         }
+        "previous-layout" | "prevl" => ParsedCommand::PreviousLayout,
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
         "save-state" | "saves" => ParsedCommand::SaveState,
@@ -860,5 +864,11 @@ mod tests {
             parse_command("resize-pane -Z"),
             Some(ParsedCommand::BadArgs(_))
         ));
+    }
+
+    #[test]
+    fn previous_layout_parses() {
+        assert_eq!(parse_command("previous-layout"), Some(ParsedCommand::PreviousLayout));
+        assert_eq!(parse_command("prevl"), Some(ParsedCommand::PreviousLayout));
     }
 }

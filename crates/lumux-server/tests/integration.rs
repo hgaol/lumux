@@ -1667,6 +1667,53 @@ fn select_layout_by_name_rearranges_panes() {
 }
 
 #[test]
+fn previous_layout_undoes_next_layout() {
+    // previous-layout must cycle backward, undoing a next-layout step. Start at
+    // even-horizontal (vertical divider), next-layout moves to even-vertical
+    // (horizontal divider, per the CYCLE order), previous-layout should return
+    // to even-horizontal (vertical divider again).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("prevlayout".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split left/right
+    c.collect_until(Duration::from_millis(300), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"select-layout even-horizontal\r".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+
+    // next-layout: even-horizontal -> even-vertical. next-layout is a keymap
+    // action (prefix Space), not a `:` command, so drive it via the keybinding.
+    c.send(&ClientMsg::Input(vec![0x02, b' ']));
+    c.collect_until(Duration::from_millis(400), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, mid_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let mid = mid_all.rsplit("\u{1b}[2J").next().unwrap_or(&mid_all);
+    assert!(
+        mid.contains('─') && !mid.contains('│'),
+        "next-layout should move to even-vertical; got:\n{mid}"
+    );
+
+    // previous-layout: even-vertical -> back to even-horizontal.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"previous-layout\r".to_vec()));
+    c.collect_until(Duration::from_millis(400), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, after_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = after_all.rsplit("\u{1b}[2J").next().unwrap_or(&after_all);
+    assert!(
+        after.contains('│') && !after.contains('─'),
+        "previous-layout should undo next-layout, back to even-horizontal; got:\n{after}"
+    );
+}
+
+#[test]
 fn send_keys_injects_text_into_the_active_pane() {
     // `send-keys` translates key names: `-l "text"` sends the literal string and
     // `Enter` sends a carriage return. A chained line runs the command in the

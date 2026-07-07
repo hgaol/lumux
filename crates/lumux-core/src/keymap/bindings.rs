@@ -40,6 +40,10 @@ pub enum Action {
     SwapPaneNext,
     /// Cycle to the next preset layout (tmux `next-layout`, prefix Space).
     NextLayout,
+    /// Cycle to the previous preset layout (tmux `previous-layout`). No default
+    /// binding (tmux doesn't bind one either); reachable via config `bind` or
+    /// the `:` prompt's `previous-layout` command.
+    PrevLayout,
     /// Jump to the previously-active pane (tmux `last-pane`, prefix `;`).
     LastPane,
     /// Open a prompt to rename the current window (tmux prefix ,).
@@ -109,6 +113,7 @@ impl Action {
             Action::SwapPanePrev => "swap with the previous pane",
             Action::SwapPaneNext => "swap with the next pane",
             Action::NextLayout => "cycle preset layouts",
+            Action::PrevLayout => "cycle preset layouts (reverse)",
             Action::LastPane => "last (previous) pane",
             Action::RenameWindow => "rename the current window",
             Action::RenameSession => "rename the current session",

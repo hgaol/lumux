@@ -652,6 +652,7 @@ where
             Action::SwapPanePrev => self.do_swap_pane(session, false),
             Action::SwapPaneNext => self.do_swap_pane(session, true),
             Action::NextLayout => self.next_layout(session),
+            Action::PrevLayout => self.prev_layout(session),
             Action::RenameWindow => {
                 self.daemon
                     .open_prompt(client_id, session, crate::daemon::PromptTarget::Window);
@@ -1141,6 +1142,30 @@ where
         }
     }
 
+    /// Cycle the active window to the previous preset layout (tmux
+    /// `previous-layout`); mirrors [`Self::next_layout`].
+    fn prev_layout(&mut self, session: SessionId) {
+        let applied = self
+            .daemon
+            .server
+            .session_mut(session)
+            .map(|s| {
+                let wid = s.active_window();
+                if let Some(w) = s.window_mut(wid) {
+                    w.prev_layout();
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false);
+        if applied {
+            if let Some(size) = self.daemon.server.effective_size(session) {
+                self.daemon.resize_session(session, size);
+            }
+        }
+    }
+
     /// Apply a specific named preset layout to the active window (tmux
     /// `select-layout <name>`) and re-fit the PTYs. Unlike [`Self::next_layout`],
     /// which cycles, this sets the exact layout the user asked for.
@@ -1382,6 +1407,7 @@ where
                 // Bare select-layout cycles, like next-layout.
                 None => self.next_layout(session),
             },
+            ParsedCommand::PreviousLayout => self.prev_layout(session),
             ParsedCommand::SaveState => {
                 let path = self.state_path.clone();
                 match self.daemon.save_state(&path) {

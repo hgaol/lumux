@@ -247,6 +247,21 @@ impl Window {
         self.apply_layout(next);
     }
 
+    /// Cycle to the previous preset layout (tmux `previous-layout`). Starts at
+    /// the LAST preset if none is active yet (so a first press goes "backward"
+    /// from the implicit starting point, mirroring `next_layout`'s symmetric
+    /// choice of the first). No-op for a single pane.
+    pub fn prev_layout(&mut self) {
+        if self.pane_count() < 2 {
+            return;
+        }
+        let prev = match self.layout_kind {
+            Some(k) => k.prev(),
+            None => *LayoutKind::CYCLE.last().unwrap(),
+        };
+        self.apply_layout(prev);
+    }
+
     /// Swap the active pane with pane `other` in this window's layout (tmux
     /// swap-pane). Both panes keep their ids (and thus their grids); only their
     /// positions in the tree exchange. The active pane stays active but moves to

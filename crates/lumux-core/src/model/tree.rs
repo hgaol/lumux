@@ -247,6 +247,13 @@ impl LayoutKind {
         Self::CYCLE[(pos + 1) % Self::CYCLE.len()]
     }
 
+    /// The previous layout in the cycle (tmux `previous-layout`).
+    pub fn prev(self) -> LayoutKind {
+        let n = Self::CYCLE.len();
+        let pos = Self::CYCLE.iter().position(|&l| l == self).unwrap_or(0);
+        Self::CYCLE[(pos + n - 1) % n]
+    }
+
     /// Parse a tmux layout name (`even-horizontal`, `even-vertical`,
     /// `main-vertical`, `main-horizontal`, `tiled`) into a [`LayoutKind`].
     /// Returns None for an unknown name (tmux's stacked layout strings aren't
@@ -578,6 +585,16 @@ mod tests {
         // Five distinct layouts, then wraps back to the first.
         assert_eq!(seen.len(), 5);
         assert_eq!(k.next(), LayoutKind::CYCLE[0]);
+    }
+
+    #[test]
+    fn layout_kind_prev_is_the_reverse_of_next() {
+        for &k in &LayoutKind::CYCLE {
+            assert_eq!(k.next().prev(), k, "prev undoes next for {k:?}");
+            assert_eq!(k.prev().next(), k, "next undoes prev for {k:?}");
+        }
+        // prev() from the first wraps to the last, mirroring next()'s wrap.
+        assert_eq!(LayoutKind::CYCLE[0].prev(), *LayoutKind::CYCLE.last().unwrap());
     }
 
     #[test]
