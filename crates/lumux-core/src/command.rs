@@ -104,6 +104,15 @@ pub enum ParsedCommand {
     LoadBuffer { path: String },
     /// `delete-buffer -b name`: delete the named buffer.
     DeleteBuffer { name: String },
+    /// `new-session [-s NAME] [-d]`: create a new session. Unless `-d`
+    /// (detached), the issuing client switches to it.
+    NewSession { name: Option<String>, detached: bool },
+    /// `kill-session [-t NAME]`: kill a session (the current one if omitted).
+    KillSession { target: Option<String> },
+    /// `kill-server`: kill every session and detach every client.
+    KillServer,
+    /// `switch-client -t NAME`: switch the current client to another session.
+    SwitchClient { target: String },
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -348,6 +357,18 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
         "delete-buffer" | "deleteb" => match flag_value(args, "-b").map(str::to_string) {
             Some(name) => ParsedCommand::DeleteBuffer { name },
             None => ParsedCommand::BadArgs("usage: delete-buffer -b name"),
+        },
+        "new-session" | "new" => ParsedCommand::NewSession {
+            name: flag_value(args, "-s").map(str::to_string),
+            detached: args.contains(&"-d"),
+        },
+        "kill-session" | "killsession" => ParsedCommand::KillSession {
+            target: flag_value(args, "-t").map(str::to_string),
+        },
+        "kill-server" => ParsedCommand::KillServer,
+        "switch-client" | "switchc" => match flag_value(args, "-t") {
+            Some(t) => ParsedCommand::SwitchClient { target: t.to_string() },
+            None => ParsedCommand::BadArgs("usage: switch-client -t NAME"),
         },
         "detach-client" | "detach" => ParsedCommand::Detach,
         other => ParsedCommand::Unknown(other.to_string()),
@@ -748,5 +769,38 @@ mod tests {
         );
         assert!(matches!(parse_command("set-buffer"), Some(ParsedCommand::BadArgs(_))));
         assert!(matches!(parse_command("delete-buffer"), Some(ParsedCommand::BadArgs(_))));
+    }
+
+    #[test]
+    fn session_lifecycle_commands_parse() {
+        assert_eq!(
+            parse_command("new-session"),
+            Some(ParsedCommand::NewSession { name: None, detached: false })
+        );
+        assert_eq!(
+            parse_command("new-session -s work -d"),
+            Some(ParsedCommand::NewSession { name: Some("work".to_string()), detached: true })
+        );
+        assert_eq!(
+            parse_command("new -s work"),
+            Some(ParsedCommand::NewSession { name: Some("work".to_string()), detached: false })
+        );
+        assert_eq!(
+            parse_command("kill-session"),
+            Some(ParsedCommand::KillSession { target: None })
+        );
+        assert_eq!(
+            parse_command("kill-session -t work"),
+            Some(ParsedCommand::KillSession { target: Some("work".to_string()) })
+        );
+        assert_eq!(parse_command("kill-server"), Some(ParsedCommand::KillServer));
+        assert_eq!(
+            parse_command("switch-client -t work"),
+            Some(ParsedCommand::SwitchClient { target: "work".to_string() })
+        );
+        assert!(matches!(
+            parse_command("switch-client"),
+            Some(ParsedCommand::BadArgs(_))
+        ));
     }
 }

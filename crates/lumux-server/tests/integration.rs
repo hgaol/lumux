@@ -1745,6 +1745,128 @@ fn kill_pane_target_kills_the_indexed_pane_not_the_active_one() {
 }
 
 #[test]
+fn new_session_switches_the_client_by_default() {
+    // `:new-session -s NAME` (no -d) creates a session and switches the issuing
+    // client to it — the status bar's #S segment should now show the new name.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("orig".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"new-session -s work\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("work"),
+        "new-session (no -d) should switch the client to the new session; got:\n{vt}"
+    );
+}
+
+#[test]
+fn new_session_detached_does_not_switch() {
+    // `-d` creates the session in the background; the current client stays put.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("orig2".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"new-session -s bg2 -d\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("orig2") && !vt.contains("bg2"),
+        "new-session -d must NOT switch the client; got:\n{vt}"
+    );
+}
+
+#[test]
+fn switch_client_and_kill_session_by_name() {
+    // Create a second (detached) session, switch to it, switch back, then kill
+    // the second by name and confirm switch-client to it now fails (gone).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("home".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"new-session -s other -d\r".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+
+    // Switch to "other".
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"switch-client -t other\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(vt.contains("other"), "switch-client should move to 'other'; got:\n{vt}");
+
+    // Switch back to "home".
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"switch-client -t home\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, vt2) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(vt2.contains("home"), "switch-client should move back to 'home'; got:\n{vt2}");
+
+    // kill-session -t other (not the current session); the client stays alive.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"kill-session -t other\r".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+
+    // Trying to switch to it now must fail — it no longer exists. The failure
+    // flashes a message on the status row (replacing it), so check that first.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"switch-client -t other\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, vt3) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt3.contains("no such session"),
+        "killed session must be gone, so switch-client to it fails; got:\n{vt3}"
+    );
+    // Dismiss the flash (any input clears it) and confirm we're still on "home".
+    c.send(&ClientMsg::Input(b" \x08".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d3, vt4) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt4.contains("home"),
+        "the client should still be on 'home' after the failed switch; got:\n{vt4}"
+    );
+}
+
+#[test]
+fn kill_server_detaches_every_client() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("last".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"kill-server\r".to_vec()));
+    let (detached, _) = c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Detached));
+    assert!(detached, "kill-server must detach the client");
+}
+
+#[test]
 fn repeatable_bind_fires_again_without_the_prefix() {
     // tmux `bind -r`: after the bound key fires once (with the prefix), the SAME
     // key fires again on its own within the repeat window — no re-pressing the

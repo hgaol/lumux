@@ -438,6 +438,13 @@ where
                         }
                         Reaction::Prompt(pk) => {
                             self.handle_prompt_key(client_id, session, pk);
+                            // A command-prompt confirm may have run
+                            // switch-client/new-session, moving the client to a
+                            // different session; keep this batch's local
+                            // `session` in sync for any reactions still to come.
+                            if let Some(h) = self.clients.get(&client_id) {
+                                session = h.session;
+                            }
                         }
                         Reaction::Help(hk) => {
                             self.daemon.help_scroll(client_id, hk);
@@ -591,6 +598,33 @@ where
                 let _ = h.out.send(ServerMsg::Detached);
             }
             self.daemon.unregister_client(id);
+        }
+    }
+
+    /// Switch `client_id` to `sid` and force a full repaint (tmux `switch-client`,
+    /// and `new-session` without `-d`). Mirrors the choose-tree confirm path
+    /// (`chooser_confirm`/`SessionKey::Confirm`): both the model's client
+    /// registry (`Server::set_client_session`, which `effective_size` and
+    /// rendering key off) and the event loop's own `ClientHandle.session` (used
+    /// for output routing) must move together, or the two fall out of sync.
+    fn switch_client_session(&mut self, client_id: u64, sid: SessionId) {
+        self.daemon.server.set_client_session(client_id, sid);
+        if let Some(h) = self.clients.get_mut(&client_id) {
+            h.session = sid;
+        }
+        self.daemon.invalidate_client(client_id);
+    }
+
+    /// The lowest numeric name ("0", "1", …) not already taken by a session,
+    /// mirroring tmux's auto-naming for `new-session` with no `-s`.
+    fn next_free_session_name(&self) -> String {
+        let mut n = 0u32;
+        loop {
+            let candidate = n.to_string();
+            if self.daemon.server.find_session_by_name(&candidate).is_none() {
+                return candidate;
+            }
+            n += 1;
         }
     }
 
@@ -1204,8 +1238,16 @@ where
         use lumux_core::command::parse_commands;
         // A command line may chain several commands with `;` (tmux separator).
         // Execute each in order; render once at the end.
+        let mut session = session;
         for cmd in parse_commands(line) {
             self.dispatch_parsed(client_id, session, cmd);
+            // A command may have switched the client onto a different session
+            // (switch-client / new-session without -d); re-read it so any
+            // remaining chained commands, and the final render below, target
+            // the session the client is actually on now.
+            if let Some(h) = self.clients.get(&client_id) {
+                session = h.session;
+            }
         }
         self.render_session(session);
     }
@@ -1332,6 +1374,46 @@ where
                     self.daemon.flash_message(client_id, "no such buffer");
                 }
             }
+            ParsedCommand::NewSession { name, detached } => {
+                let name = name.unwrap_or_else(|| self.next_free_session_name());
+                if self.daemon.server.find_session_by_name(&name).is_some() {
+                    self.daemon.flash_message(client_id, format!("duplicate session: {name}"));
+                } else {
+                    let size = self
+                        .daemon
+                        .server
+                        .effective_size(session)
+                        .unwrap_or(PtySize::new(80, 24));
+                    match self.spawn_session(name, None, size) {
+                        Some(sid) if !detached => self.switch_client_session(client_id, sid),
+                        Some(_) => {}
+                        None => self.daemon.flash_message(client_id, "new-session: failed to start shell"),
+                    }
+                }
+            }
+            ParsedCommand::KillSession { target } => {
+                let sid = match target {
+                    Some(name) => match self.daemon.server.find_session_by_name(&name) {
+                        Some(sid) => sid,
+                        None => {
+                            self.daemon.flash_message(client_id, format!("no such session: {name}"));
+                            return;
+                        }
+                    },
+                    None => session,
+                };
+                self.kill_whole_session(sid);
+            }
+            ParsedCommand::KillServer => {
+                let ids = self.daemon.server.session_ids();
+                for id in ids {
+                    self.kill_whole_session(id);
+                }
+            }
+            ParsedCommand::SwitchClient { target } => match self.daemon.server.find_session_by_name(&target) {
+                Some(sid) => self.switch_client_session(client_id, sid),
+                None => self.daemon.flash_message(client_id, format!("no such session: {target}")),
+            },
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);
