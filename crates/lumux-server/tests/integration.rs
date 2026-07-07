@@ -1867,6 +1867,72 @@ fn kill_server_detaches_every_client() {
 }
 
 #[test]
+fn resize_pane_honors_the_cell_amount() {
+    // `resize-pane -R N` must move the divider by roughly N cells, not the fixed
+    // ~5%-of-window nudge the interactive Ctrl/Alt-arrow bindings use. Compare
+    // the divider's column after a bare resize (fixed step) against a fresh
+    // split resized with an explicit large N — the explicit one should move the
+    // divider much further right.
+    let bare_delta = {
+        let path = start_daemon();
+        let mut c = TestClient::connect(&path);
+        c.send(&ClientMsg::NewSession {
+            name: Some("rpbare".into()),
+            shell: Some("/bin/sh".into()),
+            size: size(),
+        });
+        c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+        c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split left/right
+        c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+        let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+        let before_col = column_of(&before, "│").expect("divider before resize");
+        c.send(&ClientMsg::Input(vec![0x02, b':']));
+        c.send(&ClientMsg::Input(b"resize-pane -R\r".to_vec()));
+        c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+        let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+        // collect_until accumulates every frame, including the pre-resize one
+        // (still under the `:` prompt overlay); take only the final repaint.
+        let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+        let after_col = column_of(after, "│").expect("divider after bare resize");
+        after_col.abs_diff(before_col)
+    };
+
+    let amount_delta = {
+        let path = start_daemon();
+        let mut c = TestClient::connect(&path);
+        c.send(&ClientMsg::NewSession {
+            name: Some("rpamount".into()),
+            shell: Some("/bin/sh".into()),
+            size: size(),
+        });
+        c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+        c.send(&ClientMsg::Input(vec![0x02, b'%']));
+        c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+        let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+        let before_col = column_of(&before, "│").expect("divider before resize");
+        c.send(&ClientMsg::Input(vec![0x02, b':']));
+        c.send(&ClientMsg::Input(b"resize-pane -R 20\r".to_vec()));
+        c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+        let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+        let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+        let after_col = column_of(after, "│").expect("divider after amount resize");
+        after_col.abs_diff(before_col)
+    };
+
+    assert!(
+        amount_delta > bare_delta * 2,
+        "resize-pane -R 20 should move the divider much further than the bare \
+         (fixed-step) resize; bare_delta={bare_delta} amount_delta={amount_delta}"
+    );
+    // And the explicit amount should be roughly in the right ballpark (allow
+    // slack for the 1-cell divider + rounding), not wildly off.
+    assert!(
+        (15..=25).contains(&amount_delta),
+        "resize-pane -R 20 should move the divider by ~20 cells; got {amount_delta}"
+    );
+}
+
+#[test]
 fn repeatable_bind_fires_again_without_the_prefix() {
     // tmux `bind -r`: after the bound key fires once (with the prefix), the SAME
     // key fires again on its own within the repeat window — no re-pressing the

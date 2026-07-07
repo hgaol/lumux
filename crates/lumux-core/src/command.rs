@@ -113,6 +113,15 @@ pub enum ParsedCommand {
     KillServer,
     /// `switch-client -t NAME`: switch the current client to another session.
     SwitchClient { target: String },
+    /// `resize-pane -L|-R|-U|-D [N]`: resize the active pane by N cells in that
+    /// direction; bare (no N) uses the same nudge amount as the interactive
+    /// Ctrl/Alt-arrow bindings. `-Z` (zoom) isn't modeled here — see the
+    /// keymap-only `ZoomPane` fallback (`resize-pane` without a `-L/-R/-U/-D`
+    /// direction falls back to that mapper).
+    ResizePane {
+        dir: crate::layout::Direction,
+        cells: Option<u16>,
+    },
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -370,6 +379,28 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             Some(t) => ParsedCommand::SwitchClient { target: t.to_string() },
             None => ParsedCommand::BadArgs("usage: switch-client -t NAME"),
         },
+        "resize-pane" | "resizep" => {
+            use crate::layout::Direction;
+            let dir = if args.contains(&"-L") {
+                Some(Direction::Left)
+            } else if args.contains(&"-R") {
+                Some(Direction::Right)
+            } else if args.contains(&"-U") {
+                Some(Direction::Up)
+            } else if args.contains(&"-D") {
+                Some(Direction::Down)
+            } else {
+                None
+            };
+            match dir {
+                // The amount is the first bare (non-flag) numeric argument.
+                Some(dir) => ParsedCommand::ResizePane {
+                    dir,
+                    cells: args.iter().find(|a| !a.starts_with('-')).and_then(|a| a.parse().ok()),
+                },
+                None => ParsedCommand::BadArgs("usage: resize-pane -L|-R|-U|-D [N]"),
+            }
+        }
         "detach-client" | "detach" => ParsedCommand::Detach,
         other => ParsedCommand::Unknown(other.to_string()),
     }
@@ -800,6 +831,33 @@ mod tests {
         );
         assert!(matches!(
             parse_command("switch-client"),
+            Some(ParsedCommand::BadArgs(_))
+        ));
+    }
+
+    #[test]
+    fn resize_pane_parses_direction_and_amount() {
+        use crate::layout::Direction;
+        assert_eq!(
+            parse_command("resize-pane -L 10"),
+            Some(ParsedCommand::ResizePane { dir: Direction::Left, cells: Some(10) })
+        );
+        assert_eq!(
+            parse_command("resize-pane -R"),
+            Some(ParsedCommand::ResizePane { dir: Direction::Right, cells: None })
+        );
+        assert_eq!(
+            parse_command("resize-pane -U 3"),
+            Some(ParsedCommand::ResizePane { dir: Direction::Up, cells: Some(3) })
+        );
+        assert_eq!(
+            parse_command("resize-pane -D 7"),
+            Some(ParsedCommand::ResizePane { dir: Direction::Down, cells: Some(7) })
+        );
+        // No direction (and not -Z, which is handled by the keymap-only fallback
+        // for `bind`, not this parser): BadArgs.
+        assert!(matches!(
+            parse_command("resize-pane -Z"),
             Some(ParsedCommand::BadArgs(_))
         ));
     }

@@ -1060,6 +1060,44 @@ where
         }
     }
 
+    /// `resize-pane -L/-R/-U/-D [N]`: resize by a specific cell count instead of
+    /// the fixed interactive step. Converts N cells to a layout ratio delta using
+    /// the window's total content span along that axis (`effective_size`) as the
+    /// denominator — NOT the active pane's own span, which would make the same N
+    /// produce wildly different deltas depending on which side is active and how
+    /// large it currently is. Exact for the common single-split 2-pane case; an
+    /// approximation for deeper nested splits, since the model only exposes a
+    /// ratio-based resize, not an absolute-cell one. No `N` (or an unknown size)
+    /// falls back to the same fixed step the interactive Ctrl/Alt-arrow bindings
+    /// use.
+    fn do_resize_pane_amount(&mut self, session: SessionId, dir: lumux_core::layout::Direction, cells: Option<u16>) {
+        use lumux_core::layout::Direction;
+        let (axis, sign): (SplitDir, f32) = match dir {
+            Direction::Left => (SplitDir::Horizontal, -1.0),
+            Direction::Right => (SplitDir::Horizontal, 1.0),
+            Direction::Up => (SplitDir::Vertical, -1.0),
+            Direction::Down => (SplitDir::Vertical, 1.0),
+        };
+        let step = match cells {
+            Some(n) => {
+                let total = self.daemon.server.effective_size(session).map(|s| {
+                    if axis == SplitDir::Horizontal {
+                        s.cols
+                    } else {
+                        // The status row isn't part of any pane's split span.
+                        s.rows.saturating_sub(1)
+                    }
+                });
+                match total {
+                    Some(total) if total > 0 => (n as f32 / total as f32) * sign,
+                    _ => RESIZE_STEP * sign,
+                }
+            }
+            None => RESIZE_STEP * sign,
+        };
+        self.resize_pane(session, axis, step);
+    }
+
     /// Toggle zoom on the active pane (tmux prefix z) and re-fit PTYs, since the
     /// zoomed pane now fills the whole content area (or returns to its split).
     fn zoom_pane(&mut self, session: SessionId) {
@@ -1414,6 +1452,7 @@ where
                 Some(sid) => self.switch_client_session(client_id, sid),
                 None => self.daemon.flash_message(client_id, format!("no such session: {target}")),
             },
+            ParsedCommand::ResizePane { dir, cells } => self.do_resize_pane_amount(session, dir, cells),
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);

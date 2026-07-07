@@ -820,8 +820,16 @@ mod tests {
         )
         .unwrap();
         let b = c.to_bindings().unwrap();
-        // resize-pane is keymap-only → directional/zoom actions via the fallback.
-        assert_eq!(b.lookup(&Key::char('H')), Some(&Action::ResizePaneLeft));
+        // resize-pane -L is now a real command verb (carries its direction), so
+        // it's a RunCommands chain; -Z (zoom) has no command equivalent and
+        // still falls back to the keymap-only mapper.
+        assert_eq!(
+            b.lookup(&Key::char('H')),
+            Some(&Action::RunCommands(vec![ParsedCommand::ResizePane {
+                dir: crate::layout::Direction::Left,
+                cells: None
+            }]))
+        );
         assert_eq!(b.lookup(&Key::char('g')), Some(&Action::ZoomPane));
         // -r on `bind -r H ...` marks H repeatable; the other two binds didn't
         // request -r, so they're not.
