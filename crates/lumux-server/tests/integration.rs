@@ -1980,6 +1980,64 @@ fn resize_pane_honors_the_cell_amount() {
 }
 
 #[test]
+fn dragging_the_divider_over_a_mouse_aware_pane_still_resizes() {
+    // Regression: grabbing the split divider and dragging the pointer into an
+    // adjacent pane that runs a mouse-aware app (vim / htop / Claude Code) used
+    // to forward the drag to that app, so the divider stopped tracking after a
+    // single cell — the classic "can't drag the separator". Once a divider is
+    // grabbed the whole gesture belongs to lumux's resize and must NOT be
+    // forwarded. Both panes run mouse-aware `cat -v` (echoes what they receive),
+    // so a forwarded drag would both freeze the divider AND show up as the raw
+    // SGR bytes in the pane.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("dividerdrag".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Left (first) pane: mouse-aware cat -v.
+    c.send(&ClientMsg::Input(b"printf '\\033[?1002h\\033[?1006h'; cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Split left/right; the new right pane (active) is also mouse-aware.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(b"printf '\\033[?1002h\\033[?1006h'; cat -v\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    let before_frame = before.rsplit("\u{1b}[2J").next().unwrap_or(&before);
+    let before_col = column_of(before_frame, "│").expect("divider before drag");
+
+    // Press exactly on the divider (1-based col == before_col), then drag the
+    // pointer far LEFT — deep inside the left, mouse-aware pane — and release.
+    // 0x20 is the motion bit (drag); button 0 = left.
+    let press = format!("\x1b[<0;{};12M", before_col);
+    let drag = "\x1b[<32;12;12M".to_string(); // drag to 1-based col 12
+    let release = "\x1b[<0;12;12m".to_string();
+    c.send(&ClientMsg::Input(press.into_bytes()));
+    c.send(&ClientMsg::Input(drag.into_bytes()));
+    c.send(&ClientMsg::Input(release.into_bytes()));
+    let (_d1, after) = c.collect_until(Duration::from_secs(1), |_| false);
+    let after_frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    let after_col = column_of(after_frame, "│").expect("divider after drag");
+
+    assert!(
+        before_col.saturating_sub(after_col) >= 10,
+        "dragging the divider left should move it well left even though the drag \
+         passes over a mouse-aware pane; before={before_col} after={after_col}"
+    );
+    // And the drag must not have leaked to the pane's app as a raw SGR event
+    // (cat -v renders ESC as ^[, so a forwarded drag would show `^[[<32;`).
+    assert!(
+        !after.contains("[<32;"),
+        "a grabbed-divider drag must not be forwarded to the pane's app; got:\n{after}"
+    );
+}
+
+#[test]
 fn clock_mode_shows_big_digits_and_any_key_closes_it() {
     // prefix t opens a full-screen overlay with the time in a large block font;
     // any key closes it back to the live pane view.

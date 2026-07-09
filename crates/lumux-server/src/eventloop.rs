@@ -776,8 +776,15 @@ where
                 // If the app in the pane under the pointer enabled mouse
                 // reporting, forward the raw event to it (pane-relative) and skip
                 // lumux's own handling — so the wheel/clicks work inside vim,
-                // htop, Claude Code, etc. (matches tmux).
-                if self.try_forward_mouse_to_app(session, &ev) {
+                // htop, Claude Code, etc. (matches tmux). BUT once a divider is
+                // grabbed, the whole gesture (drag + release) is a resize that
+                // belongs to lumux: forwarding it would hand the drag to whatever
+                // mouse-aware app the pointer wanders over, so the divider stops
+                // tracking after a single cell — the classic "can't drag the
+                // separator". While grabbed, never forward.
+                if !self.daemon.is_dragging_divider(client_id)
+                    && self.try_forward_mouse_to_app(session, &ev)
+                {
                     i += used;
                     continue;
                 }
