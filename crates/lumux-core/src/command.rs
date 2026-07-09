@@ -130,6 +130,20 @@ pub enum ParsedCommand {
     /// unquoted) value are resolved by the daemon through `Config::set_option`,
     /// which shares the exact mapping the config-file loader uses.
     SetOption { option: String, value: String },
+    /// `copy-mode`: enter copy-mode (the keymap-bound `[` action, made typeable).
+    CopyMode,
+    /// `clock-mode`: show the big-digit clock overlay (prefix `t`, made typeable).
+    ClockMode,
+    /// `select-pane [-L|-R|-U|-D] [-t .N]`: move focus. A direction picks the
+    /// geographic neighbor; `-t .N` focuses pane N in the active window. With
+    /// neither, it's a no-op (tmux would re-select the active pane).
+    SelectPane {
+        dir: Option<crate::layout::Direction>,
+        target: Option<Target>,
+    },
+    /// `resize-pane -Z`: toggle zoom on the active pane (prefix `z`, made
+    /// typeable). The directional `resize-pane -L/-R/-U/-D` is [`Self::ResizePane`].
+    ZoomPane,
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -362,7 +376,29 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
             // Bare = cycle (like next-layout); a name applies that preset.
             ParsedCommand::SelectLayout(join_rest(args))
         }
+        // next-layout is exactly select-layout's bare-cycle; make it typeable too.
+        "next-layout" | "nextl" => ParsedCommand::SelectLayout(None),
         "previous-layout" | "prevl" => ParsedCommand::PreviousLayout,
+        "copy-mode" => ParsedCommand::CopyMode,
+        "clock-mode" => ParsedCommand::ClockMode,
+        "select-pane" | "selectp" => {
+            use crate::layout::Direction;
+            let dir = if args.contains(&"-L") {
+                Some(Direction::Left)
+            } else if args.contains(&"-R") {
+                Some(Direction::Right)
+            } else if args.contains(&"-U") {
+                Some(Direction::Up)
+            } else if args.contains(&"-D") {
+                Some(Direction::Down)
+            } else {
+                None
+            };
+            ParsedCommand::SelectPane {
+                dir,
+                target: parse_target(args),
+            }
+        }
         "capture-pane" | "capturep" => ParsedCommand::CapturePane,
         "respawn-pane" | "respawnp" => ParsedCommand::RespawnPane,
         "save-state" | "saves" => ParsedCommand::SaveState,
@@ -422,7 +458,10 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
                     dir,
                     cells: args.iter().find(|a| !a.starts_with('-')).and_then(|a| a.parse().ok()),
                 },
-                None => ParsedCommand::BadArgs("usage: resize-pane -L|-R|-U|-D [N]"),
+                // No direction: `-Z` toggles zoom (tmux prefix z); anything else
+                // is a usage error.
+                None if args.contains(&"-Z") => ParsedCommand::ZoomPane,
+                None => ParsedCommand::BadArgs("usage: resize-pane -L|-R|-U|-D [N] | -Z"),
             }
         }
         "detach-client" | "detach" => ParsedCommand::Detach,
@@ -909,10 +948,11 @@ mod tests {
             parse_command("resize-pane -D 7"),
             Some(ParsedCommand::ResizePane { dir: Direction::Down, cells: Some(7) })
         );
-        // No direction (and not -Z, which is handled by the keymap-only fallback
-        // for `bind`, not this parser): BadArgs.
+        // -Z with no direction toggles zoom (tmux resize-pane -Z).
+        assert_eq!(parse_command("resize-pane -Z"), Some(ParsedCommand::ZoomPane));
+        // No direction and no -Z is a usage error.
         assert!(matches!(
-            parse_command("resize-pane -Z"),
+            parse_command("resize-pane"),
             Some(ParsedCommand::BadArgs(_))
         ));
     }
@@ -1006,6 +1046,39 @@ mod tests {
                 option: "status-left".into(),
                 value: "a;b".into(),
             }]
+        );
+    }
+
+    #[test]
+    fn keymap_only_actions_are_now_typeable() {
+        use crate::layout::Direction;
+        // next-layout is bare select-layout (cycle).
+        assert_eq!(parse_command("next-layout"), Some(ParsedCommand::SelectLayout(None)));
+        assert_eq!(parse_command("copy-mode"), Some(ParsedCommand::CopyMode));
+        assert_eq!(parse_command("clock-mode"), Some(ParsedCommand::ClockMode));
+        // resize-pane -Z zooms; a direction still resizes.
+        assert_eq!(parse_command("resize-pane -Z"), Some(ParsedCommand::ZoomPane));
+        assert_eq!(
+            parse_command("resize-pane -L"),
+            Some(ParsedCommand::ResizePane { dir: Direction::Left, cells: None })
+        );
+    }
+
+    #[test]
+    fn select_pane_direction_and_pane_target() {
+        use crate::layout::Direction;
+        assert_eq!(
+            parse_command("select-pane -L"),
+            Some(ParsedCommand::SelectPane { dir: Some(Direction::Left), target: None })
+        );
+        assert_eq!(
+            parse_command("select-pane -U"),
+            Some(ParsedCommand::SelectPane { dir: Some(Direction::Up), target: None })
+        );
+        // -t .N is a pane target (no direction).
+        assert_eq!(
+            parse_command("select-pane -t .1"),
+            Some(ParsedCommand::SelectPane { dir: None, target: Some(Target::Pane(1)) })
         );
     }
 }

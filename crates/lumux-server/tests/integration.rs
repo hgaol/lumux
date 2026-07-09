@@ -2138,6 +2138,101 @@ fn set_unknown_option_flashes_an_error() {
 }
 
 #[test]
+fn select_pane_by_target_focuses_that_pane() {
+    // `:select-pane -t .0` focuses pane 0 by index (previously only reachable via
+    // display-panes or arrows). With two side-by-side panes the right one is
+    // active; targeting .0 focuses the LEFT pane, proven by a typed marker
+    // echoing in the left half.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("selp".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split; right pane active
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Focus the left pane by index via the command prompt.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"select-pane -t .0\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Type a marker; it must land in the LEFT pane (column in the left half).
+    c.send(&ClientMsg::Input(b"SELP_LL".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    let col = column_of(&after, "SELP_LL").expect("marker should echo after :select-pane -t .0");
+    assert!(
+        col < 40,
+        "select-pane -t .0 should focus the LEFT pane (marker col {col} < 40); got:\n{after}"
+    );
+}
+
+#[test]
+fn next_layout_is_typeable_at_the_prompt() {
+    // `:next-layout` (previously keymap-only, prefix Space) cycles presets like
+    // the bare `select-layout`. Pin the start to even-horizontal (vertical
+    // divider), then `:next-layout` advances to even-vertical (stacked, so the
+    // vertical divider becomes horizontal).
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("nextl".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // left/right split
+    c.collect_until(Duration::from_millis(300), |_| false);
+    // Pin a known starting layout so the cycle direction is deterministic.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"select-layout even-horizontal\r".to_vec()));
+    c.collect_until(Duration::from_millis(300), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        column_of(&before, "│").is_some(),
+        "precondition: even-horizontal draws a vertical divider; got:\n{before}"
+    );
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"next-layout\r".to_vec()));
+    c.collect_until(Duration::from_millis(400), |_| false);
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    assert!(
+        column_of(after, "│").is_none(),
+        ":next-layout should advance to a stacked layout (no vertical divider); got:\n{after}"
+    );
+}
+
+#[test]
+fn copy_mode_command_enters_copy_mode() {
+    // `:copy-mode` opens copy-mode from the prompt. This exercises the ordering
+    // in handle_prompt_key: the keymap is reset to Normal when the prompt closes,
+    // THEN the command dispatches and re-enters Copy mode — so the mode sticks
+    // and the copy indicator shows.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cpm".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(b"echo hello\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"copy-mode\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("COPY"),
+        ":copy-mode should enter copy-mode (mode line shows COPY); got:\n{vt}"
+    );
+}
+
+#[test]
 fn clock_mode_shows_big_digits_and_any_key_closes_it() {
     // prefix t opens a full-screen overlay with the time in a large block font;
     // any key closes it back to the live pane view.

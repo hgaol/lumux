@@ -501,6 +501,14 @@ impl Keymap {
         self.mode = Mode::Copy;
     }
 
+    /// Force the keymap into clock-mode. Used when clock-mode is opened by a
+    /// path that bypasses `feed` — the `:clock-mode` command — so the next key
+    /// closes the overlay (interpreted as the Clock-mode "any key") instead of
+    /// leaking to the shell, exactly as prefix-`t` does.
+    pub fn enter_clock_mode(&mut self) {
+        self.mode = Mode::Clock;
+    }
+
     /// Force-exit copy mode (e.g. on detach).
     pub fn reset(&mut self) {
         self.mode = Mode::Normal;

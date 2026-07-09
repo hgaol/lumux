@@ -1541,6 +1541,22 @@ where
             ParsedCommand::SetOption { option, value } => {
                 self.do_set_option(client_id, &option, &value)
             }
+            ParsedCommand::CopyMode => self.daemon.enter_copy_mode(client_id, session),
+            ParsedCommand::ClockMode => self.daemon.toggle_clock(client_id),
+            ParsedCommand::ZoomPane => self.zoom_pane(session),
+            ParsedCommand::SelectPane { dir, target } => {
+                use lumux_core::command::Target;
+                match (dir, target) {
+                    (Some(dir), _) => self.select_pane(session, dir),
+                    // -t .N focuses pane N in the active window (base-index
+                    // adjusted, reusing the display-panes picker path).
+                    (None, Some(Target::Pane(n))) => self.daemon.pick_pane_number(client_id, session, n),
+                    // -t :N (a window target) or no argument: nothing to do here
+                    // (tmux -t on a window would move focus there; v1 keeps
+                    // select-pane pane-scoped).
+                    (None, _) => {}
+                }
+            }
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);

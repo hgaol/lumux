@@ -1135,6 +1135,13 @@ impl<S: PtySystem> Daemon<S> {
     pub fn toggle_clock(&mut self, client_id: u64) {
         if !self.clock.remove(&client_id) {
             self.clock.insert(client_id);
+            // Keep the keymap in lockstep so the next key closes the overlay
+            // (Clock mode's "any key"), matching how prefix-`t` enters via feed().
+            // Opening via the `:clock-mode` command bypasses feed(), so set it
+            // here too; a keyboard open just re-sets the same mode harmlessly.
+            if let Some(k) = self.keymaps.get_mut(&client_id) {
+                k.enter_clock_mode();
+            }
         }
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();

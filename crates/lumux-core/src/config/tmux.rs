@@ -819,15 +819,19 @@ mod tests {
                 ParsedCommand::SplitWindow(Dir::Horizontal),
             ]))
         );
-        // select-pane is a keymap-only verb (no command equivalent), so it still
-        // resolves to the directional action via the fallback mapper.
+        // select-pane is now a real command verb, so a bind carries its parsed
+        // direction through RunCommands (previously it fell back to the
+        // keymap-only directional action).
         assert_eq!(
             b.lookup_root(&Key {
                 code: KeyCode::Left,
                 ctrl: false,
                 alt: true
             }),
-            Some(&Action::SelectPaneLeft)
+            Some(&Action::RunCommands(vec![ParsedCommand::SelectPane {
+                dir: Some(crate::layout::Direction::Left),
+                target: None,
+            }]))
         );
     }
 
@@ -864,9 +868,8 @@ mod tests {
         )
         .unwrap();
         let b = c.to_bindings().unwrap();
-        // resize-pane -L is now a real command verb (carries its direction), so
-        // it's a RunCommands chain; -Z (zoom) has no command equivalent and
-        // still falls back to the keymap-only mapper.
+        // resize-pane -L is a real command verb (carries its direction); -Z
+        // (zoom) is now also a command verb, so both are RunCommands chains.
         assert_eq!(
             b.lookup(&Key::char('H')),
             Some(&Action::RunCommands(vec![ParsedCommand::ResizePane {
@@ -874,7 +877,10 @@ mod tests {
                 cells: None
             }]))
         );
-        assert_eq!(b.lookup(&Key::char('g')), Some(&Action::ZoomPane));
+        assert_eq!(
+            b.lookup(&Key::char('g')),
+            Some(&Action::RunCommands(vec![ParsedCommand::ZoomPane]))
+        );
         // -r on `bind -r H ...` marks H repeatable; the other two binds didn't
         // request -r, so they're not.
         assert!(b.is_repeatable(&Key::char('H')));
@@ -1019,7 +1025,10 @@ mod tests {
             b.lookup(&Key::char('-')),
             Some(&Action::RunCommands(vec![ParsedCommand::SplitWindow(Dir::Vertical)]))
         );
-        assert_eq!(b.lookup(&Key::char('z')), Some(&Action::ZoomPane));
+        assert_eq!(
+            b.lookup(&Key::char('z')),
+            Some(&Action::RunCommands(vec![ParsedCommand::ZoomPane]))
+        );
         assert_eq!(b.lookup(&Key::char('r')), Some(&Action::ReloadConfig));
         assert_eq!(
             b.lookup_root(&Key {
@@ -1027,7 +1036,10 @@ mod tests {
                 ctrl: false,
                 alt: true
             }),
-            Some(&Action::SelectPaneRight)
+            Some(&Action::RunCommands(vec![ParsedCommand::SelectPane {
+                dir: Some(crate::layout::Direction::Right),
+                target: None,
+            }]))
         );
     }
 }
