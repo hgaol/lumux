@@ -175,8 +175,11 @@ in your config (see below). The commands lumux implements:
 | `swap-window [-s A] -t B` | swap two windows by index |
 | `move-window -t N` | move the active window to index N |
 | `select-layout [NAME]` | apply a preset (`even-horizontal`, `even-vertical`, `main-vertical`, `main-horizontal`, `tiled`); bare cycles |
-| `previous-layout` | cycle to the previous preset layout (reverse of `select-layout`'s bare cycle) |
+| `next-layout` / `previous-layout` | cycle to the next / previous preset layout |
+| `select-pane -L\|-R\|-U\|-D` / `select-pane -t .N` | move focus to a neighbor, or to pane N |
 | `resize-pane -L\|-R\|-U\|-D [N]` | resize the active pane by N cells (bare = the interactive nudge amount) |
+| `resize-pane -Z` | toggle zoom on the active pane |
+| `copy-mode` / `clock-mode` | enter copy-mode / show the clock overlay |
 | `rename-window <name>` / `rename-session <name>` | |
 | `find-window <query>` | switch to the first window whose name matches |
 | `synchronize-panes [on\|off]` | type into every pane at once |
@@ -194,6 +197,7 @@ in your config (see below). The commands lumux implements:
 | `kill-session [-t NAME]` | kill a session (the current one if omitted) |
 | `kill-server` | kill every session and detach every client |
 | `switch-client -t NAME` | switch the current client to another session by name |
+| `set [-g] OPTION VALUE` | change a config option at runtime (`set mouse on`, `set base-index 1`, `set status-bg red`, …) |
 | `save-state` | write the session snapshot to disk now |
 | `detach-client` | detach |
 

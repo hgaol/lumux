@@ -142,8 +142,11 @@ lumux source-file <path>                          # 实时重载配置
 | `swap-window [-s A] -t B` | 按序号交换两个窗口 |
 | `move-window -t N` | 把当前窗口移到序号 N |
 | `select-layout [NAME]` | 应用预设布局（`even-horizontal`、`even-vertical`、`main-vertical`、`main-horizontal`、`tiled`）；不带名字则循环 |
-| `previous-layout` | 循环到上一个预设布局（`select-layout` 裸循环的反方向） |
+| `next-layout` / `previous-layout` | 循环到下一个 / 上一个预设布局 |
+| `select-pane -L\|-R\|-U\|-D` / `select-pane -t .N` | 把焦点移到相邻窗格，或移到窗格 N |
 | `resize-pane -L\|-R\|-U\|-D [N]` | 把当前窗格按 N 个字符调整大小（不带 N 则用交互式的微调步长） |
+| `resize-pane -Z` | 切换当前窗格的缩放 |
+| `copy-mode` / `clock-mode` | 进入复制模式 / 显示时钟覆盖层 |
 | `rename-window <name>` / `rename-session <name>` | |
 | `find-window <query>` | 切换到第一个名字匹配的窗口 |
 | `synchronize-panes [on\|off]` | 同时向所有窗格输入 |
@@ -161,6 +164,7 @@ lumux source-file <path>                          # 实时重载配置
 | `kill-session [-t NAME]` | 关闭一个会话（不指定则关闭当前会话） |
 | `kill-server` | 关闭所有会话并断开所有客户端 |
 | `switch-client -t NAME` | 按名字把当前客户端切换到另一个会话 |
+| `set [-g] OPTION VALUE` | 运行时修改配置项（`set mouse on`、`set base-index 1`、`set status-bg red` 等） |
 | `save-state` | 立即把会话快照写入磁盘 |
 | `detach-client` | 分离 |
 
