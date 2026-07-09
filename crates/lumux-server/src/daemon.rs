@@ -255,11 +255,33 @@ impl<S: PtySystem> Daemon<S> {
     /// apply to subsequently spawned panes.
     pub fn set_config(&mut self, config: Config) {
         if let Ok(bindings) = config.to_bindings() {
+            // Rebuild every client's keymap from the new bindings, then re-apply
+            // the copy-mode key style — otherwise a reload (or a runtime `:set
+            // mode-keys emacs`) would silently reset every attached client back
+            // to the default vi keys, since Keymap::new starts from vi.
+            let emacs = config.mode_keys.eq_ignore_ascii_case("emacs");
             for km in self.keymaps.values_mut() {
                 *km = Keymap::new(bindings.clone());
+                if emacs {
+                    km.set_mode_keys(lumux_core::keymap::ModeKeys::Emacs);
+                }
             }
         }
         self.config = config;
+    }
+
+    /// Apply a single `set-option` name/value at runtime (tmux `:set`), reusing
+    /// the same [`Config::set_option`] mapping the config-file loader uses, then
+    /// re-applying the new config live (rebuilds keymaps for a changed prefix /
+    /// mode-keys; later renders pick up colors, formats, and base-index). Returns
+    /// `Err(message)` for an unknown option so the caller can flash it. The
+    /// caller is responsible for any client-terminal side effect a specific
+    /// option needs (e.g. pushing mouse enable/disable when `mouse` flips).
+    pub fn set_option(&mut self, option: &str, value: &str) -> Result<(), String> {
+        let mut config = self.config.clone();
+        config.set_option(option, value)?;
+        self.set_config(config);
+        Ok(())
     }
 
     /// Scrollback lines from config.

@@ -330,87 +330,109 @@ fn apply_set(cfg: &mut Config, rest: &[String], warnings: &mut Vec<String>) {
         return;
     };
     let value = rest.get(i + 1).map(|s| s.as_str()).unwrap_or("");
-    match option.as_str() {
-        "prefix" => cfg.prefix = value.to_string(),
-        "mouse" => cfg.mouse = on_off(value),
-        // lumux extension: whether the client tracks terminal-size changes and
-        // tells the daemon. On by default; matters most over SSH. (Distinct from
-        // tmux's `aggressive-resize`, which is about multi-client sizing policy
-        // and stays ignored below.)
-        "auto-resize" => cfg.auto_resize = on_off(value),
-        "remain-on-exit" => cfg.remain_on_exit = on_off(value),
-        "persist" => cfg.persist = on_off(value),
-        "history-limit" => {
-            if let Ok(n) = value.parse() {
-                cfg.scrollback = n;
+    // The option -> Config mapping lives on Config so the runtime `:set` command
+    // shares it exactly (one source of truth; the file loader and the prompt
+    // can't drift apart).
+    if let Err(msg) = cfg.set_option(option, value) {
+        warnings.push(msg);
+    }
+}
+
+impl Config {
+    /// Apply one tmux `set-option` name/value pair to this config, returning
+    /// `Err(message)` for an unrecognized option (the caller decides whether to
+    /// warn or flash it). This is the single source of truth for the option ->
+    /// field mapping, shared by the config-file loader ([`apply_set`]) and the
+    /// runtime `:set` command, so the two can never drift apart.
+    ///
+    /// `value` is the already-unquoted argument text (may contain spaces for
+    /// format/style options). Malformed numeric values are ignored (the field
+    /// keeps its prior value) rather than erroring, matching the file loader.
+    pub fn set_option(&mut self, option: &str, value: &str) -> Result<(), String> {
+        let cfg = self;
+        match option {
+            "prefix" => cfg.prefix = value.to_string(),
+            "mouse" => cfg.mouse = on_off(value),
+            // lumux extension: whether the client tracks terminal-size changes and
+            // tells the daemon. On by default; matters most over SSH. (Distinct from
+            // tmux's `aggressive-resize`, which is about multi-client sizing policy
+            // and stays ignored below.)
+            "auto-resize" => cfg.auto_resize = on_off(value),
+            "remain-on-exit" => cfg.remain_on_exit = on_off(value),
+            "persist" => cfg.persist = on_off(value),
+            "history-limit" => {
+                if let Ok(n) = value.parse() {
+                    cfg.scrollback = n;
+                }
             }
-        }
-        "base-index" | "pane-base-index" => {
-            if let Ok(n) = value.parse() {
-                cfg.base_index = n;
+            "base-index" | "pane-base-index" => {
+                if let Ok(n) = value.parse() {
+                    cfg.base_index = n;
+                }
             }
-        }
-        // tmux expresses the startup shell two ways; both become lumux's default
-        // shell. default-command is a shell command line; default-shell is a path.
-        "default-shell" | "default-command" => {
-            set_default_shell(cfg, value);
-        }
-        "status-justify" => cfg.status_justify = value.to_string(),
-        "status-left" => cfg.status_left = value.to_string(),
-        "status-right" => cfg.status_right = value.to_string(),
-        "status-bg" => cfg.status_bg = value.to_string(),
-        "status-fg" => cfg.status_fg = value.to_string(),
-        "status-style" => apply_style_pairs(cfg, value),
-        // Active pane border color (tmux pane-active-border-style fg=green). We
-        // take the fg= part; lumux doesn't style inactive borders.
-        "pane-active-border-style" => {
-            if let Some(fg) = style_fg(value) {
-                cfg.pane_active_border_fg = fg;
+            // tmux expresses the startup shell two ways; both become lumux's default
+            // shell. default-command is a shell command line; default-shell is a path.
+            "default-shell" | "default-command" => {
+                set_default_shell(cfg, value);
             }
-        }
-        // Inactive pane border color (tmux pane-border-style fg=...). Empty leaves
-        // the terminal default.
-        "pane-border-style" => {
-            if let Some(fg) = style_fg(value) {
-                cfg.pane_border_fg = fg;
+            "status-justify" => cfg.status_justify = value.to_string(),
+            "status-left" => cfg.status_left = value.to_string(),
+            "status-right" => cfg.status_right = value.to_string(),
+            "status-bg" => cfg.status_bg = value.to_string(),
+            "status-fg" => cfg.status_fg = value.to_string(),
+            "status-style" => apply_style_pairs(cfg, value),
+            // Active pane border color (tmux pane-active-border-style fg=green). We
+            // take the fg= part; lumux doesn't style inactive borders.
+            "pane-active-border-style" => {
+                if let Some(fg) = style_fg(value) {
+                    cfg.pane_active_border_fg = fg;
+                }
             }
-        }
-        // Window-list entry formats. These carry `#[...]` style spans and tokens
-        // (#I index, #W name, #F flags) rendered by the status formatter.
-        "window-status-format" => cfg.window_status_format = value.to_string(),
-        "window-status-current-format" => cfg.window_status_current_format = value.to_string(),
-        "window-status-separator" => cfg.window_status_separator = value.to_string(),
-        // Message / command-prompt row styling (raw spec; fg/bg/attrs applied).
-        "message-style" => cfg.message_style = value.to_string(),
-        // display-panes overlay number colors (tmux prefix q).
-        "display-panes-colour" | "display-panes-color" => {
-            cfg.display_panes_colour = value.to_string();
-        }
-        "display-panes-active-colour" | "display-panes-active-color" => {
-            cfg.display_panes_active_colour = value.to_string();
-        }
-        // Copy-mode key style: vi (default) or emacs.
-        "mode-keys" => {
-            let v = value.trim().to_lowercase();
-            if v == "vi" || v == "emacs" {
-                cfg.mode_keys = v;
+            // Inactive pane border color (tmux pane-border-style fg=...). Empty leaves
+            // the terminal default.
+            "pane-border-style" => {
+                if let Some(fg) = style_fg(value) {
+                    cfg.pane_border_fg = fg;
+                }
             }
+            // Window-list entry formats. These carry `#[...]` style spans and tokens
+            // (#I index, #W name, #F flags) rendered by the status formatter.
+            "window-status-format" => cfg.window_status_format = value.to_string(),
+            "window-status-current-format" => cfg.window_status_current_format = value.to_string(),
+            "window-status-separator" => cfg.window_status_separator = value.to_string(),
+            // Message / command-prompt row styling (raw spec; fg/bg/attrs applied).
+            "message-style" => cfg.message_style = value.to_string(),
+            // display-panes overlay number colors (tmux prefix q).
+            "display-panes-colour" | "display-panes-color" => {
+                cfg.display_panes_colour = value.to_string();
+            }
+            "display-panes-active-colour" | "display-panes-active-color" => {
+                cfg.display_panes_active_colour = value.to_string();
+            }
+            // Copy-mode key style: vi (default) or emacs.
+            "mode-keys" => {
+                let v = value.trim().to_lowercase();
+                if v == "vi" || v == "emacs" {
+                    cfg.mode_keys = v;
+                }
+            }
+            "copy-command" => cfg.copy_command = value.trim().to_string(),
+            // Known-but-irrelevant to lumux: silently accept the common ones so a
+            // typical tmux.conf doesn't spew warnings for things that are simply the
+            // default behavior in lumux, or features it doesn't have (copy-mode
+            // selection styling, clock mode, activity monitoring, clipboard/terminal
+            // negotiation).
+            "status-keys" | "escape-time" | "status" | "status-interval"
+            | "renumber-windows" | "set-titles" | "status-left-length" | "status-right-length"
+            | "aggressive-resize" | "default-terminal" | "focus-events"
+            | "mode-style" | "message-command-style" | "window-status-activity-style"
+            | "window-status-bell-style" | "monitor-activity" | "monitor-bell"
+            | "clock-mode-colour" | "clock-mode-color" | "clock-mode-style"
+            | "set-clipboard" | "terminal-overrides" | "terminal-features"
+            | "status-position" | "display-time" | "visual-activity" | "visual-bell" => {}
+            other => return Err(format!("unsupported option: {other}")),
         }
-        "copy-command" => cfg.copy_command = value.trim().to_string(),
-        // Known-but-irrelevant to lumux: silently accept the common ones so a
-        // typical tmux.conf doesn't spew warnings for things that are simply the
-        // default behavior in lumux, or features it doesn't have (copy-mode
-        // selection styling, clock mode, activity monitoring, clipboard/terminal
-        // negotiation).
-        "status-keys" | "escape-time" | "status" | "status-interval"
-        | "renumber-windows" | "set-titles" | "status-left-length" | "status-right-length"
-        | "aggressive-resize" | "default-terminal" | "focus-events"
-        | "mode-style" | "message-command-style" | "window-status-activity-style"
-        | "window-status-bell-style" | "monitor-activity" | "monitor-bell"
-        | "clock-mode-colour" | "clock-mode-color" | "clock-mode-style"
-        | "set-clipboard" | "terminal-overrides" | "terminal-features"
-        | "status-position" | "display-time" | "visual-activity" | "visual-bell" => {}
-        other => warnings.push(format!("unsupported option: {other}")),
+        Ok(())
     }
 }
 
@@ -654,6 +676,28 @@ mod tests {
         assert!(c.mouse);
         assert_eq!(c.scrollback, 5000);
         assert_eq!(c.base_index, 1);
+    }
+
+    #[test]
+    fn set_option_is_the_shared_mapping() {
+        // The runtime `:set` path calls Config::set_option directly, so it must
+        // mutate exactly the fields the file loader does. Known options apply;
+        // an unknown one returns Err (which the file loader turns into a warning
+        // and the prompt flashes).
+        let mut c = Config::default();
+        assert!(c.set_option("mouse", "on").is_ok());
+        assert!(c.mouse);
+        assert!(c.set_option("mouse", "off").is_ok());
+        assert!(!c.mouse);
+        assert!(c.set_option("base-index", "1").is_ok());
+        assert_eq!(c.base_index, 1);
+        assert!(c.set_option("status-bg", "red").is_ok());
+        assert_eq!(c.status_bg, "red");
+        // A value with spaces (format string) is kept whole.
+        assert!(c.set_option("status-left", "hi there").is_ok());
+        assert_eq!(c.status_left, "hi there");
+        // Unknown option is a recoverable error, not a silent no-op.
+        assert!(c.set_option("bogus-option", "x").is_err());
     }
 
     #[test]

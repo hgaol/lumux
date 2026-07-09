@@ -2038,6 +2038,106 @@ fn dragging_the_divider_over_a_mouse_aware_pane_still_resizes() {
 }
 
 #[test]
+fn set_base_index_relabels_windows_live() {
+    // `:set base-index 1` must take effect immediately — the sole window, shown
+    // as "0:sh", re-labels to "1:sh" on the next repaint without a reload.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("setbase".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        has_window(&before, 0) && !has_window(&before, 1),
+        "precondition: window numbered from 0; got:\n{before}"
+    );
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"set -g base-index 1\r".to_vec()));
+    // The "set base-index 1" flash overlay replaces the status row for a frame;
+    // dismiss it (prefix+Escape clears the message without reaching the shell)
+    // so the window list is visible again, then force a repaint.
+    c.send(&ClientMsg::Input(vec![0x02, 0x1b]));
+    c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
+    let (_d1, all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = all.rsplit("\u{1b}[2J").next().unwrap_or(&all);
+    assert!(
+        has_window(after, 1) && !has_window(after, 0),
+        "set base-index 1 should renumber the window to 1 live; got:\n{after}"
+    );
+}
+
+#[test]
+fn set_mouse_on_starts_intercepting_mouse_reports() {
+    // Mouse is off by default, so an SGR report typed at the prompt-less shell
+    // leaks through as literal text. After `:set mouse on`, the daemon must
+    // intercept the same report (it selects a pane / arms a drag) instead of
+    // passing it to the shell — so the raw `[<` bytes no longer reach `cat -v`.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("setmouse".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(b"cat -v\n".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Baseline: with mouse OFF, a left-press SGR report is passed to the shell,
+    // which echoes it (cat -v shows ESC as ^[).
+    c.send(&ClientMsg::Input(b"\x1b[<0;5;5M".to_vec()));
+    let (_d0, leaked) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        leaked.contains("[<0;5;5M"),
+        "precondition: with mouse off the report reaches the shell; got:\n{leaked}"
+    );
+    // Turn mouse on at runtime.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"set -g mouse on\r".to_vec()));
+    let (_de, enable_frames) = c.collect_until(Duration::from_secs(1), |_| false);
+    // The client's terminal must be told to START sending SGR mouse reports
+    // (DECSET 1002/1006) — the config flag alone only gates the daemon's own
+    // interception; without this push a real terminal never emits the events.
+    assert!(
+        enable_frames.contains("1002h") && enable_frames.contains("1006h"),
+        "set mouse on must push the mouse-enable sequence to the client; got:\n{enable_frames}"
+    );
+    // Now a report at DIFFERENT coords is intercepted — it must NOT echo through
+    // to cat -v. (Distinct coords so the baseline echo above, still on-screen,
+    // can't satisfy the assertion by itself.)
+    c.send(&ClientMsg::Input(b"\x1b[<0;9;9M".to_vec()));
+    let (_d1, intercepted) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !intercepted.contains("[<0;9;9M"),
+        "after :set mouse on the report must be intercepted, not echoed; got:\n{intercepted}"
+    );
+}
+
+#[test]
+fn set_unknown_option_flashes_an_error() {
+    // An unrecognized option name flashes the same "unsupported option" message
+    // the config loader would warn about, rather than silently doing nothing.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("setbad".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"set -g no-such-option 1\r".to_vec()));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("unsupported option"),
+        "an unknown :set option should flash an error; got:\n{vt}"
+    );
+}
+
+#[test]
 fn clock_mode_shows_big_digits_and_any_key_closes_it() {
     // prefix t opens a full-screen overlay with the time in a large block font;
     // any key closes it back to the live pane view.
@@ -2524,6 +2624,50 @@ fn emacs_mode_keys_scroll_copy_mode() {
     assert!(
         vt.contains("EMACS_HIST_MM"),
         "emacs C-p should scroll the marker back into view; got:\n{vt}"
+    );
+}
+
+#[test]
+fn set_mode_keys_emacs_applies_to_an_existing_client() {
+    // Regression: set_config rebuilds keymaps from the new bindings but used to
+    // drop the copy-mode key style, so `:set mode-keys emacs` (or a reload) left
+    // an already-attached client on the default vi keys. Start with default
+    // (vi), switch to emacs at runtime, then drive copy-mode with the emacs C-p
+    // motion — it must scroll history, proving the style re-applied live.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("setmodekeys".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Switch to emacs mode-keys at runtime.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"set -g mode-keys emacs\r".to_vec()));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Push a marker off-screen.
+    c.send(&ClientMsg::Input(
+        b"echo EMACS_LIVE_MM; for i in $(seq 1 40); do echo .; done\n".to_vec(),
+    ));
+    c.collect_until(Duration::from_secs(2), |_| false);
+    let (_d0, live) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !live.contains("EMACS_LIVE_MM"),
+        "precondition: marker scrolled off; got:\n{live}"
+    );
+    // Enter copy-mode (Ctrl-b [), then emacs C-p (0x10) to scroll up. On vi keys
+    // C-p is not a scroll motion, so the marker would stay off-screen.
+    c.send(&ClientMsg::Input(vec![0x02, b'[']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    for _ in 0..45 {
+        c.send(&ClientMsg::Input(vec![0x10])); // C-p
+    }
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        vt.contains("EMACS_LIVE_MM"),
+        "emacs C-p must scroll after a live :set mode-keys emacs; got:\n{vt}"
     );
 }
 

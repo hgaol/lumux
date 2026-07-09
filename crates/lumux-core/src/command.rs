@@ -125,6 +125,11 @@ pub enum ParsedCommand {
         dir: crate::layout::Direction,
         cells: Option<u16>,
     },
+    /// `set[-option]`/`setw`/`set-window-option [flags] OPTION VALUE`: change a
+    /// config option at runtime. The option name and (possibly space-containing,
+    /// unquoted) value are resolved by the daemon through `Config::set_option`,
+    /// which shares the exact mapping the config-file loader uses.
+    SetOption { option: String, value: String },
     Detach,
     /// Recognized verb but the arguments didn't parse (flash a usage hint).
     BadArgs(&'static str),
@@ -172,6 +177,21 @@ pub fn parse_command(line: &str) -> Option<ParsedCommand> {
     }
     if line == "send-keys" || line == "send" {
         return Some(ParsedCommand::BadArgs("usage: send-keys [-l] KEYS"));
+    }
+    // set-option takes OPTION then a value that may itself contain spaces (format
+    // strings, styles like `fg=red,bold`, a prefix like `C-a`). Parse the verb +
+    // leading scope flags off the front, but keep the value as the verbatim
+    // remainder (unquoted) instead of re-joining whitespace-split tokens.
+    for prefix in [
+        "set-option ", "set ", "setw ", "set-window-option ",
+        "set-option\t", "set\t", "setw\t", "set-window-option\t",
+    ] {
+        if let Some(rest) = line.strip_prefix(prefix) {
+            return Some(parse_set_option(rest));
+        }
+    }
+    if matches!(line, "set" | "set-option" | "setw" | "set-window-option") {
+        return Some(ParsedCommand::BadArgs("usage: set OPTION VALUE"));
     }
     let mut parts = line.split_whitespace();
     let verb = parts.next()?;
@@ -498,6 +518,37 @@ fn encode_send_keys(body: &str, literal: bool) -> Vec<u8> {
         }
     }
     out
+}
+
+/// Parse the argument tail of a `set`/`setw` command (everything after the verb)
+/// into a [`ParsedCommand::SetOption`]. Leading tmux scope flags (`-g`, `-s`,
+/// `-w`, combined like `-ga`, `-u`, `-q`) are skipped — lumux has one global
+/// config, so scope is irrelevant. What remains is the option name and the value
+/// (the verbatim rest of the line, unquoted); a boolean option may omit the
+/// value, defaulting to `on` like tmux's flag-style `set -g mouse`.
+fn parse_set_option(tail: &str) -> ParsedCommand {
+    let mut rest = tail.trim_start();
+    // Skip leading flag tokens. A tmux option name never starts with '-', so any
+    // leading '-'-word is a flag we can drop.
+    while rest.starts_with('-') {
+        match rest.split_once(char::is_whitespace) {
+            Some((_flag, after)) => rest = after.trim_start(),
+            None => rest = "", // a trailing lone flag, nothing after it
+        }
+    }
+    // The option is the first word; the value is the (trimmed, unquoted) rest.
+    match rest.split_once(char::is_whitespace) {
+        Some((option, value)) => ParsedCommand::SetOption {
+            option: option.to_string(),
+            value: unquote(value.trim()),
+        },
+        None if !rest.is_empty() => ParsedCommand::SetOption {
+            // No value given: tmux treats `set -g mouse` as turning the flag on.
+            option: rest.to_string(),
+            value: "on".to_string(),
+        },
+        None => ParsedCommand::BadArgs("usage: set OPTION VALUE"),
+    }
 }
 
 #[cfg(test)]
@@ -870,5 +921,91 @@ mod tests {
     fn previous_layout_parses() {
         assert_eq!(parse_command("previous-layout"), Some(ParsedCommand::PreviousLayout));
         assert_eq!(parse_command("prevl"), Some(ParsedCommand::PreviousLayout));
+    }
+
+    #[test]
+    fn set_option_parses_flags_option_and_value() {
+        // Scope flags (-g / -w / combined) are skipped; option + value survive.
+        assert_eq!(
+            parse_command("set -g mouse on"),
+            Some(ParsedCommand::SetOption { option: "mouse".into(), value: "on".into() })
+        );
+        assert_eq!(
+            parse_command("setw -g mode-keys emacs"),
+            Some(ParsedCommand::SetOption { option: "mode-keys".into(), value: "emacs".into() })
+        );
+        // set-option and set-window-option are aliases.
+        assert_eq!(
+            parse_command("set-option base-index 1"),
+            Some(ParsedCommand::SetOption { option: "base-index".into(), value: "1".into() })
+        );
+        assert_eq!(
+            parse_command("set-window-option -g mouse off"),
+            Some(ParsedCommand::SetOption { option: "mouse".into(), value: "off".into() })
+        );
+    }
+
+    #[test]
+    fn set_option_keeps_a_spaced_and_quoted_value_whole() {
+        // A format/style value with spaces must not be truncated at the first
+        // space, and a surrounding pair of quotes is stripped.
+        assert_eq!(
+            parse_command("set -g status-left \"[#S] load\""),
+            Some(ParsedCommand::SetOption {
+                option: "status-left".into(),
+                value: "[#S] load".into(),
+            })
+        );
+        assert_eq!(
+            parse_command("set status-style fg=red,bold"),
+            Some(ParsedCommand::SetOption {
+                option: "status-style".into(),
+                value: "fg=red,bold".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn set_option_flag_only_boolean_defaults_on() {
+        // tmux's `set -g mouse` (no value) turns the flag on.
+        assert_eq!(
+            parse_command("set -g mouse"),
+            Some(ParsedCommand::SetOption { option: "mouse".into(), value: "on".into() })
+        );
+    }
+
+    #[test]
+    fn set_option_missing_everything_is_bad_args() {
+        assert!(matches!(parse_command("set"), Some(ParsedCommand::BadArgs(_))));
+        assert!(matches!(parse_command("set -g"), Some(ParsedCommand::BadArgs(_))));
+    }
+
+    #[test]
+    fn set_option_chains_after_a_semicolon() {
+        // A spaced set value must not eat a following chained command. The `;`
+        // splitter runs before parse_command, so this is really asserting the
+        // two interact correctly.
+        let cmds = parse_commands("set -g mouse on ; next-window");
+        assert_eq!(
+            cmds,
+            vec![
+                ParsedCommand::SetOption { option: "mouse".into(), value: "on".into() },
+                ParsedCommand::NextWindow,
+            ]
+        );
+    }
+
+    #[test]
+    fn set_option_quoted_value_keeps_its_semicolon() {
+        // A `;` inside a quoted value is NOT a command separator: the splitter
+        // honors quotes, so the whole value survives as one SetOption.
+        let cmds = parse_commands("set -g status-left \"a;b\"");
+        assert_eq!(
+            cmds,
+            vec![ParsedCommand::SetOption {
+                option: "status-left".into(),
+                value: "a;b".into(),
+            }]
+        );
     }
 }

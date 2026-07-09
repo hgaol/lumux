@@ -1107,6 +1107,57 @@ where
         self.resize_pane(session, axis, step);
     }
 
+    /// Apply a runtime `:set OPTION VALUE`. Most options just mutate the config
+    /// and re-apply live (keymaps rebuild for prefix/mode-keys; the next render
+    /// picks up colors/formats/base-index). Two options need extra work: mouse
+    /// reporting must be turned on/off in every client's terminal here (the
+    /// config flag only gates lumux's own interception), and `synchronize-panes`
+    /// is per-session runtime state rather than a config field, so it routes to
+    /// the existing toggle instead of Config::set_option.
+    fn do_set_option(&mut self, client_id: u64, option: &str, value: &str) {
+        // synchronize-panes is a tmux *window* option, but lumux models it as
+        // per-session runtime state (not part of Config). Handle it before
+        // touching the config so `:set synchronize-panes on/off` works like the
+        // command and the `S` binding.
+        if option == "synchronize-panes" || option == "synchronize-pane" {
+            let session = self.clients.get(&client_id).map(|h| h.session);
+            if let Some(session) = session {
+                let on_now = self.daemon.is_synchronized(session);
+                let want = !matches!(value, "off" | "0" | "false" | "no");
+                if want != on_now {
+                    self.daemon.toggle_sync(client_id, session);
+                }
+                self.daemon
+                    .flash_message(client_id, format!("synchronize-panes {}", if want { "on" } else { "off" }));
+            }
+            return;
+        }
+        let was_mouse = self.daemon.mouse_enabled();
+        match self.daemon.set_option(option, value) {
+            Ok(()) => {
+                // If mouse reporting just flipped, tell every client's terminal to
+                // start/stop sending SGR mouse reports — the config flag alone
+                // only decides whether the daemon *intercepts* them.
+                let now_mouse = self.daemon.mouse_enabled();
+                if now_mouse != was_mouse {
+                    let seq = if now_mouse {
+                        lumux_core::mouse::ENABLE
+                    } else {
+                        lumux_core::mouse::DISABLE
+                    };
+                    let ids: Vec<u64> = self.clients.keys().copied().collect();
+                    for id in ids {
+                        if let Some(h) = self.clients.get(&id) {
+                            let _ = h.out.send(ServerMsg::Frame(seq.as_bytes().to_vec()));
+                        }
+                    }
+                }
+                self.daemon.flash_message(client_id, format!("set {option} {value}"));
+            }
+            Err(msg) => self.daemon.flash_message(client_id, msg),
+        }
+    }
+
     /// Toggle zoom on the active pane (tmux prefix z) and re-fit PTYs, since the
     /// zoomed pane now fills the whole content area (or returns to its split).
     fn zoom_pane(&mut self, session: SessionId) {
@@ -1487,6 +1538,9 @@ where
                 None => self.daemon.flash_message(client_id, format!("no such session: {target}")),
             },
             ParsedCommand::ResizePane { dir, cells } => self.do_resize_pane_amount(session, dir, cells),
+            ParsedCommand::SetOption { option, value } => {
+                self.do_set_option(client_id, &option, &value)
+            }
             ParsedCommand::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
                     let _ = h.out.send(ServerMsg::Detached);
