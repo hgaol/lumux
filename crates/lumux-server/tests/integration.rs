@@ -564,6 +564,84 @@ fn split_creates_second_pane_with_border() {
 }
 
 #[test]
+fn closing_a_pane_grows_the_surviving_sibling_top_bottom() {
+    // Regression: after a top/bottom split (prefix "), exiting the new
+    // (bottom) pane must let the remaining (top) pane's PTY/grid grow back to
+    // the full content area. Otherwise the freed half stays dead — the shell
+    // never learns its terminal got bigger, so nothing redraws there. `stty
+    // size` reports the PTY's actual dimensions, so it directly checks the
+    // mechanism rather than just the rendering.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("closetb".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b'"'])); // split top/bottom
+    c.collect_until(Duration::from_secs(2), |_| false);
+    c.send(&ClientMsg::Input(b"exit\n".to_vec())); // exit the new (bottom) pane
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Only the top pane remains (and is necessarily the active one now).
+    c.send(&ClientMsg::Input(b"stty size\n".to_vec()));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // stty prints "<rows> <cols>"; the damage-tracked renderer skips redrawing
+    // the unchanged space between them, so check positions instead of a
+    // literal "23 80" substring: "23" at column 1, "80" right after the gap.
+    assert_eq!(
+        column_of(&vt, "23"),
+        Some(1),
+        "expected the surviving pane's rows (23, the full content height) at \
+         column 1; got:\n{vt}"
+    );
+    assert_eq!(
+        column_of(&vt, "80"),
+        Some(4),
+        "expected the surviving pane's cols (80, the full width) right after \
+         '23 '; got:\n{vt}"
+    );
+}
+
+#[test]
+fn closing_a_pane_grows_the_surviving_sibling_left_right() {
+    // Same regression, left/right split (prefix %): killing one side must let
+    // the other grow back to the full content width instead of staying half.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("closelr".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(vec![0x02, b'%'])); // split left/right
+    c.collect_until(Duration::from_secs(2), |_| false);
+    c.send(&ClientMsg::Input(b"exit\n".to_vec())); // exit the new (right) pane
+    c.collect_until(Duration::from_secs(2), |_| false);
+    // Only the left pane remains (and is necessarily the active one now).
+    c.send(&ClientMsg::Input(b"stty size\n".to_vec()));
+    let (_done, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // Same position-based check as the top/bottom test (see comment there).
+    assert_eq!(
+        column_of(&vt, "23"),
+        Some(1),
+        "expected the surviving pane's rows (23, the full content height) at \
+         column 1; got:\n{vt}"
+    );
+    assert_eq!(
+        column_of(&vt, "80"),
+        Some(4),
+        "expected the surviving pane's cols (80, the full width, back from \
+         the halved split) right after '23 '; got:\n{vt}"
+    );
+}
+
+#[test]
 fn exiting_only_shell_closes_session() {
     let path = start_daemon();
     let mut c = TestClient::connect(&path);

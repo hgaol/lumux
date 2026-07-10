@@ -2100,6 +2100,19 @@ where
             }
             CascadeResult::NotFound => {}
             _ => {
+                // A sibling pane just grew to fill the closed pane's space in
+                // the layout tree; push that into its PTY/grid too, or the
+                // freed space stays dead (the shell never learns its terminal
+                // got bigger, so nothing redraws there) — the same step
+                // split/break-pane/swap-pane already take after a layout change.
+                let size = self
+                    .daemon
+                    .server
+                    .effective_size(session)
+                    .unwrap_or(PtySize::new(80, 24));
+                self.daemon.resize_all_windows(session, size);
+                self.invalidate_session(session);
+
                 let ids = self.session_clients(session);
                 for id in ids {
                     if let Some(h) = self.clients.get(&id) {
