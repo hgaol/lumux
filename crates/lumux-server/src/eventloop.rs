@@ -627,6 +627,24 @@ where
         self.daemon.invalidate_client(client_id);
     }
 
+    /// Act on a sidebar row click: switch the client to the picked session, and
+    /// for an agent row also focus that session's specific window. Re-renders the
+    /// client afterward.
+    fn apply_sidebar_pick(&mut self, client_id: u64, pick: crate::daemon::ChooserPick) {
+        use crate::daemon::ChooserPick;
+        let sid = match pick {
+            ChooserPick::Session(s) => s,
+            ChooserPick::Window(s, wid) => {
+                if let Some(sess) = self.daemon.server.session_mut(s) {
+                    sess.focus_window(wid);
+                }
+                s
+            }
+        };
+        self.switch_client_session(client_id, sid);
+        self.render_client(client_id);
+    }
+
     /// The lowest numeric name ("0", "1", …) not already taken by a session,
     /// mirroring tmux's auto-naming for `new-session` with no `-s`.
     fn next_free_session_name(&self) -> String {
@@ -773,7 +791,7 @@ where
                 // possible divider drag. Scroll/drag/motion do NOT change focus, so
                 // hover-to-scroll over an unfocused pane keeps working.
                 if matches!(ev.kind, MouseKind::Down(_)) {
-                    self.mouse_select_pane(session, ev.col, ev.row);
+                    self.mouse_select_pane(client_id, session, ev.col, ev.row);
                     self.daemon.begin_drag(client_id, session, ev.col, ev.row);
                     // A left-press that didn't grab a divider arms a text
                     // selection; the first drag motion turns it into a copy-mode
@@ -865,9 +883,10 @@ where
         rest
     }
 
-    /// Click: focus the pane under the cursor, or switch windows when the click
-    /// lands on a window entry in the status bar's bottom row.
-    fn mouse_select_pane(&mut self, session: SessionId, col: u16, row: u16) {
+    /// Click: focus the pane under the cursor, switch windows when the click
+    /// lands on a window entry in the status bar's bottom row, or act on a
+    /// sidebar row (switch session / jump to an agent's window).
+    fn mouse_select_pane(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) {
         let size = self
             .daemon
             .server
@@ -889,10 +908,15 @@ where
         let Some(viewport) = self.daemon.content_viewport(session) else {
             return;
         };
-        // A click in the sidebar columns (left of the content origin) is a
-        // sidebar interaction, not a pane hit-test. Layer 5 handles it; for now
-        // (sidebar off, origin 0) this never triggers.
+        // A click in the sidebar columns (left of the content origin) selects the
+        // session/agent row it lands on rather than a pane.
         if col < viewport.x {
+            if let Some(pick) =
+                self.daemon
+                    .sidebar_pick_at(session, row as usize, size.rows as usize)
+            {
+                self.apply_sidebar_pick(client_id, pick);
+            }
             return;
         }
         if let Some(s) = self.daemon.server.session_mut(session) {
@@ -1142,6 +1166,22 @@ where
                 }
                 self.daemon
                     .flash_message(client_id, format!("synchronize-panes {}", if want { "on" } else { "off" }));
+            }
+            return;
+        }
+        // The sidebar's *visibility* is per-session runtime state (session-global
+        // under the shared PTY), so route `:set sidebar on|off` to the toggle and
+        // reflow the content grid. `sidebar-width` is a config field and falls
+        // through to the shared set_option path below (its effect applies on the
+        // next visibility change / resize).
+        if option == "sidebar" {
+            if let Some(session) = self.clients.get(&client_id).map(|h| h.session) {
+                let want = !matches!(value, "off" | "0" | "false" | "no");
+                self.set_session_sidebar(session, want);
+                self.daemon.flash_message(
+                    client_id,
+                    format!("sidebar {}", if want { "on" } else { "off" }),
+                );
             }
             return;
         }
@@ -2167,6 +2207,25 @@ where
     fn render_all_clients(&mut self) {
         let ids: Vec<u64> = self.clients.keys().copied().collect();
         for id in ids {
+            self.daemon.invalidate_client(id);
+            self.render_client(id);
+        }
+    }
+
+    /// Show/hide the sidebar for `session` and reflow. Because the sidebar steals
+    /// columns from the shared content grid, toggling it resizes every pane of
+    /// the session (session-global by design) and forces a full repaint.
+    fn set_session_sidebar(&mut self, session: SessionId, on: bool) {
+        if self.daemon.sidebar_visible(session) == on {
+            return;
+        }
+        self.daemon.set_sidebar_visible(session, on);
+        if let Some(size) = self.daemon.server.effective_size(session) {
+            // resize_session reads the new sidebar width via content_viewport, so
+            // the PTYs reflow to cols - sidebar_width.
+            self.daemon.resize_session(session, size);
+        }
+        for id in self.session_clients(session) {
             self.daemon.invalidate_client(id);
             self.render_client(id);
         }

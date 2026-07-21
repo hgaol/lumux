@@ -417,6 +417,13 @@ impl Config {
                 }
             }
             "copy-command" => cfg.copy_command = value.trim().to_string(),
+            // lumux extension: the sessions/agents sidebar (herdr-style).
+            "sidebar" => cfg.sidebar = on_off(value),
+            "sidebar-width" => {
+                if let Ok(n) = value.parse() {
+                    cfg.sidebar_width = n;
+                }
+            }
             // Known-but-irrelevant to lumux: silently accept the common ones so a
             // typical tmux.conf doesn't spew warnings for things that are simply the
             // default behavior in lumux, or features it doesn't have (copy-mode
@@ -698,6 +705,18 @@ mod tests {
         assert_eq!(c.status_left, "hi there");
         // Unknown option is a recoverable error, not a silent no-op.
         assert!(c.set_option("bogus-option", "x").is_err());
+    }
+
+    #[test]
+    fn set_option_handles_sidebar() {
+        let mut c = Config::default();
+        assert!(!c.sidebar, "sidebar off by default");
+        assert!(c.set_option("sidebar", "on").is_ok());
+        assert!(c.sidebar);
+        assert!(c.set_option("sidebar", "off").is_ok());
+        assert!(!c.sidebar);
+        assert!(c.set_option("sidebar-width", "30").is_ok());
+        assert_eq!(c.sidebar_width, 30);
     }
 
     #[test]

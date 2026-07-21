@@ -145,6 +145,10 @@ pub struct Daemon<S: PtySystem> {
     /// cleared when the pane's process exits (see `close_pane`). Surfaced by the
     /// sidebar and the session chooser.
     agent_status: BTreeMap<PaneId, lumux_core::agent::AgentStatus>,
+    /// Per-session sidebar visibility override (tmux-style `:set sidebar on`).
+    /// Absent = fall back to the config default. Session-global by design: under
+    /// the shared PTY, one client's toggle reflows every client of the session.
+    sidebar_on: BTreeMap<SessionId, bool>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -224,6 +228,32 @@ pub enum ChooserPick {
     Window(SessionId, WindowId),
 }
 
+/// One rendered row of the sessions/agents sidebar, and (for interactive rows)
+/// the target a click switches to. Built by `sidebar_rows` and consumed by both
+/// the renderer and the click hit-test so they never drift.
+#[derive(Clone, PartialEq, Eq)]
+pub enum SidebarRow {
+    /// A non-clickable section header ("SESSIONS" / "AGENTS").
+    Header(&'static str),
+    /// A blank spacer row.
+    Blank,
+    /// A session entry; clicking switches to it.
+    Session {
+        sid: SessionId,
+        name: String,
+        windows: usize,
+        current: bool,
+    },
+    /// A pane running an agent; clicking switches to its session + window.
+    Agent {
+        sid: SessionId,
+        wid: WindowId,
+        agent: String,
+        state: lumux_core::agent::AgentState,
+        session_name: String,
+    },
+}
+
 impl<S: PtySystem> Daemon<S> {
     pub fn new(pty_system: S) -> Self {
         Self::with_clipboard(pty_system, Box::new(NullClipboard))
@@ -251,6 +281,7 @@ impl<S: PtySystem> Daemon<S> {
             clock: std::collections::BTreeSet::new(),
             marked_pane: None,
             agent_status: BTreeMap::new(),
+            sidebar_on: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -1723,11 +1754,36 @@ impl<S: PtySystem> Daemon<S> {
     }
 
     /// Columns reserved on the left for the sessions/agents sidebar for this
-    /// session, or 0 when it's off. Layer 4 wires the single-authority plumbing
-    /// with the sidebar always off; Layer 5 makes this return the configured
-    /// width for sessions that have it enabled.
-    pub fn sidebar_width(&self, _session: SessionId) -> u16 {
-        0
+    /// session, or 0 when it's off. Clamped so it can never swallow more than
+    /// half the screen (a content area must remain).
+    pub fn sidebar_width(&self, session: SessionId) -> u16 {
+        if !self.sidebar_visible(session) {
+            return 0;
+        }
+        let cols = self
+            .server
+            .effective_size(session)
+            .map(|s| s.cols)
+            .unwrap_or(0);
+        let max = cols / 2;
+        self.config.sidebar_width.min(max)
+    }
+
+    /// Whether the sidebar is shown for `session`: the per-session override if
+    /// set, else the config default. Session-global (all clients of the session
+    /// share it), which is the only coherent scope under the shared PTY.
+    pub fn sidebar_visible(&self, session: SessionId) -> bool {
+        self.sidebar_on
+            .get(&session)
+            .copied()
+            .unwrap_or(self.config.sidebar)
+    }
+
+    /// Toggle (or set) the sidebar for `session`. Returns the new visibility.
+    /// The caller must resize the session afterward so the PTYs reflow to the
+    /// new content width, and invalidate renderers for a clean repaint.
+    pub fn set_sidebar_visible(&mut self, session: SessionId, on: bool) {
+        self.sidebar_on.insert(session, on);
     }
 
     /// Mouse-press: if (col,row) is on a split divider, remember it as the
@@ -1991,6 +2047,10 @@ impl<S: PtySystem> Daemon<S> {
         if self.showing_panes.contains(&client_id) {
             self.overlay_pane_numbers(&mut screen, session, &layout, size);
         }
+        // Paint the sessions/agents sidebar into the reserved left columns.
+        if sidebar_w > 0 {
+            self.render_sidebar(&mut screen, session, sidebar_w as u16, size.rows as usize);
+        }
         self.paint_status(&mut screen, client_id, session);
         let renderer = self.renderers.get_mut(&client_id)?;
         Some(renderer.render(screen))
@@ -2050,6 +2110,161 @@ impl<S: PtySystem> Daemon<S> {
             let cx = rect.x as usize + (rect.cols as usize / 2).saturating_sub(label.len() / 2);
             let cy = rect.y as usize + rect.rows as usize / 2;
             screen.write_str(cx, cy, &label, &attrs);
+        }
+    }
+
+    /// A row in the sidebar's flattened layout, with the action clicking it
+    /// performs. Built once and shared by `render_sidebar` and the click
+    /// hit-test so what you see and what you click stay in lockstep.
+    ///
+    /// Rows are laid out top-to-bottom across the content height (minus the
+    /// status row): a "SESSIONS" header, each session (+ its windows), a blank
+    /// gap, an "AGENTS" header, then one row per pane that has reported status.
+    fn sidebar_rows(&self, session: SessionId, height: usize) -> Vec<SidebarRow> {
+        let mut rows = Vec::new();
+        let content_h = height.saturating_sub(1); // status row
+        rows.push(SidebarRow::Header("SESSIONS"));
+        for sid in self.server.session_ids() {
+            let Some(s) = self.server.session(sid) else {
+                continue;
+            };
+            let current = sid == session;
+            rows.push(SidebarRow::Session {
+                sid,
+                name: s.name.clone(),
+                windows: s.window_count(),
+                current,
+            });
+        }
+        rows.push(SidebarRow::Blank);
+        rows.push(SidebarRow::Header("AGENTS"));
+        // Every pane across all sessions that has a reported agent status.
+        for sid in self.server.session_ids() {
+            let Some(s) = self.server.session(sid) else {
+                continue;
+            };
+            for wid in s.window_ids() {
+                let Some(w) = s.window(wid) else { continue };
+                for pid in w.pane_ids() {
+                    if let Some(status) = self.agent_status.get(&pid) {
+                        rows.push(SidebarRow::Agent {
+                            sid,
+                            wid,
+                            agent: status.agent.clone(),
+                            state: status.state,
+                            session_name: s.name.clone(),
+                        });
+                    }
+                }
+            }
+        }
+        rows.truncate(content_h.max(1));
+        rows
+    }
+
+    /// Paint the sessions/agents sidebar into the reserved columns `[0, width)`.
+    /// `total_rows` is the full screen height (the status row is left for
+    /// `paint_status`). A vertical border is drawn in the last sidebar column.
+    fn render_sidebar(
+        &self,
+        screen: &mut lumux_core::render::Screen,
+        session: SessionId,
+        width: u16,
+        total_rows: usize,
+    ) {
+        use lumux_core::render::CellAttributes;
+        let w = width as usize;
+        if w == 0 {
+            return;
+        }
+        let text_w = w.saturating_sub(1); // leave the last column for the border
+        let border_attrs = self.inactive_border_attrs().unwrap_or_default();
+        let content_h = total_rows.saturating_sub(1);
+
+        let rows = self.sidebar_rows(session, total_rows);
+        for (y, row) in rows.iter().enumerate() {
+            if y >= content_h {
+                break;
+            }
+            match row {
+                SidebarRow::Header(label) => {
+                    // A dim header bar spanning the text columns.
+                    screen.label_segment(0, y, text_w, label);
+                }
+                SidebarRow::Blank => {}
+                SidebarRow::Session {
+                    name,
+                    windows,
+                    current,
+                    ..
+                } => {
+                    let marker = if *current { '*' } else { ' ' };
+                    let line = format!("{marker}{name} ({windows}w)");
+                    let clipped: String = line.chars().take(text_w).collect();
+                    if *current {
+                        screen.status_line_width(y, &clipped, text_w);
+                    } else {
+                        screen.write_plain(0, y, &clipped);
+                    }
+                }
+                SidebarRow::Agent {
+                    agent,
+                    state,
+                    session_name,
+                    ..
+                } => {
+                    let glyph = Self::agent_glyph(*state);
+                    let line = format!("{glyph} {agent} @{session_name}");
+                    let clipped: String = line.chars().take(text_w).collect();
+                    screen.write_plain(0, y, &clipped);
+                }
+            }
+        }
+
+        // Right border down the whole content height.
+        if w >= 1 {
+            screen.vline(w - 1, 0, content_h, &border_attrs);
+        }
+        let _ = CellAttributes::default();
+    }
+
+    /// A single-char status glyph for the agents list. Distinct shapes so state
+    /// reads at a glance even without color: blocked stands out most.
+    fn agent_glyph(state: lumux_core::agent::AgentState) -> char {
+        use lumux_core::agent::AgentState;
+        match state {
+            AgentState::Blocked => '!',
+            AgentState::Working => '*',
+            AgentState::Done => '=',
+            AgentState::Idle => '.',
+            AgentState::Unknown => '?',
+        }
+    }
+
+    /// The most-urgent reported agent state among a window's panes, if any
+    /// reported. "Most urgent" so a blocked pane surfaces even if a sibling is
+    /// idle — that's the state you most need to see.
+    fn window_agent_state(
+        &self,
+        session: SessionId,
+        wid: WindowId,
+    ) -> Option<lumux_core::agent::AgentState> {
+        let w = self.server.session(session)?.window(wid)?;
+        w.pane_ids()
+            .into_iter()
+            .filter_map(|pid| self.agent_status.get(&pid).map(|s| s.state))
+            .max_by_key(|s| s.urgency())
+    }
+
+    /// Hit-test a click at sidebar row `y` (0-based screen row) for `session`,
+    /// returning what to switch to — a session, or a session+window for an agent
+    /// row. Header/blank/out-of-range rows return None. Uses the same
+    /// `sidebar_rows` layout the renderer draws, so clicks land on what's shown.
+    pub fn sidebar_pick_at(&self, session: SessionId, y: usize, height: usize) -> Option<ChooserPick> {
+        match self.sidebar_rows(session, height).get(y)? {
+            SidebarRow::Session { sid, .. } => Some(ChooserPick::Session(*sid)),
+            SidebarRow::Agent { sid, wid, .. } => Some(ChooserPick::Window(*sid, *wid)),
+            SidebarRow::Header(_) | SidebarRow::Blank => None,
         }
     }
 
@@ -2519,7 +2734,13 @@ impl<S: PtySystem> Daemon<S> {
                     let active = w.id == s.active_window();
                     let idx = window_index(s, *wid) + self.config.base_index;
                     let mark = if active { "*" } else { "" };
-                    let mut line = format!("    {idx}:{}{mark}", w.name);
+                    // Prefix the most-urgent agent glyph among the window's panes,
+                    // so the chooser shows the same status the sidebar does.
+                    let glyph = self
+                        .window_agent_state(*sid, *wid)
+                        .map(|st| format!("{} ", Self::agent_glyph(st)))
+                        .unwrap_or_default();
+                    let mut line = format!("    {glyph}{idx}:{}{mark}", w.name);
                     if line.chars().count() > list_w {
                         line = line.chars().take(list_w).collect();
                     }

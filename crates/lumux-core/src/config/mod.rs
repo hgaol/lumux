@@ -104,6 +104,11 @@ pub struct Config {
     /// `bind -r` (repeatable): the key re-fires without the prefix for a short
     /// window after it first fires (tmux `repeat-time`).
     pub repeat_bindings: std::collections::BTreeSet<String>,
+    /// Whether the sessions/agents sidebar is shown by default on new sessions.
+    /// Off by default; toggled live per session (`:set sidebar on|off`).
+    pub sidebar: bool,
+    /// Width of the sessions/agents sidebar in columns when shown.
+    pub sidebar_width: u16,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +156,8 @@ impl Default for Config {
             persist: false,
             copy_command: String::new(),
             repeat_bindings: std::collections::BTreeSet::new(),
+            sidebar: false,
+            sidebar_width: 26,
         }
     }
 }

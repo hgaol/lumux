@@ -3477,3 +3477,237 @@ fn prefix_d_detaches_but_keeps_session_alive() {
         "session must survive prefix-d detach"
     );
 }
+
+/// Like [`start_daemon`] but with the sessions/agents sidebar enabled by
+/// default, for tests that exercise sidebar rendering/clicks.
+fn start_daemon_sidebar() -> std::path::PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(9_000_000);
+    let pid = std::process::id();
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
+    let listener = UnixSocketListener::bind(&path).expect("bind");
+    let cfg = lumux_core::config::Config {
+        sidebar: true,
+        sidebar_width: 20,
+        mouse: true,
+        ..Default::default()
+    };
+    std::thread::spawn(move || {
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
+    });
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !path.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    path
+}
+
+/// Ask the pane to print its %id (from $LUMUX_PANE) and read it back from the
+/// rendered frames, so a test can target ReportAgentState at a real pane.
+fn learn_pane_id(c: &mut TestClient) -> String {
+    c.send(&ClientMsg::Input(b"printf 'PANEID<%s>\\n' \"$LUMUX_PANE\"\n".to_vec()));
+    let (_d, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    // Take the LAST occurrence: the first is the echoed command line (which
+    // contains the literal `%s` format), the last is the actual output.
+    let start = vt.rfind("PANEID<").expect("pane id marker") + "PANEID<".len();
+    let rest = &vt[start..];
+    let end = rest.find('>').expect("pane id close");
+    rest[..end].to_string()
+}
+
+#[test]
+fn sidebar_reserves_columns_and_reflows_on_toggle() {
+    // With the sidebar on, the pane content is pushed right by the sidebar width;
+    // toggling it off restores full width. Prove it by where a typed marker
+    // lands: on the right of column 0 when the sidebar is shown, at/near column 0
+    // when hidden.
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("sb".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // The sidebar header should be visible in the left columns.
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, shown) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        shown.contains("SESSIONS"),
+        "sidebar SESSIONS header should render; got:\n{shown}"
+    );
+    // A prompt marker echoes to the right of the sidebar (col >= sidebar_width).
+    c.send(&ClientMsg::Input(b"printf SIDEBARON\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, on_vt) = c.collect_until(Duration::from_secs(1), |_| false);
+    let on_col = column_of(&on_vt, "SIDEBARON").expect("marker with sidebar on");
+    assert!(
+        on_col >= 20,
+        "with a 20-col sidebar, pane text must start at col >= 20; got {on_col}"
+    );
+    // Turn the sidebar off; the header disappears and content reflows to col 0.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"set sidebar off\r".to_vec()));
+    c.send(&ClientMsg::Input(b"printf SIDEBAROFF\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, off_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let off_vt = off_all.rsplit("\u{1b}[2J").next().unwrap_or(&off_all);
+    assert!(
+        !off_vt.contains("SESSIONS"),
+        "sidebar must be gone after :set sidebar off; got:\n{off_vt}"
+    );
+    let off_col = column_of(off_vt, "SIDEBAROFF").expect("marker with sidebar off");
+    assert!(
+        off_col < on_col,
+        "content should reflow left when the sidebar hides ({off_col} < {on_col})"
+    );
+}
+
+#[test]
+fn agents_section_shows_reported_status_and_clears_on_exit() {
+    use lumux_core::agent::AgentState;
+    use lumux_core::proto::Command;
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("ag".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    let pane = learn_pane_id(&mut c);
+    assert!(pane.starts_with('%'), "expected a %id, got {pane:?}");
+
+    // Report a blocked agent for this pane.
+    c.send(&ClientMsg::Command(Command::ReportAgentState {
+        pane: pane.clone(),
+        agent: "claude".into(),
+        state: AgentState::Blocked,
+    }));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, vt_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let vt = vt_all.rsplit("\u{1b}[2J").next().unwrap_or(&vt_all);
+    assert!(
+        vt.contains("AGENTS") && vt.contains("claude"),
+        "agents section should list the reported agent; got:\n{vt}"
+    );
+
+    // Exit the shell: the pane dies and its status must disappear.
+    c.send(&ClientMsg::Input(b"exit\n".to_vec()));
+    let (_d2, gone_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let gone = gone_all.rsplit("\u{1b}[2J").next().unwrap_or(&gone_all);
+    assert!(
+        !gone.contains("claude"),
+        "a dead pane's agent status must clear from the sidebar; got:\n{gone}"
+    );
+}
+
+#[test]
+fn sidebar_click_switches_to_the_clicked_session() {
+    // Two sessions exist; clicking the other session's row in the sidebar
+    // switches this client to it. Prove it by a marker echoing in the target
+    // session after the click.
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("alpha".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Create a second session (detached) and mark it uniquely.
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"new-session -s beta -d\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, vt) = c.collect_until(Duration::from_secs(1), |_| false);
+    // Both sessions should appear in the sidebar's SESSIONS section.
+    assert!(
+        vt.contains("alpha") && vt.contains("beta"),
+        "both sessions should list in the sidebar; got:\n{vt}"
+    );
+    // Click the beta row. The SESSIONS header is screen row 0, alpha row 1, beta
+    // row 2 (sessions list in id order: alpha first, beta second). SGR press at
+    // 1-based col 3 (inside the sidebar), 1-based row 3 = 0-based screen row 2.
+    let click = "\x1b[<0;3;3M";
+    c.send(&ClientMsg::Input(click.as_bytes().to_vec()));
+    // Type a marker; it should land in beta now.
+    c.send(&ClientMsg::Input(b"printf ONBETA\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, after_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let after = after_all.rsplit("\u{1b}[2J").next().unwrap_or(&after_all);
+    // The beta session row is marked current (*beta).
+    assert!(
+        after.contains("*beta"),
+        "clicking the beta row should make beta the current session; got:\n{after}"
+    );
+}
+
+#[test]
+fn sidebar_toggle_is_session_global_across_clients() {
+    // Two clients share one session. Toggling the sidebar from one must reflow
+    // the other too (session-global under the shared PTY): the second client's
+    // frames gain the SESSIONS header even though it never toggled.
+    let path = start_daemon();
+    let mut a = TestClient::connect(&path);
+    a.send(&ClientMsg::NewSession {
+        name: Some("shared".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    a.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    let mut b = TestClient::connect(&path);
+    b.send(&ClientMsg::Attach {
+        session: Some("shared".into()),
+        size: size(),
+    });
+    b.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    // Precondition: neither client shows a sidebar (default off).
+    a.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_da, a0) = a.collect_until(Duration::from_secs(1), |_| false);
+    assert!(!a0.contains("SESSIONS"), "sidebar off by default; got:\n{a0}");
+    // Client A turns the sidebar on.
+    a.send(&ClientMsg::Input(vec![0x02, b':']));
+    a.send(&ClientMsg::Input(b"set sidebar on\r".to_vec()));
+    // Both clients get a fresh frame; force a repaint on B.
+    a.collect_until(Duration::from_secs(1), |_| false);
+    b.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_db, b_vt) = b.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        b_vt.contains("SESSIONS"),
+        "toggling the sidebar on client A must reflow client B (session-global); got:\n{b_vt}"
+    );
+}
+
+#[test]
+fn chooser_annotates_a_window_with_agent_status() {
+    use lumux_core::agent::AgentState;
+    use lumux_core::proto::Command;
+    // The prefix-`s` chooser shows the same agent status the sidebar does: a
+    // window whose pane reported `blocked` gets the blocked glyph on its row.
+    let path = start_daemon(); // sidebar off; the chooser is a separate surface
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("ch".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    let pane = learn_pane_id(&mut c);
+    c.send(&ClientMsg::Command(Command::ReportAgentState {
+        pane,
+        agent: "claude".into(),
+        state: AgentState::Blocked,
+    }));
+    c.collect_until(Duration::from_secs(1), |_| false);
+    // Open the chooser (prefix s) and expand the session to reveal its window.
+    c.send(&ClientMsg::Input(vec![0x02, b's']));
+    c.send(&ClientMsg::Input(b"\x1b[C".to_vec())); // Right = expand
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d, vt_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let vt = vt_all.rsplit("\u{1b}[2J").next().unwrap_or(&vt_all);
+    // The window row carries the blocked glyph '!' (see Daemon::agent_glyph).
+    assert!(
+        vt.contains('!'),
+        "chooser window row should show the blocked agent glyph; got:\n{vt}"
+    );
+}
