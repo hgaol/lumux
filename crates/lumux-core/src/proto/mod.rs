@@ -128,6 +128,16 @@ pub enum Command {
     RenameWindow { name: String },
     /// Rename the client's session.
     RenameSession { name: String },
+    /// Report a pane's agent state (tmux has no equivalent). Unlike every other
+    /// verb — which acts on the *client's* active session/window — this carries
+    /// an explicit `pane` target, because the reporting process (an agent hook)
+    /// runs detached from the interactive client and may not be the active pane.
+    /// `pane` is the `%N` id string an agent reads from `$LUMUX_PANE`.
+    ReportAgentState {
+        pane: String,
+        agent: String,
+        state: crate::agent::AgentState,
+    },
 }
 
 /// Daemon -> client.

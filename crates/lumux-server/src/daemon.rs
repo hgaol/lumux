@@ -140,6 +140,11 @@ pub struct Daemon<S: PtySystem> {
     /// any. join-pane / swap-pane with no explicit source default to it, so a
     /// pane can be marked in one window and pulled/swapped into another.
     marked_pane: Option<(SessionId, PaneId)>,
+    /// Latest self-reported agent status per pane (`lumux report-state`, wired
+    /// into each agent's hooks). Live and transient: never persisted, and
+    /// cleared when the pane's process exits (see `close_pane`). Surfaced by the
+    /// sidebar and the session chooser.
+    agent_status: BTreeMap<PaneId, lumux_core::agent::AgentStatus>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -245,6 +250,7 @@ impl<S: PtySystem> Daemon<S> {
             showing_panes: std::collections::BTreeSet::new(),
             clock: std::collections::BTreeSet::new(),
             marked_pane: None,
+            agent_status: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -1591,7 +1597,21 @@ impl<S: PtySystem> Daemon<S> {
             p.dead = true;
         }
         self.panes.remove(&pane);
+        // A pane's agent status is live: once the process is gone the last
+        // "working"/"blocked" report is stale, so clear it here rather than let
+        // it linger on the sidebar (the dominant staleness source).
+        self.agent_status.remove(&pane);
         self.server.kill_pane(session, pane)
+    }
+
+    /// Record a pane's self-reported agent status (`lumux report-state`).
+    pub fn set_agent_status(&mut self, pane: PaneId, status: lumux_core::agent::AgentStatus) {
+        self.agent_status.insert(pane, status);
+    }
+
+    /// The latest agent status reported for `pane`, if any.
+    pub fn agent_status(&self, pane: PaneId) -> Option<&lumux_core::agent::AgentStatus> {
+        self.agent_status.get(&pane)
     }
 
     /// Whether dead panes are kept on screen (tmux remain-on-exit).
@@ -2969,4 +2989,46 @@ fn now_parts() -> lumux_core::status::TimeParts {
 #[cfg(not(any(unix, windows)))]
 fn now_parts() -> lumux_core::status::TimeParts {
     lumux_core::status::TimeParts::default()
+}
+
+#[cfg(all(test, unix))]
+mod agent_status_tests {
+    use super::*;
+    use lumux_backend_unix::UnixPtySystem;
+    use lumux_core::agent::{AgentState, AgentStatus};
+    use lumux_core::traits::PtySize;
+
+    fn spawn() -> (Daemon<UnixPtySystem>, SessionId, PaneId) {
+        let mut d = Daemon::new(UnixPtySystem);
+        let (sid, pid, _reader) = d
+            .new_session("t", Some(vec!["/bin/sh".to_string()]), PtySize::new(80, 24))
+            .expect("spawn session");
+        (d, sid, pid)
+    }
+
+    #[test]
+    fn set_and_get_agent_status() {
+        let (mut d, _sid, pid) = spawn();
+        assert!(d.agent_status(pid).is_none(), "no status before any report");
+        d.set_agent_status(pid, AgentStatus::new("claude", AgentState::Working));
+        let got = d.agent_status(pid).expect("status after report");
+        assert_eq!(got.agent, "claude");
+        assert_eq!(got.state, AgentState::Working);
+        // A later report overwrites (sticky last-write).
+        d.set_agent_status(pid, AgentStatus::new("claude", AgentState::Blocked));
+        assert_eq!(d.agent_status(pid).unwrap().state, AgentState::Blocked);
+    }
+
+    #[test]
+    fn closing_a_pane_clears_its_agent_status() {
+        let (mut d, sid, pid) = spawn();
+        d.set_agent_status(pid, AgentStatus::new("claude", AgentState::Working));
+        assert!(d.agent_status(pid).is_some());
+        // Pane death (its process exited) must drop the now-stale status.
+        let _ = d.close_pane(sid, pid);
+        assert!(
+            d.agent_status(pid).is_none(),
+            "close_pane must clear the pane's agent status"
+        );
+    }
 }

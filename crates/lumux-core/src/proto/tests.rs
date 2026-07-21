@@ -41,6 +41,11 @@ fn client_messages_roundtrip() {
     roundtrip_client(ClientMsg::Command(Command::SendKeys {
         keys: b"echo hi\r".to_vec(),
     }));
+    roundtrip_client(ClientMsg::Command(Command::ReportAgentState {
+        pane: "%7".into(),
+        agent: "claude".into(),
+        state: crate::agent::AgentState::Blocked,
+    }));
 }
 
 #[test]

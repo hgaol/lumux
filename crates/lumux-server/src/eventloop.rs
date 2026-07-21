@@ -575,6 +575,18 @@ where
                     self.kill_whole_session(id);
                 }
             }
+            Command::ReportAgentState { pane, agent, state } => {
+                // The reporting process (an agent hook) is detached from the
+                // interactive client, so the target pane travels in the payload
+                // (parsed from the `%N` id the agent read from $LUMUX_PANE).
+                if let Ok(pid) = pane.parse::<PaneId>() {
+                    self.daemon
+                        .set_agent_status(pid, lumux_core::agent::AgentStatus::new(agent, state));
+                    // Status shows in the sidebar / chooser, which span all
+                    // sessions, so refresh every client — not just this one.
+                    self.render_all_clients();
+                }
+            }
         }
     }
 
@@ -2142,6 +2154,19 @@ where
 
     fn render_session(&mut self, session: SessionId) {
         for id in self.session_clients(session) {
+            self.render_client(id);
+        }
+    }
+
+    /// Re-render every connected client, regardless of session. Used when a
+    /// change affects views that span all sessions — e.g. an agent-status report
+    /// updates the sidebar / chooser on clients attached to *other* sessions.
+    /// Each renderer is invalidated first so the mostly-static sidebar region
+    /// actually re-emits rather than diffing to nothing.
+    fn render_all_clients(&mut self) {
+        let ids: Vec<u64> = self.clients.keys().copied().collect();
+        for id in ids {
+            self.daemon.invalidate_client(id);
             self.render_client(id);
         }
     }

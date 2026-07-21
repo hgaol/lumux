@@ -6,6 +6,7 @@
 
 pub mod traits;
 
+pub mod agent;
 pub mod buffers;
 pub mod command;
 pub mod config;
