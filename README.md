@@ -212,6 +212,36 @@ window. Indexes honor `base-index`.
 `swap-pane` with no explicit source acts on the marked pane, which may be in
 another window — mark a pane in one window and pull or swap it into another.
 
+## Sessions & agents sidebar
+
+A persistent left sidebar (herdr-style) lists your **sessions** on top and, below
+them, every pane running an **agent** with its live status — idle (`.`), working
+(`*`), blocked/needs-input (`!`), or done (`=`). Click a session row to switch to
+it, or an agent row to jump straight to that agent's window. The prefix-`s`
+chooser shows the same status on each window row.
+
+Toggle it at runtime with `:set sidebar on` / `off` (session-global — it reflows
+every client of the session), or set the defaults in config:
+
+```
+set -g sidebar on
+set -g sidebar-width 26
+```
+
+Agents report their own state — no screen-scraping. Wire up an agent's hooks
+once with `lumux integration <agent>` (Claude Code supported today):
+
+```
+lumux integration claude
+```
+
+This installs Claude Code hooks that call `lumux report-state` at the right
+moments. Any program can report directly from inside a pane:
+
+```
+lumux report-state working   # idle | working | blocked | done
+```
+
 ## Configuration
 
 lumux reads its config from the first of these that exists (override the whole

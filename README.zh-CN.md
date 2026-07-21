@@ -174,6 +174,29 @@ lumux source-file <path>                          # 实时重载配置
 
 **标记窗格：** `prefix m` 标记当前窗格；随后 `join-pane` 或 `swap-pane` 在没有显式来源时作用于被标记的窗格，而它可以位于另一个窗口——在一个窗口标记窗格，再把它拉入或交换到另一个窗口。
 
+## 会话与 agent 侧边栏
+
+一个常驻的左侧边栏（herdr 风格）：上半部分列出你的**会话**，下半部分列出每个正在运行 **agent** 的窗格及其实时状态——空闲（`.`）、工作中（`*`）、被阻塞/等待输入（`!`）、已完成（`=`）。点击会话行即可切换过去，点击 agent 行则直接跳到该 agent 的窗口。prefix-`s` 选择器的每个窗口行也显示相同状态。
+
+运行时用 `:set sidebar on` / `off` 切换（会话级——它会重排该会话的所有客户端），或在配置中设默认值：
+
+```
+set -g sidebar on
+set -g sidebar-width 26
+```
+
+agent 自行上报状态——无需抓屏。用 `lumux integration <agent>` 一次性接入某个 agent 的 hooks（目前支持 Claude Code）：
+
+```
+lumux integration claude
+```
+
+它会安装在恰当时机调用 `lumux report-state` 的 Claude Code hooks。任何程序都可以在窗格内直接上报：
+
+```
+lumux report-state working   # idle | working | blocked | done
+```
+
 ## 配置
 
 lumux 会从以下路径中第一个存在的文件读取配置（用 `$LUMUX_CONFIG` 可覆盖整个查找过程）：
