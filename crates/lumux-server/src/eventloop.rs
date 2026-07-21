@@ -886,7 +886,15 @@ where
             }
             return;
         }
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        let Some(viewport) = self.daemon.content_viewport(session) else {
+            return;
+        };
+        // A click in the sidebar columns (left of the content origin) is a
+        // sidebar interaction, not a pane hit-test. Layer 5 handles it; for now
+        // (sidebar off, origin 0) this never triggers.
+        if col < viewport.x {
+            return;
+        }
         if let Some(s) = self.daemon.server.session_mut(session) {
             let wid = s.active_window();
             if let Some(w) = s.window_mut(wid) {
@@ -901,16 +909,13 @@ where
     /// Focus the pane whose rectangle contains (col,row), if any. Returns true if
     /// a pane was focused. Used by scroll to target the pane under the pointer.
     fn focus_pane_at(&mut self, session: SessionId, col: u16, row: u16) -> bool {
-        let size = self
-            .daemon
-            .server
-            .effective_size(session)
-            .unwrap_or(PtySize::new(80, 24));
-        // The status bar row holds no pane.
-        if row >= size.rows.saturating_sub(1) {
+        let Some(viewport) = self.daemon.content_viewport(session) else {
+            return false;
+        };
+        // The status bar row and the sidebar columns hold no pane.
+        if row >= viewport.y + viewport.rows || col < viewport.x {
             return false;
         }
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
         if let Some(s) = self.daemon.server.session_mut(session) {
             let wid = s.active_window();
             if let Some(w) = s.window_mut(wid) {
@@ -964,11 +969,10 @@ where
 
     /// The pane id whose rectangle contains (col,row), without changing focus.
     fn pane_at_point(&self, session: SessionId, col: u16, row: u16) -> Option<PaneId> {
-        let size = self.daemon.server.effective_size(session)?;
-        if row >= size.rows.saturating_sub(1) {
-            return None; // status bar row
+        let viewport = self.daemon.content_viewport(session)?;
+        if row >= viewport.y + viewport.rows || col < viewport.x {
+            return None; // status bar row or sidebar column
         }
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
         let s = self.daemon.server.session(session)?;
         let w = s.window(s.active_window())?;
         let rects = lumux_core::layout::compute(&w.layout, viewport);
@@ -983,11 +987,10 @@ where
         col: u16,
         row: u16,
     ) -> Option<(PaneId, lumux_core::layout::Rect)> {
-        let size = self.daemon.server.effective_size(session)?;
-        if row >= size.rows.saturating_sub(1) {
+        let viewport = self.daemon.content_viewport(session)?;
+        if row >= viewport.y + viewport.rows || col < viewport.x {
             return None;
         }
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
         let s = self.daemon.server.session(session)?;
         let w = s.window(s.active_window())?;
         let rects = lumux_core::layout::compute(&w.layout, viewport);
@@ -1043,13 +1046,10 @@ where
 
     /// Move focus geographically within the active window.
     fn select_pane(&mut self, session: SessionId, dir: Direction) {
-        let size = self
-            .daemon
-            .server
-            .effective_size(session)
-            .unwrap_or(PtySize::new(80, 24));
-        // Content area excludes the status bar row.
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        // Content area excludes the sidebar columns and the status bar row.
+        let Some(viewport) = self.daemon.content_viewport(session) else {
+            return;
+        };
         if let Some(s) = self.daemon.server.session_mut(session) {
             let wid = s.active_window();
             if let Some(w) = s.window_mut(wid) {
@@ -1101,12 +1101,13 @@ where
         };
         let step = match cells {
             Some(n) => {
-                let total = self.daemon.server.effective_size(session).map(|s| {
+                // Convert N cells to a ratio against the pane content span (the
+                // sidebar's columns aren't part of it), so the divider moves ~N.
+                let total = self.daemon.content_viewport(session).map(|vp| {
                     if axis == SplitDir::Horizontal {
-                        s.cols
+                        vp.cols
                     } else {
-                        // The status row isn't part of any pane's split span.
-                        s.rows.saturating_sub(1)
+                        vp.rows
                     }
                 });
                 match total {

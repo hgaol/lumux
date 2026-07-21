@@ -30,10 +30,38 @@ fn single_pane_fills_content_area() {
         active_border: None,
         inactive_border: None,
     };
-    let screen = compose((20, 5), &view, None, false);
+    let screen = compose((20, 5), &view, None, false, 0);
     assert_eq!(screen.row_string(0), "hello");
     // Cursor mapped from pane (after "hello" => col 5).
     assert_eq!(screen.cursor(), Some((5, 0)));
+}
+
+#[test]
+fn content_origin_x_offsets_the_pane_plane() {
+    // A non-zero content_origin_x (the sidebar width) shifts the whole pane
+    // plane right: the pane's text starts at that column, the columns to its
+    // left are blank (the caller paints the sidebar there), and the cursor is
+    // offset to match.
+    let layout = PaneNode::leaf(p(1));
+    let mut grids = BTreeMap::new();
+    grids.insert(p(1), grid_with("hello", 14, 5));
+    let view = WindowView {
+        layout: &layout,
+        grids: &refs(&grids),
+        active_pane: p(1),
+        active_border: None,
+        inactive_border: None,
+    };
+    let sidebar_w = 6;
+    let screen = compose((20, 5), &view, None, false, sidebar_w);
+    let row0 = screen.row_string(0);
+    // Columns [0,6) are left blank for the sidebar; "hello" begins at col 6.
+    assert!(
+        row0.starts_with("      hello"),
+        "pane text must start at the content origin, got {row0:?}"
+    );
+    // Cursor sits after "hello" within the offset plane: 6 + 5 = 11.
+    assert_eq!(screen.cursor(), Some((11, 0)));
 }
 
 #[test]
@@ -50,7 +78,7 @@ fn horizontal_split_draws_vertical_border() {
         active_border: None,
         inactive_border: None,
     };
-    let screen = compose((20, 3), &view, None, false);
+    let screen = compose((20, 3), &view, None, false, 0);
     let row0 = screen.row_string(0);
     // Both pane contents appear, separated by the │ border glyph.
     assert!(row0.contains("LEFT"));
@@ -77,7 +105,7 @@ fn status_bar_occupies_bottom_row() {
         left: "[work] 0:sh".into(),
         right: "12:00".into(),
     };
-    let screen = compose((20, 5), &view, Some(&status), false);
+    let screen = compose((20, 5), &view, Some(&status), false, 0);
     // Bottom row shows status; left text present, right-aligned clock present.
     let bottom = screen.row_string(4);
     assert!(bottom.contains("[work] 0:sh"));
@@ -107,7 +135,7 @@ fn reserved_status_row_keeps_panes_out_of_bottom_line() {
         active_border: None,
         inactive_border: None,
     };
-    let screen = compose((20, 5), &view, None, true);
+    let screen = compose((20, 5), &view, None, true, 0);
     // The bottom row (index 4) must be blank — reserved for the status bar.
     assert_eq!(
         screen.row_string(4),
@@ -134,7 +162,7 @@ fn active_pane_cursor_wins() {
         active_border: None,
         inactive_border: None,
     };
-    let screen = compose((20, 3), &view, None, false);
+    let screen = compose((20, 3), &view, None, false, 0);
     // 20 cols, divider 1 => 19 usable, ratio 0.5 => round(9.5)=10 left / 9 right.
     // Left pane width 10, border at x=10, right pane starts at x=11; cursor
     // after "bb" => local col 2 => screen col 13.
@@ -154,7 +182,7 @@ fn client_renderer_full_then_incremental() {
         inactive_border: None,
     };
     let mut cr = ClientRenderer::new();
-    let first = cr.render(compose((20, 3), &view, None, false));
+    let first = cr.render(compose((20, 3), &view, None, false, 0));
     // First render is a full repaint.
     assert!(first.starts_with("\x1b[2J"));
     assert!(first.contains("frame one"));
@@ -169,7 +197,7 @@ fn client_renderer_full_then_incremental() {
         active_border: None,
         inactive_border: None,
     };
-    let second = cr.render(compose((20, 3), &view2, None, false));
+    let second = cr.render(compose((20, 3), &view2, None, false, 0));
     assert!(
         !second.starts_with("\x1b[2J"),
         "second render must be a diff"
@@ -190,9 +218,9 @@ fn renderer_invalidate_forces_repaint() {
         inactive_border: None,
     };
     let mut cr = ClientRenderer::new();
-    let _ = cr.render(compose((10, 2), &view, None, false));
+    let _ = cr.render(compose((10, 2), &view, None, false, 0));
     cr.invalidate();
-    let again = cr.render(compose((10, 2), &view, None, false));
+    let again = cr.render(compose((10, 2), &view, None, false, 0));
     assert!(again.starts_with("\x1b[2J"), "invalidate => full repaint");
 }
 
@@ -217,7 +245,7 @@ fn repaint_roundtrip_preserves_text_with_inline_sgr() {
     let mut grids: BTreeMap<PaneId, &Grid> = BTreeMap::new();
     grids.insert(PaneId(1), &src);
     let view = WindowView { layout: &layout, grids: &grids, active_pane: PaneId(1), active_border: None, inactive_border: None };
-    let screen = compose((80, 4), &view, None, false);
+    let screen = compose((80, 4), &view, None, false, 0);
 
     // The composed screen's row 0 must read the literal text (no shift).
     assert_eq!(
@@ -501,7 +529,7 @@ fn active_pane_border_is_highlighted() {
         active_border: green,
         inactive_border: None,
     };
-    let screen = compose((20, 3), &view, None, false);
+    let screen = compose((20, 3), &view, None, false, 0);
 
     // Find the divider column (the │ in row 0) and check it's green.
     let row0 = screen.row_string(0);
@@ -533,7 +561,7 @@ fn inactive_pane_border_is_not_highlighted() {
         active_border: None, // highlight disabled
         inactive_border: None,
     };
-    let screen = compose((20, 3), &view, None, false);
+    let screen = compose((20, 3), &view, None, false, 0);
     let row0 = screen.row_string(0);
     let div_col = row0.find('│').expect("a divider should be drawn");
     let div_cell = screen.cell(div_col, 0).expect("divider cell");

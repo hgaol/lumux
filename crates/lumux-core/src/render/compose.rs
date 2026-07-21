@@ -204,6 +204,7 @@ pub fn compose(
     view: &WindowView,
     status: Option<&StatusBar>,
     reserve_status_row: bool,
+    content_origin_x: usize,
 ) -> Screen {
     let (w, h) = size;
     let mut screen = Screen::new(w, h);
@@ -213,7 +214,16 @@ pub fn compose(
         h
     };
 
-    let viewport = Rect::new(0, 0, w as u16, content_rows as u16);
+    // Panes fill the content plane to the right of any sidebar (columns
+    // `[content_origin_x, w)`). The sidebar itself is painted by the caller after
+    // compose; here we only keep panes and their borders out of those columns.
+    let origin_x = content_origin_x.min(w);
+    let viewport = Rect::new(
+        origin_x as u16,
+        0,
+        (w - origin_x) as u16,
+        content_rows as u16,
+    );
     let rects = layout::compute(view.layout, viewport);
 
     let border_attrs = view.inactive_border.clone().unwrap_or_default();
@@ -255,8 +265,9 @@ pub fn compose(
         if x1 < w {
             screen.vline(x1, y0, y1, attrs);
         }
-        // Left edge (divider drawn by the pane on the left sits at x0-1).
-        if x0 > 0 {
+        // Left edge (divider drawn by the pane on the left sits at x0-1). Only a
+        // real inter-pane divider, not the sidebar boundary at origin_x.
+        if x0 > origin_x {
             screen.vline(x0 - 1, y0, y1, attrs);
         }
         // Bottom edge.

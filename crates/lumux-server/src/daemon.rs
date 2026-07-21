@@ -1706,15 +1706,28 @@ impl<S: PtySystem> Daemon<S> {
         (panes, result)
     }
 
-    /// Content viewport for `session` (full effective size minus the status row).
-    fn content_viewport(&self, session: SessionId) -> Option<lumux_core::layout::Rect> {
+    /// Content viewport for `session`: the pane area to the right of any sidebar
+    /// and above the status row. This is the single authority for the content
+    /// plane's origin and extent — every pane hit-test, divider drag, and the
+    /// compositor derive from it, so the sidebar offset (and the reserved status
+    /// row) live in exactly one place.
+    pub fn content_viewport(&self, session: SessionId) -> Option<lumux_core::layout::Rect> {
         let size = self.server.effective_size(session)?;
+        let sidebar = self.sidebar_width(session).min(size.cols);
         Some(lumux_core::layout::Rect::new(
+            sidebar,
             0,
-            0,
-            size.cols,
+            size.cols - sidebar,
             size.rows.saturating_sub(1),
         ))
+    }
+
+    /// Columns reserved on the left for the sessions/agents sidebar for this
+    /// session, or 0 when it's off. Layer 4 wires the single-authority plumbing
+    /// with the sidebar always off; Layer 5 makes this return the configured
+    /// width for sessions that have it enabled.
+    pub fn sidebar_width(&self, _session: SessionId) -> u16 {
+        0
     }
 
     /// Mouse-press: if (col,row) is on a split divider, remember it as the
@@ -1963,12 +1976,15 @@ impl<S: PtySystem> Daemon<S> {
         };
         // Compose panes without a built-in status row, but reserve the bottom
         // row so panes don't extend into it; we then paint our own styled status
-        // (or a transient message) onto that reserved row.
+        // (or a transient message) onto that reserved row. Panes start to the
+        // right of the sidebar (0 when it's off).
+        let sidebar_w = self.sidebar_width(session) as usize;
         let mut screen = compose(
             (size.cols as usize, size.rows as usize),
             &view,
             None,
             true,
+            sidebar_w,
         );
         // Display-panes overlay (tmux prefix q): draw each pane's number centered
         // in its rect, on top of the composed panes.
@@ -1996,7 +2012,13 @@ impl<S: PtySystem> Daemon<S> {
             return;
         };
         let active = s.window(s.active_window()).map(|w| w.active_pane());
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        let sidebar = self.sidebar_width(session).min(size.cols);
+        let viewport = lumux_core::layout::Rect::new(
+            sidebar,
+            0,
+            size.cols - sidebar,
+            size.rows.saturating_sub(1),
+        );
         let rects = lumux_core::layout::compute(layout, viewport);
         let base = self.base_index();
         // Reverse-video by default; a configured display-panes-colour tints the
@@ -2279,10 +2301,12 @@ impl<S: PtySystem> Daemon<S> {
         let cols = size.cols as usize;
         let rows = size.rows as usize;
         let content_rows = rows.saturating_sub(1);
-        let mut screen = compose((cols, rows), &view, None, true);
+        let sidebar = self.sidebar_width(session).min(size.cols);
+        let mut screen = compose((cols, rows), &view, None, true, sidebar as usize);
 
         // The active pane's rectangle, into which we paint the scrolled view.
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, content_rows as u16);
+        let viewport =
+            lumux_core::layout::Rect::new(sidebar, 0, size.cols - sidebar, content_rows as u16);
         let rect = *lumux_core::layout::compute(&layout, viewport).get(&active)?;
         let grid = &self.panes.get(&active)?.grid;
         let cm = self.copy.get(&client_id)?;
@@ -2766,11 +2790,13 @@ impl<S: PtySystem> Daemon<S> {
         };
         // For v1 each pane is resized to the full content area; precise
         // per-rect sizing is computed in the renderer. We at least keep the PTY
-        // and grid in step with the layout rectangles.
+        // and grid in step with the layout rectangles. Panes occupy the columns
+        // to the right of the sidebar.
+        let sidebar = self.sidebar_width(session).min(size.cols);
         let viewport = lumux_core::layout::Rect::new(
+            sidebar,
             0,
-            0,
-            size.cols,
+            size.cols - sidebar,
             size.rows.saturating_sub(1), // status bar row
         );
         if let Some(w) = s.window(s.active_window()) {
@@ -2805,7 +2831,9 @@ impl<S: PtySystem> Daemon<S> {
         let Some(s) = self.server.session(session) else {
             return;
         };
-        let viewport = lumux_core::layout::Rect::new(0, 0, size.cols, size.rows.saturating_sub(1));
+        let sidebar = self.sidebar_width(session).min(size.cols);
+        let viewport =
+            lumux_core::layout::Rect::new(sidebar, 0, size.cols - sidebar, size.rows.saturating_sub(1));
         // Collect (pane, rect) for every window first to avoid borrow conflicts.
         let mut fits: Vec<(PaneId, lumux_core::layout::Rect)> = Vec::new();
         for wid in s.window_ids() {
