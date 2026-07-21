@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 mod attach;
 mod control;
+mod integration;
 mod server;
 #[cfg(unix)]
 mod term_unix;
@@ -88,6 +89,22 @@ enum Command {
     },
     /// Reload configuration from a TOML file.
     SourceFile { path: String },
+    /// Report the current agent state for this pane (for agent hooks; reads the
+    /// target pane from $LUMUX_PANE). Surfaced by the sessions/agents sidebar.
+    ReportState {
+        /// One of: idle, working, blocked, done.
+        state: String,
+        /// Agent label shown in the sidebar (defaults to $LUMUX_AGENT, else
+        /// "agent").
+        #[arg(long)]
+        agent: Option<String>,
+    },
+    /// Install the hooks that report agent state into a given agent's config so
+    /// the sidebar tracks it automatically. Currently supports: claude.
+    Integration {
+        /// The agent to wire up (e.g. `claude`).
+        agent: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -175,5 +192,12 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
             print!("{reply}");
             Ok(())
         }
+        Some(Command::ReportState { state, agent }) => {
+            let cmd =
+                integration::build_report_command(&state, agent.as_deref(), |k| std::env::var_os(k))?;
+            control::send_command(cmd)?;
+            Ok(())
+        }
+        Some(Command::Integration { agent }) => integration::install(&agent),
     }
 }
