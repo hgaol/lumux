@@ -316,6 +316,7 @@ fn is_lumux_managed_command(hook: &serde_json::Value) -> bool {
 /// Whether a hook-list entry is one lumux installed (so re-install replaces it
 /// instead of duplicating). Recognized by the `lumux_managed` marker or, as a
 /// fallback, a command that invokes `lumux report-state`.
+#[cfg(test)]
 fn is_lumux_hook(v: &serde_json::Value) -> bool {
     v.get("hooks")
         .and_then(|h| h.as_array())
