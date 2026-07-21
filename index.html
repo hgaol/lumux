@@ -587,6 +587,11 @@
     <p class="section-sub" data-zh="服务端终端仿真把每个窗格解析为单元格网格，并向每个客户端流式传输带损伤跟踪的 VT——于是任何简单终端都能渲染一个完整的多路复用器。">Server-side terminal emulation parses each pane into a cell grid and streams damage-tracked VT to every client — so any dumb terminal can render a full multiplexer.</p>
     <div class="features">
       <div class="card">
+        <div class="ico" data-zh="▐ agent">▐ agents</div>
+        <h3 data-zh="agent 侧边栏">Agents sidebar</h3>
+        <p data-zh="常驻侧边栏列出你的会话，以及每个运行 agent 的窗格及其实时状态——空闲、工作中、被阻塞、已完成。agent 通过 hooks 自行上报（<code>lumux integration claude</code>）；点击即可跳转。用 <kbd>:set sidebar on</kbd> 切换。">A persistent sidebar lists your sessions and every pane running an agent with its live state — idle, working, blocked, done. Agents self-report via hooks (<code>lumux integration claude</code>); click to jump. Toggle with <kbd>:set sidebar on</kbd>.</p>
+      </div>
+      <div class="card">
         <div class="ico" data-zh="◰ 会话">◰ session</div>
         <h3 data-zh="持久会话">Persistent sessions</h3>
         <p data-zh="分离、断开 SSH、再重连——你的 shell 及其进程仍在运行。用 <kbd>prefix</kbd> <kbd>s</kbd> 在会话间切换。">Detach, drop the SSH, reconnect — your shells and their processes are still running. Switch between sessions with <kbd>prefix</kbd> <kbd>s</kbd>.</p>
