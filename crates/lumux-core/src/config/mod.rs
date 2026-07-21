@@ -156,7 +156,7 @@ impl Default for Config {
             persist: false,
             copy_command: String::new(),
             repeat_bindings: std::collections::BTreeSet::new(),
-            sidebar: false,
+            sidebar: true,
             sidebar_width: 26,
         }
     }

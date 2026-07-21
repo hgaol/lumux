@@ -22,8 +22,15 @@ fn start_daemon() -> std::path::PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
     let listener = UnixSocketListener::bind(&path).expect("bind");
+    // These tests exercise pane/mouse geometry at full width; the sidebar (on by
+    // default in the shipped product) is covered separately by
+    // `start_daemon_sidebar`, so disable it here to keep content at column 0.
+    let cfg = lumux_core::config::Config {
+        sidebar: false,
+        ..Default::default()
+    };
     std::thread::spawn(move || {
-        let _ = lumux_server::run(UnixPtySystem, listener);
+        let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
     });
     // Wait for the socket to exist.
     let deadline = Instant::now() + Duration::from_secs(2);
@@ -44,6 +51,7 @@ fn start_daemon_mouse() -> std::path::PathBuf {
     let listener = UnixSocketListener::bind(&path).expect("bind");
     let cfg = lumux_core::config::Config {
         mouse: true,
+        sidebar: false,
         ..Default::default()
     };
     std::thread::spawn(move || {
@@ -66,6 +74,7 @@ fn start_daemon_status_right(fmt: &str) -> std::path::PathBuf {
     let listener = UnixSocketListener::bind(&path).expect("bind");
     let cfg = lumux_core::config::Config {
         status_right: fmt.to_string(),
+        sidebar: false,
         ..Default::default()
     };
     std::thread::spawn(move || {
@@ -86,7 +95,13 @@ fn start_daemon_with_tmux(conf: &str) -> std::path::PathBuf {
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
     let path = std::env::temp_dir().join(format!("lumux-test-{pid}-{n}.sock"));
     let listener = UnixSocketListener::bind(&path).expect("bind");
-    let cfg = lumux_core::config::Config::from_tmux(conf).expect("config parses");
+    let mut cfg = lumux_core::config::Config::from_tmux(conf).expect("config parses");
+    // Behavior/binding tests assume full-width geometry; the sidebar (default on
+    // in the product) is covered by start_daemon_sidebar. Leave it off unless the
+    // conf under test turned it on explicitly.
+    if !conf.contains("sidebar") {
+        cfg.sidebar = false;
+    }
     std::thread::spawn(move || {
         let _ = lumux_server::run_with_config(UnixPtySystem, listener, cfg);
     });
@@ -107,6 +122,7 @@ fn start_daemon_remain() -> std::path::PathBuf {
     let listener = UnixSocketListener::bind(&path).expect("bind");
     let cfg = lumux_core::config::Config {
         remain_on_exit: true,
+        sidebar: false,
         ..Default::default()
     };
     std::thread::spawn(move || {
@@ -128,6 +144,7 @@ fn start_daemon_emacs() -> std::path::PathBuf {
     let listener = UnixSocketListener::bind(&path).expect("bind");
     let cfg = lumux_core::config::Config {
         mode_keys: "emacs".to_string(),
+        sidebar: false,
         ..Default::default()
     };
     std::thread::spawn(move || {
@@ -153,6 +170,7 @@ fn start_daemon_respawn_hook() -> std::path::PathBuf {
     let cfg = lumux_core::config::Config {
         remain_on_exit: true,
         hooks,
+        sidebar: false,
         ..Default::default()
     };
     std::thread::spawn(move || {
@@ -172,6 +190,7 @@ fn start_daemon_persist(sock: &std::path::Path, state: &std::path::Path) {
     let listener = UnixSocketListener::bind(sock).expect("bind");
     let cfg = lumux_core::config::Config {
         persist: true,
+        sidebar: false,
         ..Default::default()
     };
     let state = state.to_path_buf();

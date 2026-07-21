@@ -710,11 +710,11 @@ mod tests {
     #[test]
     fn set_option_handles_sidebar() {
         let mut c = Config::default();
-        assert!(!c.sidebar, "sidebar off by default");
-        assert!(c.set_option("sidebar", "on").is_ok());
-        assert!(c.sidebar);
+        assert!(c.sidebar, "sidebar on by default");
         assert!(c.set_option("sidebar", "off").is_ok());
         assert!(!c.sidebar);
+        assert!(c.set_option("sidebar", "on").is_ok());
+        assert!(c.sidebar);
         assert!(c.set_option("sidebar-width", "30").is_ok());
         assert_eq!(c.sidebar_width, 30);
     }
