@@ -149,6 +149,10 @@ pub struct Daemon<S: PtySystem> {
     /// Absent = fall back to the config default. Session-global by design: under
     /// the shared PTY, one client's toggle reflows every client of the session.
     sidebar_on: BTreeMap<SessionId, bool>,
+    /// Per-session sidebar collapse state. When shown, the sidebar can be either
+    /// expanded (full width) or collapsed to a thin clickable rail. Absent =
+    /// expanded. Independent of `sidebar_on` (fully off).
+    sidebar_collapsed: BTreeMap<SessionId, bool>,
     clipboard: Box<dyn Clipboard>,
     config: Config,
 }
@@ -282,6 +286,7 @@ impl<S: PtySystem> Daemon<S> {
             marked_pane: None,
             agent_status: BTreeMap::new(),
             sidebar_on: BTreeMap::new(),
+            sidebar_collapsed: BTreeMap::new(),
             clipboard,
             config: Config::default(),
         }
@@ -1640,6 +1645,11 @@ impl<S: PtySystem> Daemon<S> {
         self.agent_status.insert(pane, status);
     }
 
+    /// Clear a pane's agent status (the agent process exited but the pane lives).
+    pub fn clear_agent_status(&mut self, pane: PaneId) {
+        self.agent_status.remove(&pane);
+    }
+
     /// The latest agent status reported for `pane`, if any.
     pub fn agent_status(&self, pane: PaneId) -> Option<&lumux_core::agent::AgentStatus> {
         self.agent_status.get(&pane)
@@ -1753,12 +1763,19 @@ impl<S: PtySystem> Daemon<S> {
         ))
     }
 
+    /// Width of the thin collapsed rail (just wide enough for the toggle glyph
+    /// plus its border).
+    pub const SIDEBAR_RAIL_WIDTH: u16 = 3;
+
     /// Columns reserved on the left for the sessions/agents sidebar for this
-    /// session, or 0 when it's off. Clamped so it can never swallow more than
-    /// half the screen (a content area must remain).
+    /// session: 0 when off, a thin rail when collapsed, else the configured width
+    /// (clamped so it can never swallow more than half the screen).
     pub fn sidebar_width(&self, session: SessionId) -> u16 {
         if !self.sidebar_visible(session) {
             return 0;
+        }
+        if self.sidebar_collapsed(session) {
+            return Self::SIDEBAR_RAIL_WIDTH;
         }
         let cols = self
             .server
@@ -1766,7 +1783,7 @@ impl<S: PtySystem> Daemon<S> {
             .map(|s| s.cols)
             .unwrap_or(0);
         let max = cols / 2;
-        self.config.sidebar_width.min(max)
+        self.config.sidebar_width.min(max).max(Self::SIDEBAR_RAIL_WIDTH)
     }
 
     /// Whether the sidebar is shown for `session`: the per-session override if
@@ -1779,11 +1796,22 @@ impl<S: PtySystem> Daemon<S> {
             .unwrap_or(self.config.sidebar)
     }
 
+    /// Whether the (shown) sidebar is collapsed to its thin rail. Expanded by
+    /// default.
+    pub fn sidebar_collapsed(&self, session: SessionId) -> bool {
+        self.sidebar_collapsed.get(&session).copied().unwrap_or(false)
+    }
+
     /// Toggle (or set) the sidebar for `session`. Returns the new visibility.
     /// The caller must resize the session afterward so the PTYs reflow to the
     /// new content width, and invalidate renderers for a clean repaint.
     pub fn set_sidebar_visible(&mut self, session: SessionId, on: bool) {
         self.sidebar_on.insert(session, on);
+    }
+
+    /// Collapse/expand the (shown) sidebar for `session`. Caller reflows after.
+    pub fn set_sidebar_collapsed(&mut self, session: SessionId, collapsed: bool) {
+        self.sidebar_collapsed.insert(session, collapsed);
     }
 
     /// Mouse-press: if (col,row) is on a split divider, remember it as the
@@ -2117,54 +2145,77 @@ impl<S: PtySystem> Daemon<S> {
     /// performs. Built once and shared by `render_sidebar` and the click
     /// hit-test so what you see and what you click stay in lockstep.
     ///
-    /// Rows are laid out top-to-bottom across the content height (minus the
-    /// status row): a "SESSIONS" header, each session (+ its windows), a blank
-    /// gap, an "AGENTS" header, then one row per pane that has reported status.
-    fn sidebar_rows(&self, session: SessionId, height: usize) -> Vec<SidebarRow> {
-        let mut rows = Vec::new();
-        let content_h = height.saturating_sub(1); // status row
-        rows.push(SidebarRow::Header("SESSIONS"));
-        for sid in self.server.session_ids() {
-            let Some(s) = self.server.session(sid) else {
-                continue;
-            };
-            let current = sid == session;
-            rows.push(SidebarRow::Session {
-                sid,
-                name: s.name.clone(),
-                windows: s.window_count(),
-                current,
-            });
+    /// Positioned sidebar rows: `(screen_y, row)` pairs across the content height
+    /// `content_h`. The two sections split the height 1:1 — sessions fill the top
+    /// half, agents the bottom half — each with its own header and independent
+    /// truncation, so a long session list can't crowd the agents out. Both the
+    /// renderer and the click hit-test consume this, so they never drift.
+    fn sidebar_layout(&self, session: SessionId, content_h: usize) -> Vec<(usize, SidebarRow)> {
+        let mut out: Vec<(usize, SidebarRow)> = Vec::new();
+        if content_h == 0 {
+            return out;
         }
-        rows.push(SidebarRow::Blank);
-        rows.push(SidebarRow::Header("AGENTS"));
-        // Every pane across all sessions that has a reported agent status.
+        // Top half for sessions, bottom half for agents (1:1). With an odd
+        // height the sessions section gets the extra row.
+        let agents_start = content_h.div_ceil(2);
+
+        // --- Sessions section: header at row 0, entries below. ---
+        out.push((0, SidebarRow::Header("SESSIONS")));
+        let mut y = 1;
         for sid in self.server.session_ids() {
-            let Some(s) = self.server.session(sid) else {
-                continue;
-            };
-            for wid in s.window_ids() {
-                let Some(w) = s.window(wid) else { continue };
-                for pid in w.pane_ids() {
-                    if let Some(status) = self.agent_status.get(&pid) {
-                        rows.push(SidebarRow::Agent {
-                            sid,
-                            wid,
-                            agent: status.agent.clone(),
-                            state: status.state,
-                            session_name: s.name.clone(),
-                        });
+            if y >= agents_start.saturating_sub(0) {
+                break;
+            }
+            let Some(s) = self.server.session(sid) else { continue };
+            out.push((
+                y,
+                SidebarRow::Session {
+                    sid,
+                    name: s.name.clone(),
+                    windows: s.window_count(),
+                    current: sid == session,
+                },
+            ));
+            y += 1;
+        }
+
+        // --- Agents section: header at agents_start, entries below. ---
+        if agents_start < content_h {
+            out.push((agents_start, SidebarRow::Header("AGENTS")));
+            let mut y = agents_start + 1;
+            'outer: for sid in self.server.session_ids() {
+                let Some(s) = self.server.session(sid) else { continue };
+                for wid in s.window_ids() {
+                    let Some(w) = s.window(wid) else { continue };
+                    for pid in w.pane_ids() {
+                        if let Some(status) = self.agent_status.get(&pid) {
+                            if y >= content_h {
+                                break 'outer;
+                            }
+                            out.push((
+                                y,
+                                SidebarRow::Agent {
+                                    sid,
+                                    wid,
+                                    agent: status.agent.clone(),
+                                    state: status.state,
+                                    session_name: s.name.clone(),
+                                },
+                            ));
+                            y += 1;
+                        }
                     }
                 }
             }
         }
-        rows.truncate(content_h.max(1));
-        rows
+        out
     }
 
     /// Paint the sessions/agents sidebar into the reserved columns `[0, width)`.
     /// `total_rows` is the full screen height (the status row is left for
-    /// `paint_status`). A vertical border is drawn in the last sidebar column.
+    /// `paint_status`). When collapsed the sidebar is a thin rail with just the
+    /// expand button; otherwise it's the full two-section list. A themed vertical
+    /// border closes the right edge.
     fn render_sidebar(
         &self,
         screen: &mut lumux_core::render::Screen,
@@ -2172,39 +2223,66 @@ impl<S: PtySystem> Daemon<S> {
         width: u16,
         total_rows: usize,
     ) {
-        use lumux_core::render::CellAttributes;
         let w = width as usize;
         if w == 0 {
             return;
         }
-        let text_w = w.saturating_sub(1); // leave the last column for the border
-        let border_attrs = self.inactive_border_attrs().unwrap_or_default();
         let content_h = total_rows.saturating_sub(1);
+        let collapsed = self.sidebar_collapsed(session);
 
-        let rows = self.sidebar_rows(session, total_rows);
-        for (y, row) in rows.iter().enumerate() {
-            if y >= content_h {
-                break;
+        let panel = self.sidebar_panel_attrs();
+        let border = self.sidebar_border_attrs();
+
+        // Fill the sidebar background so it reads as a panel, not floating text.
+        for y in 0..content_h {
+            for x in 0..w {
+                screen.set_cell(
+                    x,
+                    y,
+                    lumux_core::render::Cell::new(' ', panel.clone()),
+                );
             }
+        }
+        // Right border down the whole content height.
+        if w >= 1 {
+            screen.vline(w - 1, 0, content_h, &border);
+        }
+
+        if collapsed {
+            // Thin rail: just the expand button (▶) at the top.
+            let btn = self.sidebar_header_attrs();
+            screen.write_str(0, 0, "▶", &btn);
+            return;
+        }
+
+        let text_w = w.saturating_sub(1); // leave the last column for the border
+        let header = self.sidebar_header_attrs();
+        let current = self.sidebar_current_attrs();
+        for (y, row) in self.sidebar_layout(session, content_h) {
             match row {
                 SidebarRow::Header(label) => {
-                    // A dim header bar spanning the text columns.
-                    screen.label_segment(0, y, text_w, label);
+                    // Header bar: the label plus a collapse button (◀) right-aligned
+                    // on the first header row only.
+                    self.fill_row(screen, y, text_w, &header);
+                    screen.write_str(0, y, label, &header);
+                    if y == 0 && text_w >= 1 {
+                        screen.write_str(text_w - 1, y, "◀", &header);
+                    }
                 }
                 SidebarRow::Blank => {}
                 SidebarRow::Session {
                     name,
                     windows,
-                    current,
+                    current: is_cur,
                     ..
                 } => {
-                    let marker = if *current { '*' } else { ' ' };
-                    let line = format!("{marker}{name} ({windows}w)");
+                    let line = format!("{name} · {windows}w");
                     let clipped: String = line.chars().take(text_w).collect();
-                    if *current {
-                        screen.status_line_width(y, &clipped, text_w);
+                    if is_cur {
+                        self.fill_row(screen, y, text_w, &current);
+                        screen.write_str(0, y, &clipped, &current);
                     } else {
-                        screen.write_plain(0, y, &clipped);
+                        screen.write_str(0, y, &clipped, &panel);
                     }
                 }
                 SidebarRow::Agent {
@@ -2213,32 +2291,91 @@ impl<S: PtySystem> Daemon<S> {
                     session_name,
                     ..
                 } => {
-                    let glyph = Self::agent_glyph(*state);
-                    let line = format!("{glyph} {agent} @{session_name}");
-                    let clipped: String = line.chars().take(text_w).collect();
-                    screen.write_plain(0, y, &clipped);
+                    let glyph = Self::agent_glyph(state);
+                    let gattr = self.agent_glyph_attrs(state, &panel);
+                    // "● agent @sess" — the glyph gets a state color, the rest the
+                    // panel style.
+                    screen.write_str(0, y, &glyph.to_string(), &gattr);
+                    let rest = format!(" {agent} @{session_name}");
+                    let clipped: String = rest.chars().take(text_w.saturating_sub(1)).collect();
+                    screen.write_str(1, y, &clipped, &panel);
                 }
             }
         }
-
-        // Right border down the whole content height.
-        if w >= 1 {
-            screen.vline(w - 1, 0, content_h, &border_attrs);
-        }
-        let _ = CellAttributes::default();
     }
 
-    /// A single-char status glyph for the agents list. Distinct shapes so state
-    /// reads at a glance even without color: blocked stands out most.
+    /// Fill row `y`'s first `width` columns with a styled blank (for header /
+    /// selection bars) without touching the border column.
+    fn fill_row(
+        &self,
+        screen: &mut lumux_core::render::Screen,
+        y: usize,
+        width: usize,
+        attrs: &lumux_core::render::CellAttributes,
+    ) {
+        for x in 0..width {
+            screen.set_cell(x, y, lumux_core::render::Cell::new(' ', attrs.clone()));
+        }
+    }
+
+    /// A single-char status glyph for the agents list. A filled dot for live
+    /// states, distinct shapes for the rest; color carries the meaning (see
+    /// `agent_glyph_attrs`) with the shape as a fallback.
     fn agent_glyph(state: lumux_core::agent::AgentState) -> char {
         use lumux_core::agent::AgentState;
         match state {
-            AgentState::Blocked => '!',
-            AgentState::Working => '*',
-            AgentState::Done => '=',
-            AgentState::Idle => '.',
-            AgentState::Unknown => '?',
+            AgentState::Blocked => '●',
+            AgentState::Working => '●',
+            AgentState::Done => '✓',
+            AgentState::Idle => '○',
+            AgentState::Unknown => '·',
         }
+    }
+
+    /// Base panel style for the sidebar body — a slightly darker background than
+    /// the terminal so the sidebar reads as its own surface, with a soft fg.
+    fn sidebar_panel_attrs(&self) -> lumux_core::render::CellAttributes {
+        Self::styled("fg=colour250,bg=colour235")
+    }
+
+    /// Section-header style: bold accent text on a raised background.
+    fn sidebar_header_attrs(&self) -> lumux_core::render::CellAttributes {
+        Self::styled("fg=colour81,bg=colour238,bold")
+    }
+
+    /// Current-session row style: an accent bar so the active session pops.
+    fn sidebar_current_attrs(&self) -> lumux_core::render::CellAttributes {
+        Self::styled("fg=colour231,bg=colour24,bold")
+    }
+
+    /// The sidebar's right border style (dim, so it separates without shouting).
+    fn sidebar_border_attrs(&self) -> lumux_core::render::CellAttributes {
+        Self::styled("fg=colour240,bg=colour235")
+    }
+
+    /// Per-state color for an agent's status glyph, over the given panel bg.
+    fn agent_glyph_attrs(
+        &self,
+        state: lumux_core::agent::AgentState,
+        _panel: &lumux_core::render::CellAttributes,
+    ) -> lumux_core::render::CellAttributes {
+        use lumux_core::agent::AgentState;
+        let colour = match state {
+            AgentState::Blocked => "colour203", // red — needs you
+            AgentState::Working => "colour118", // green — busy
+            AgentState::Done => "colour75",     // blue — finished
+            AgentState::Idle => "colour245",    // gray — waiting
+            AgentState::Unknown => "colour240",
+        };
+        Self::styled(&format!("fg={colour},bg=colour235,bold"))
+    }
+
+    /// Build a `CellAttributes` from a tmux-style `fg=..,bg=..,bold` spec, reusing
+    /// the status-bar style parser so the sidebar needs no termwiz dependency.
+    fn styled(spec: &str) -> lumux_core::render::CellAttributes {
+        let mut a = lumux_core::render::CellAttributes::default();
+        lumux_core::status::apply_style_spec(&mut a, spec);
+        a
     }
 
     /// The most-urgent reported agent state among a window's panes, if any
@@ -2258,13 +2395,38 @@ impl<S: PtySystem> Daemon<S> {
 
     /// Hit-test a click at sidebar row `y` (0-based screen row) for `session`,
     /// returning what to switch to — a session, or a session+window for an agent
-    /// row. Header/blank/out-of-range rows return None. Uses the same
-    /// `sidebar_rows` layout the renderer draws, so clicks land on what's shown.
+    /// row. Header/blank/out-of-range rows return None. Uses the same positioned
+    /// `sidebar_layout` the renderer draws, so clicks land on what's shown.
     pub fn sidebar_pick_at(&self, session: SessionId, y: usize, height: usize) -> Option<ChooserPick> {
-        match self.sidebar_rows(session, height).get(y)? {
-            SidebarRow::Session { sid, .. } => Some(ChooserPick::Session(*sid)),
-            SidebarRow::Agent { sid, wid, .. } => Some(ChooserPick::Window(*sid, *wid)),
+        let content_h = height.saturating_sub(1);
+        let row = self
+            .sidebar_layout(session, content_h)
+            .into_iter()
+            .find(|(ry, _)| *ry == y)
+            .map(|(_, r)| r)?;
+        match row {
+            SidebarRow::Session { sid, .. } => Some(ChooserPick::Session(sid)),
+            SidebarRow::Agent { sid, wid, .. } => Some(ChooserPick::Window(sid, wid)),
             SidebarRow::Header(_) | SidebarRow::Blank => None,
+        }
+    }
+
+    /// Whether a click at (col,row) inside the sidebar hit the collapse/expand
+    /// toggle button. When collapsed the whole rail toggles (the button is the
+    /// rail); when expanded it's the ◀ glyph at the top-right of the header.
+    pub fn sidebar_toggle_hit(&self, session: SessionId, col: u16, row: u16, height: usize) -> bool {
+        let w = self.sidebar_width(session);
+        if w == 0 || col >= w {
+            return false;
+        }
+        let _ = height;
+        if self.sidebar_collapsed(session) {
+            // The whole rail is the expand button.
+            true
+        } else {
+            // The ◀ button sits at text_w-1 on header row 0.
+            let text_w = w.saturating_sub(1);
+            row == 0 && text_w >= 1 && col == text_w - 1
         }
     }
 

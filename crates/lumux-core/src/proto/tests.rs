@@ -46,6 +46,9 @@ fn client_messages_roundtrip() {
         agent: "claude".into(),
         state: crate::agent::AgentState::Blocked,
     }));
+    roundtrip_client(ClientMsg::Command(Command::ClearAgentState {
+        pane: "%7".into(),
+    }));
 }
 
 #[test]

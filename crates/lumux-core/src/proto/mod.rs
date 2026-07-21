@@ -138,6 +138,10 @@ pub enum Command {
         agent: String,
         state: crate::agent::AgentState,
     },
+    /// Clear a pane's agent status entirely (the agent process exited but the
+    /// pane/shell is still alive, so it should leave the agents list). Fired by
+    /// an agent's SessionEnd-style hook. `pane` is the `%N` id from $LUMUX_PANE.
+    ClearAgentState { pane: String },
 }
 
 /// Daemon -> client.

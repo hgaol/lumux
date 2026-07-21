@@ -3649,15 +3649,14 @@ fn sidebar_click_switches_to_the_clicked_session() {
     // 1-based col 3 (inside the sidebar), 1-based row 3 = 0-based screen row 2.
     let click = "\x1b[<0;3;3M";
     c.send(&ClientMsg::Input(click.as_bytes().to_vec()));
-    // Type a marker; it should land in beta now.
-    c.send(&ClientMsg::Input(b"printf ONBETA\n".to_vec()));
+    // Type a marker; it should echo in beta's shell now (proving the switch).
+    c.send(&ClientMsg::Input(b"printf ONBETA_MARKER\n".to_vec()));
     c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
     let (_d1, after_all) = c.collect_until(Duration::from_secs(2), |_| false);
     let after = after_all.rsplit("\u{1b}[2J").next().unwrap_or(&after_all);
-    // The beta session row is marked current (*beta).
     assert!(
-        after.contains("*beta"),
-        "clicking the beta row should make beta the current session; got:\n{after}"
+        after.contains("ONBETA_MARKER"),
+        "clicking the beta row should switch to beta (marker should echo there); got:\n{after}"
     );
 }
 
@@ -3724,9 +3723,92 @@ fn chooser_annotates_a_window_with_agent_status() {
     c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
     let (_d, vt_all) = c.collect_until(Duration::from_secs(2), |_| false);
     let vt = vt_all.rsplit("\u{1b}[2J").next().unwrap_or(&vt_all);
-    // The window row carries the blocked glyph '!' (see Daemon::agent_glyph).
+    // The window row carries the blocked-agent glyph '●' (see Daemon::agent_glyph).
     assert!(
-        vt.contains('!'),
+        vt.contains('●'),
         "chooser window row should show the blocked agent glyph; got:\n{vt}"
+    );
+}
+
+#[test]
+fn sidebar_collapses_and_expands_via_the_toggle_button() {
+    // Clicking the ◀ button collapses the sidebar to its thin rail; clicking the
+    // rail expands it again. Content reflows both ways.
+    let path = start_daemon_sidebar(); // sidebar_width 20
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("col".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    c.send(&ClientMsg::Input(b"printf EXPANDED\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, exp) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(exp.contains("SESSIONS"), "precondition: expanded shows headers; got:\n{exp}");
+    let exp_col = column_of(&exp, "EXPANDED").expect("marker while expanded");
+    assert!(exp_col >= 20, "expanded content starts past the 20-col sidebar; got {exp_col}");
+
+    // Click the collapse button ◀ at the top-right of the header (col text_w-1 =
+    // 18 zero-based = 19 one-based, row 1).
+    c.send(&ClientMsg::Input(b"\x1b[<0;19;1M".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, col_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let col_vt = col_all.rsplit("\u{1b}[2J").next().unwrap_or(&col_all);
+    // Collapsed: the two-section list (headers) is gone, replaced by the thin
+    // rail with just the expand glyph.
+    assert!(
+        !col_vt.contains("SESSIONS") && !col_vt.contains("AGENTS"),
+        "collapsed rail hides the section headers; got:\n{col_vt}"
+    );
+    assert!(
+        col_vt.contains('▶'),
+        "collapsed rail shows the expand glyph; got:\n{col_vt}"
+    );
+
+    // Click the rail (col 1, row 1) to expand again.
+    c.send(&ClientMsg::Input(b"\x1b[<0;1;1M".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, re_all) = c.collect_until(Duration::from_secs(2), |_| false);
+    let re_vt = re_all.rsplit("\u{1b}[2J").next().unwrap_or(&re_all);
+    assert!(
+        re_vt.contains("SESSIONS"),
+        "clicking the rail should expand the sidebar again; got:\n{re_vt}"
+    );
+}
+
+#[test]
+fn agent_status_clears_on_report_clear() {
+    use lumux_core::agent::AgentState;
+    use lumux_core::proto::Command;
+    // A `clear` report (SessionEnd hook) removes the agent from the list even
+    // though the pane/shell is still alive.
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("clr".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| matches!(m, ServerMsg::Attached { .. }));
+    let pane = learn_pane_id(&mut c);
+    c.send(&ClientMsg::Command(Command::ReportAgentState {
+        pane: pane.clone(),
+        agent: "claude".into(),
+        state: AgentState::Working,
+    }));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, shown_all) = c.collect_until(Duration::from_secs(1), |_| false);
+    let shown = shown_all.rsplit("\u{1b}[2J").next().unwrap_or(&shown_all);
+    assert!(shown.contains("claude"), "agent should show after report; got:\n{shown}");
+
+    // Clear it (pane stays alive — no exit).
+    c.send(&ClientMsg::Command(Command::ClearAgentState { pane }));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, gone_all) = c.collect_until(Duration::from_secs(1), |_| false);
+    let gone = gone_all.rsplit("\u{1b}[2J").next().unwrap_or(&gone_all);
+    assert!(
+        !gone.contains("claude"),
+        "a cleared agent must leave the list while its pane lives; got:\n{gone}"
     );
 }

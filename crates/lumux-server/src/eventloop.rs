@@ -587,6 +587,12 @@ where
                     self.render_all_clients();
                 }
             }
+            Command::ClearAgentState { pane } => {
+                if let Ok(pid) = pane.parse::<PaneId>() {
+                    self.daemon.clear_agent_status(pid);
+                    self.render_all_clients();
+                }
+            }
         }
     }
 
@@ -908,10 +914,17 @@ where
         let Some(viewport) = self.daemon.content_viewport(session) else {
             return;
         };
-        // A click in the sidebar columns (left of the content origin) selects the
-        // session/agent row it lands on rather than a pane.
+        // A click in the sidebar columns (left of the content origin) either
+        // hits the collapse/expand toggle button or selects the session/agent
+        // row it lands on.
         if col < viewport.x {
-            if let Some(pick) =
+            if self
+                .daemon
+                .sidebar_toggle_hit(session, col, row, size.rows as usize)
+            {
+                let now = self.daemon.sidebar_collapsed(session);
+                self.set_session_sidebar_collapsed(session, !now);
+            } else if let Some(pick) =
                 self.daemon
                     .sidebar_pick_at(session, row as usize, size.rows as usize)
             {
@@ -2223,6 +2236,22 @@ where
         if let Some(size) = self.daemon.server.effective_size(session) {
             // resize_session reads the new sidebar width via content_viewport, so
             // the PTYs reflow to cols - sidebar_width.
+            self.daemon.resize_session(session, size);
+        }
+        for id in self.session_clients(session) {
+            self.daemon.invalidate_client(id);
+            self.render_client(id);
+        }
+    }
+
+    /// Collapse/expand the sidebar for `session` and reflow. Like
+    /// `set_session_sidebar`, the width change resizes every pane of the session.
+    fn set_session_sidebar_collapsed(&mut self, session: SessionId, collapsed: bool) {
+        if self.daemon.sidebar_collapsed(session) == collapsed {
+            return;
+        }
+        self.daemon.set_sidebar_collapsed(session, collapsed);
+        if let Some(size) = self.daemon.server.effective_size(session) {
             self.daemon.resize_session(session, size);
         }
         for id in self.session_clients(session) {

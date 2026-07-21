@@ -22,15 +22,20 @@ pub fn build_report_command(
     agent: Option<&str>,
     getenv: impl Fn(&str) -> Option<OsString>,
 ) -> anyhow::Result<Cmd> {
-    let state: AgentState = state
-        .parse()
-        .map_err(|e: lumux_core::agent::AgentStateParseError| anyhow::anyhow!(e.to_string()))?;
     let pane = getenv("LUMUX_PANE")
         .and_then(|v| v.into_string().ok())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!("report-state must run inside a lumux pane ($LUMUX_PANE is unset)")
         })?;
+    // `clear` removes the pane from the agents list (the agent exited but the
+    // shell/pane lives on, so nothing else would drop it).
+    if state.eq_ignore_ascii_case("clear") {
+        return Ok(Cmd::ClearAgentState { pane });
+    }
+    let state: AgentState = state
+        .parse()
+        .map_err(|e: lumux_core::agent::AgentStateParseError| anyhow::anyhow!(e.to_string()))?;
     let agent = agent
         .map(str::to_string)
         .or_else(|| getenv("LUMUX_AGENT").and_then(|v| v.into_string().ok()))
@@ -43,6 +48,9 @@ pub fn build_report_command(
 /// is `(claude_hook_event, state)`. Kept as data so it can be asserted in tests
 /// and rendered into the settings JSON.
 pub const CLAUDE_HOOK_EVENTS: &[(&str, &str)] = &[
+    // The agent just launched → show it immediately (idle until the first
+    // prompt), so it appears in the sidebar the moment Claude Code starts.
+    ("SessionStart", "idle"),
     // The user submitted a prompt / a tool is about to run → the agent is busy.
     ("UserPromptSubmit", "working"),
     ("PreToolUse", "working"),
@@ -50,9 +58,10 @@ pub const CLAUDE_HOOK_EVENTS: &[(&str, &str)] = &[
     ("Notification", "blocked"),
     // The turn finished, prompt is back → idle.
     ("Stop", "idle"),
-    // The session ended → mark done (best-effort; the pane usually exits too,
-    // which clears status daemon-side regardless).
-    ("SessionEnd", "done"),
+    // The agent exited but its pane/shell stays alive, so remove it from the
+    // agents list (nothing else would clear it — close_pane only fires on a
+    // pane's own death).
+    ("SessionEnd", "clear"),
 ];
 
 /// Install the state-reporting hooks for `agent`. Only `claude` is supported for
@@ -228,6 +237,21 @@ mod tests {
         let err =
             build_report_command("frobbing", None, env_of(&[("LUMUX_PANE", "%1")])).unwrap_err();
         assert!(err.to_string().contains("idle, working, blocked"));
+    }
+
+    #[test]
+    fn clear_builds_a_clear_command() {
+        let cmd = build_report_command("clear", None, env_of(&[("LUMUX_PANE", "%9")])).unwrap();
+        assert_eq!(cmd, Cmd::ClearAgentState { pane: "%9".into() });
+    }
+
+    #[test]
+    fn hooks_cover_launch_and_exit() {
+        // SessionStart makes the agent appear immediately; SessionEnd clears it
+        // so it vanishes when the agent exits (the pane lives on).
+        let map: std::collections::HashMap<_, _> = CLAUDE_HOOK_EVENTS.iter().copied().collect();
+        assert_eq!(map.get("SessionStart"), Some(&"idle"));
+        assert_eq!(map.get("SessionEnd"), Some(&"clear"));
     }
 
     #[test]
