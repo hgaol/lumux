@@ -115,6 +115,26 @@ fn status_bar_occupies_bottom_row() {
 }
 
 #[test]
+fn status_bar_aligns_unicode_segments_by_display_width() {
+    let status = StatusBar {
+        left: "界e\u{301}".into(),
+        right: "👩‍💻".into(),
+    };
+    let mut screen = Screen::new(5, 1);
+
+    status.render(&mut screen);
+
+    let expected = ["界", " ", "e\u{301}", "👩‍💻", " "];
+    for (x, text) in expected.into_iter().enumerate() {
+        assert_eq!(
+            screen.cell(x, 0).map(Cell::str),
+            Some(text),
+            "unexpected status cell at column {x}"
+        );
+    }
+}
+
+#[test]
 fn reserved_status_row_keeps_panes_out_of_bottom_line() {
     // Regression: the daemon composes with status=None but reserve_status_row=true
     // (it paints its own styled bar). The pane must be laid out into rows 0..h-1
@@ -225,14 +245,35 @@ fn renderer_invalidate_forces_repaint() {
 }
 
 #[test]
+fn renderer_skips_an_identical_screen() {
+    let layout = PaneNode::leaf(p(1));
+    let mut grids = BTreeMap::new();
+    grids.insert(p(1), grid_with("same", 10, 2));
+    let view = WindowView {
+        layout: &layout,
+        grids: &refs(&grids),
+        active_pane: p(1),
+        active_border: None,
+        inactive_border: None,
+    };
+    let screen = compose((10, 2), &view, None, false, 0);
+    let mut renderer = ClientRenderer::new();
+    assert!(!renderer.render(screen.clone()).is_empty());
+    assert!(
+        renderer.render(screen).is_empty(),
+        "an identical projection should not emit a cursor-only frame"
+    );
+}
+
+#[test]
 fn repaint_roundtrip_preserves_text_with_inline_sgr() {
     // PSReadLine emits text with mid-line SGR color changes and cursor moves.
     // Reproduce a line like "lm new -s aaa" where color toggles mid-word, render
     // the grid, full_repaint it to VT, replay that VT into a fresh grid, and
     // confirm the text is identical — i.e. the diff/repaint doesn't shift columns.
     use crate::grid::Grid;
-    use crate::render::{compose, full_repaint, WindowView};
     use crate::model::{PaneId, PaneNode};
+    use crate::render::{compose, full_repaint, WindowView};
     use std::collections::BTreeMap;
 
     // Source grid: type "lm new -s aaa" with an SGR color flip before "new"
@@ -244,7 +285,13 @@ fn repaint_roundtrip_preserves_text_with_inline_sgr() {
     let layout = PaneNode::leaf(PaneId(1));
     let mut grids: BTreeMap<PaneId, &Grid> = BTreeMap::new();
     grids.insert(PaneId(1), &src);
-    let view = WindowView { layout: &layout, grids: &grids, active_pane: PaneId(1), active_border: None, inactive_border: None };
+    let view = WindowView {
+        layout: &layout,
+        grids: &grids,
+        active_pane: PaneId(1),
+        active_border: None,
+        inactive_border: None,
+    };
     let screen = compose((80, 4), &view, None, false, 0);
 
     // The composed screen's row 0 must read the literal text (no shift).
@@ -260,7 +307,8 @@ fn repaint_roundtrip_preserves_text_with_inline_sgr() {
     let mut replay = Grid::new(80, 4, 100);
     replay.feed(vt.as_bytes());
     assert_eq!(
-        replay.screen_text()[0], "PS> lm new -s aaa",
+        replay.screen_text()[0],
+        "PS> lm new -s aaa",
         "repaint VT must reproduce the same text without column shift; got {:?}",
         replay.screen_text()[0]
     );
@@ -392,7 +440,34 @@ fn styled_status_segments_do_not_overlap() {
     s.render(&mut tiny);
     let row = tiny.row_string(0);
     assert_eq!(row.chars().count(), 2, "row exactly fills width 2: {row:?}");
-    assert!(!row.contains("CC"), "centre dropped when it can't fit: {row:?}");
+    assert!(
+        !row.contains("CC"),
+        "centre dropped when it can't fit: {row:?}"
+    );
+}
+
+#[test]
+fn styled_status_keeps_unicode_segments_disjoint() {
+    let status = StyledStatus {
+        left: span("界"),
+        centre: span("e\u{301}"),
+        right: span("👩‍💻"),
+        base: StyledStatus::base_attrs("colour236", "white"),
+        justify: Justify::Centre,
+    };
+    let mut screen = Screen::new(5, 1);
+
+    status.render(&mut screen);
+
+    assert_eq!(status.centre_start(5), 2);
+    let expected = ["界", " ", "e\u{301}", "👩‍💻", " "];
+    for (x, text) in expected.into_iter().enumerate() {
+        assert_eq!(
+            screen.cell(x, 0).map(Cell::str),
+            Some(text),
+            "unexpected styled-status cell at column {x}"
+        );
+    }
 }
 
 /// `centre_start` (used for click hit-testing) must equal the column where
@@ -451,7 +526,10 @@ fn blit_grid_scrolled_keeps_wide_char_columns() {
     let row0 = screen.row_string(0);
     // The wide glyph occupies two columns (中 + a spacer rendered as a space),
     // with "AB" right after — no dropped or shifted columns.
-    assert!(row0.starts_with("中 AB"), "wide char + following ASCII must stay aligned; got {row0:?}");
+    assert!(
+        row0.starts_with("中 AB"),
+        "wide char + following ASCII must stay aligned; got {row0:?}"
+    );
     // Column 0 is the wide glyph; column 1 is its spacer; 'A' sits at column 2.
     assert_eq!(screen.cell(0, 0).map(|c| c.str()), Some("中"));
     assert_eq!(screen.cell(2, 0).map(|c| c.str()), Some("A"));
@@ -587,9 +665,18 @@ fn blit_window_layout_draws_all_panes_and_dividers() {
     blit_window_layout(&mut screen, 0, 0, 20, 5, &layout, &refs(&grids));
 
     let row0 = screen.row_string(0);
-    assert!(row0.contains("LEFT"), "left pane content should render; got {row0:?}");
-    assert!(row0.contains("RIGHT"), "right pane content should render; got {row0:?}");
-    assert!(row0.contains('\u{2502}'), "a vertical divider should separate the panes; got {row0:?}");
+    assert!(
+        row0.contains("LEFT"),
+        "left pane content should render; got {row0:?}"
+    );
+    assert!(
+        row0.contains("RIGHT"),
+        "right pane content should render; got {row0:?}"
+    );
+    assert!(
+        row0.contains('\u{2502}'),
+        "a vertical divider should separate the panes; got {row0:?}"
+    );
 }
 
 #[test]
@@ -605,6 +692,12 @@ fn blit_window_layout_offsets_into_subregion() {
 
     // Row 0 (above the sub-region) is blank; the content sits at row 2, col 5.
     assert_eq!(screen.row_string(0).trim_end(), "");
-    assert_eq!(screen.cell(5, 2).map(|c| c.str().to_string()), Some("H".to_string()));
-    assert_eq!(screen.cell(6, 2).map(|c| c.str().to_string()), Some("I".to_string()));
+    assert_eq!(
+        screen.cell(5, 2).map(|c| c.str().to_string()),
+        Some("H".to_string())
+    );
+    assert_eq!(
+        screen.cell(6, 2).map(|c| c.str().to_string()),
+        Some("I".to_string())
+    );
 }

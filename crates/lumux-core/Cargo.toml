@@ -11,6 +11,7 @@ serde = { workspace = true }
 bincode = { workspace = true }
 bytes = { workspace = true }
 termwiz = { workspace = true }
+unicode-segmentation = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 toml = { workspace = true }

@@ -20,6 +20,7 @@ pub mod persist;
 pub mod proto;
 pub mod render;
 pub mod status;
+pub mod terminal_input;
 
 pub use traits::{
     Clipboard, FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, PtyWriter,

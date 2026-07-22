@@ -560,7 +560,9 @@ dependencies = [
  "lumux-core",
  "lumux-server",
  "serde_json",
+ "tempfile",
  "toml",
+ "toml_edit",
  "tracing",
  "tracing-subscriber",
  "windows-sys 0.59.0",
@@ -597,6 +599,7 @@ dependencies = [
  "thiserror",
  "toml",
  "tracing",
+ "unicode-segmentation",
 ]
 
 [[package]]

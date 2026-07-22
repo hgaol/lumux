@@ -122,8 +122,11 @@ impl TestClient {
             }
             match self.rx.recv_timeout(remaining) {
                 Ok(msg) => {
-                    if let ServerMsg::Frame(b) = &msg {
-                        vt.push_str(&String::from_utf8_lossy(b));
+                    match &msg {
+                        ServerMsg::Frame(b) | ServerMsg::FrameAt { bytes: b, .. } => {
+                            vt.push_str(&String::from_utf8_lossy(b));
+                        }
+                        _ => {}
                     }
                     if pred(&msg) {
                         return (true, vt);
@@ -158,7 +161,9 @@ impl TestClient {
                 return (vt.contains(needle), vt);
             }
             match self.rx.recv_timeout(remaining) {
-                Ok(ServerMsg::Frame(b)) => vt.push_str(&String::from_utf8_lossy(&b)),
+                Ok(ServerMsg::Frame(b) | ServerMsg::FrameAt { bytes: b, .. }) => {
+                    vt.push_str(&String::from_utf8_lossy(&b));
+                }
                 Ok(_) => {}
                 Err(_) => return (vt.contains(needle), vt),
             }
@@ -176,7 +181,9 @@ impl TestClient {
                 return vt;
             }
             match self.rx.recv_timeout(remaining) {
-                Ok(ServerMsg::Frame(b)) => vt.push_str(&String::from_utf8_lossy(&b)),
+                Ok(ServerMsg::Frame(b) | ServerMsg::FrameAt { bytes: b, .. }) => {
+                    vt.push_str(&String::from_utf8_lossy(&b));
+                }
                 Ok(_) => {}
                 Err(_) => return vt,
             }
@@ -211,7 +218,10 @@ fn attach_creates_session_over_named_pipe() {
         session: Some("work".into()),
         size: size(),
     });
-    assert!(c.wait_attached(), "daemon must ack the attach over the pipe");
+    assert!(
+        c.wait_attached(),
+        "daemon must ack the attach over the pipe"
+    );
 }
 
 #[test]
@@ -259,12 +269,18 @@ fn tmux_config_default_shell_is_used() {
         shell: None, // use the daemon's configured default
         size: size(),
     });
-    assert!(c.wait_attached(), "session with configured default shell attaches");
+    assert!(
+        c.wait_attached(),
+        "session with configured default shell attaches"
+    );
     c.send(&ClientMsg::Command(Command::SendKeys {
         keys: b"echo TMUX_DEFAULT_SHELL_OK\r\n".to_vec(),
     }));
     let (ok, vt) = c.collect_text(Duration::from_secs(12), "TMUX_DEFAULT_SHELL_OK");
-    assert!(ok, "configured tmux default-shell must run the command; got:\n{vt}");
+    assert!(
+        ok,
+        "configured tmux default-shell must run the command; got:\n{vt}"
+    );
 }
 
 #[test]
@@ -323,9 +339,7 @@ fn detach_then_reattach_preserves_session_windows() {
     c1.send(&ClientMsg::Input(b"echo PERSIST_WIN\r\n".to_vec()));
     c1.collect_text(Duration::from_secs(8), "PERSIST_WIN");
     c1.send(&ClientMsg::Detach);
-    c1.wait_for(Duration::from_secs(2), |m| {
-        matches!(m, ServerMsg::Detached)
-    });
+    c1.wait_for(Duration::from_secs(2), |m| matches!(m, ServerMsg::Detached));
     drop(c1);
 
     let mut c2 = TestClient::connect(&path);
@@ -346,9 +360,10 @@ fn list_sessions_reports_session() {
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "alpha");
     c.send(&ClientMsg::Command(Command::ListSessions));
-    let (ok, reply) = c.wait_for(Duration::from_secs(3), |m| {
-        matches!(m, ServerMsg::Reply(t) if t.contains("alpha"))
-    });
+    let (ok, reply) = c.wait_for(
+        Duration::from_secs(3),
+        |m| matches!(m, ServerMsg::Reply(t) if t.contains("alpha")),
+    );
     assert!(ok, "ls should report the live session; got:\n{reply}");
 }
 
@@ -420,9 +435,7 @@ fn control_command_then_detach_is_bounded() {
     // ordering the control client uses.
     c.send(&ClientMsg::Command(Command::NewWindow { name: None }));
     c.send(&ClientMsg::Detach);
-    let (detached, _) = c.wait_for(Duration::from_secs(3), |m| {
-        matches!(m, ServerMsg::Detached)
-    });
+    let (detached, _) = c.wait_for(Duration::from_secs(3), |m| matches!(m, ServerMsg::Detached));
     assert!(
         detached,
         "daemon must answer Detach with Detached so the CLI client is bounded"
@@ -438,9 +451,10 @@ fn control_command_then_detach_is_bounded() {
     });
     assert!(c2.wait_attached(), "control client attach must succeed");
     c2.send(&ClientMsg::Command(Command::ListSessions));
-    let (ok, reply) = c2.wait_for(Duration::from_secs(3), |m| {
-        matches!(m, ServerMsg::Reply(t) if t.contains("2 windows"))
-    });
+    let (ok, reply) = c2.wait_for(
+        Duration::from_secs(3),
+        |m| matches!(m, ServerMsg::Reply(t) if t.contains("2 windows")),
+    );
     assert!(
         ok,
         "the NewWindow command must have been applied before detach; got:\n{reply}"
@@ -459,7 +473,10 @@ fn prefix_question_shows_help_overlay() {
     c.send(&ClientMsg::Input(vec![0x02, b'?']));
     let (saw, vt) = c.collect_text(Duration::from_secs(3), "key bindings");
     assert!(saw, "prefix ? should render the help overlay; got:\n{vt}");
-    assert!(vt.contains("HELP"), "help overlay should show a HELP banner");
+    assert!(
+        vt.contains("HELP"),
+        "help overlay should show a HELP banner"
+    );
     // Any key dismisses it.
     c.send(&ClientMsg::Input(b"q".to_vec()));
     let vt2 = c.drain(Duration::from_secs(2));
@@ -823,13 +840,19 @@ fn next_layout_rearranges_and_keeps_session_usable() {
     c.send(&ClientMsg::Input(vec![0x02, b' ']));
     c.send(&ClientMsg::Resize(WireSize { cols: 90, rows: 24 }));
     let (h, vt1) = c.collect_text(Duration::from_secs(3), "\u{2502}");
-    assert!(h, "even-horizontal should show vertical dividers; got:\n{vt1}");
+    assert!(
+        h,
+        "even-horizontal should show vertical dividers; got:\n{vt1}"
+    );
 
     // prefix Space again -> even-vertical (all stacked): horizontal dividers '─'.
     c.send(&ClientMsg::Input(vec![0x02, b' ']));
     c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
     let (v, vt2) = c.collect_text(Duration::from_secs(3), "\u{2500}");
-    assert!(v, "even-vertical should show horizontal dividers; got:\n{vt2}");
+    assert!(
+        v,
+        "even-vertical should show horizontal dividers; got:\n{vt2}"
+    );
 
     // The shell is still alive and rendering after the rearrangements.
     c.send(&ClientMsg::Command(Command::SendKeys {
@@ -853,9 +876,10 @@ fn source_file_rebinds_prefix_live() {
     c.send(&ClientMsg::Command(Command::SourceFile {
         path: cfg_path.to_string_lossy().to_string(),
     }));
-    let (sourced, _) = c.wait_for(Duration::from_secs(3), |m| {
-        matches!(m, ServerMsg::Reply(t) if t.contains("sourced"))
-    });
+    let (sourced, _) = c.wait_for(
+        Duration::from_secs(3),
+        |m| matches!(m, ServerMsg::Reply(t) if t.contains("sourced")),
+    );
     assert!(sourced, "source-file should reply with confirmation");
 
     // Now Ctrl-a % should split (new prefix); a border appears.
@@ -946,7 +970,10 @@ fn bell_in_pane_output_notifies_client() {
     let (rang, _) = c.wait_for(Duration::from_secs(8), |m| {
         matches!(m, ServerMsg::Event(Event::Bell))
     });
-    assert!(rang, "a BEL in pane output must reach the client as Event::Bell");
+    assert!(
+        rang,
+        "a BEL in pane output must reach the client as Event::Bell"
+    );
 }
 
 #[test]
@@ -955,9 +982,7 @@ fn prefix_s_opens_session_chooser() {
     // Two sessions so the chooser has something to list.
     let mut a = new_cmd_session(&path, "alpha");
     a.send(&ClientMsg::Detach);
-    a.wait_for(Duration::from_secs(2), |m| {
-        matches!(m, ServerMsg::Detached)
-    });
+    a.wait_for(Duration::from_secs(2), |m| matches!(m, ServerMsg::Detached));
     drop(a);
 
     let mut b = new_cmd_session(&path, "beta");
@@ -1013,7 +1038,10 @@ fn session_chooser_previews_all_windows() {
 
     // Open the chooser and force a full repaint.
     c.send(&ClientMsg::Input(vec![0x02, b's']));
-    c.send(&ClientMsg::Resize(WireSize { cols: 100, rows: 30 }));
+    c.send(&ClientMsg::Resize(WireSize {
+        cols: 100,
+        rows: 30,
+    }));
     let vt = c.drain(Duration::from_secs(3));
     // Both window headers appear (0:... and 1:...), with the active window (1)
     // marked '*'.
@@ -1045,10 +1073,13 @@ fn rename_window_via_prompt_updates_status() {
     c.send(&ClientMsg::Input(vec![0x7f; 8])); // backspaces
     c.send(&ClientMsg::Input(b"editor".to_vec()));
     c.send(&ClientMsg::Input(b"\r".to_vec())); // Enter commits
-    // Force a full repaint so the status row (window list) is re-sent.
+                                               // Force a full repaint so the status row (window list) is re-sent.
     c.send(&ClientMsg::Resize(WireSize { cols: 91, rows: 24 }));
     let (named, vt) = c.collect_text(Duration::from_secs(3), "editor");
-    assert!(named, "renamed window should appear in the status bar; got:\n{vt}");
+    assert!(
+        named,
+        "renamed window should appear in the status bar; got:\n{vt}"
+    );
 }
 
 #[test]
@@ -1061,8 +1092,9 @@ fn rename_session_via_cli_command() {
     }));
     // List sessions: the new name must be reported, the old one gone.
     c.send(&ClientMsg::Command(Command::ListSessions));
-    let (ok, reply) = c.wait_for(Duration::from_secs(3), |m| {
-        matches!(m, ServerMsg::Reply(t) if t.contains("newname"))
-    });
+    let (ok, reply) = c.wait_for(
+        Duration::from_secs(3),
+        |m| matches!(m, ServerMsg::Reply(t) if t.contains("newname")),
+    );
     assert!(ok, "rename-session should take effect; got:\n{reply}");
 }

@@ -17,6 +17,7 @@ mod server;
 mod term_unix;
 #[cfg(windows)]
 mod term_win;
+mod terminal_control;
 
 #[derive(Parser)]
 #[command(
@@ -100,9 +101,9 @@ enum Command {
         agent: Option<String>,
     },
     /// Install the hooks that report agent state into a given agent's config so
-    /// the sidebar tracks it automatically. Currently supports: claude.
+    /// the sidebar tracks it automatically. Supports: claude, codex, copilot.
     Integration {
-        /// The agent to wire up (e.g. `claude`).
+        /// The agent to wire up: claude, codex, or copilot.
         agent: String,
     },
 }
@@ -140,9 +141,7 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
             // nesting a multiplexer in itself is rarely intended and usually a
             // mistake (mirrors tmux's $TMUX guard). Unset $LUMUX to force.
             if std::env::var_os("LUMUX").is_some() {
-                anyhow::bail!(
-                    "sessions should be nested with care, unset $LUMUX to force"
-                );
+                anyhow::bail!("sessions should be nested with care, unset $LUMUX to force");
             }
             attach::attach(session, true, shell)
         }
@@ -193,9 +192,11 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::ReportState { state, agent }) => {
-            let cmd =
-                integration::build_report_command(&state, agent.as_deref(), |k| std::env::var_os(k))?;
-            control::send_command(cmd)?;
+            if let Some(cmd) = integration::build_report_command(&state, agent.as_deref(), |key| {
+                std::env::var_os(key)
+            })? {
+                control::send_command(cmd)?;
+            }
             Ok(())
         }
         Some(Command::Integration { agent }) => integration::install(&agent),

@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use termwiz::cell::{Cell, CellAttributes};
 
 use super::diff::{diff, full_repaint};
-use super::screen::Screen;
+use super::screen::{display_width, Screen};
 use crate::grid::Grid;
 use crate::layout::{self, Rect};
 use crate::model::{PaneId, PaneNode};
@@ -45,10 +45,10 @@ impl StatusBar {
         for x in 0..w {
             screen.set_cell(x, y, Cell::new(' ', attrs.clone()));
         }
-        screen.write_str(0, y, &self.left, &attrs);
-        // Right-align the right segment.
-        let rx = w.saturating_sub(self.right.chars().count());
-        screen.write_str(rx, y, &self.right, &attrs);
+        // Preserve the right-aligned segment and clip the left before it.
+        let rx = w.saturating_sub(display_width(&self.right));
+        screen.write_str_clipped(0, y, &self.left, &attrs, rx);
+        screen.write_str_clipped(rx, y, &self.right, &attrs, w - rx);
     }
 }
 
@@ -82,7 +82,9 @@ impl StyledStatus {
     }
 
     fn span_width(spans: &[crate::status::Span]) -> usize {
-        spans.iter().map(|s| s.text.chars().count()).sum()
+        spans.iter().fold(0, |width, span| {
+            width.saturating_add(display_width(&span.text))
+        })
     }
 
     /// Paint `spans` starting at column `x`, clipping at `limit` (exclusive) as
@@ -102,17 +104,19 @@ impl StyledStatus {
         for span in spans {
             // Span attrs override the base, but inherit the base background when
             // the span doesn't set one (so the bar color fills behind text).
-            for ch in span.text.chars() {
-                if x >= stop {
-                    return x;
-                }
-                let mut a = span.attrs.clone();
-                if a.background() == termwiz::color::ColorAttribute::Default {
-                    a.set_background(base.background());
-                }
-                screen.set_cell(x, y, Cell::new(ch, a));
-                x += 1;
+            if x >= stop {
+                return x;
             }
+            let mut attrs = span.attrs.clone();
+            if attrs.background() == termwiz::color::ColorAttribute::Default {
+                attrs.set_background(base.background());
+            }
+            let span_width = display_width(&span.text);
+            let next_x = screen.write_str_clipped(x, y, &span.text, &attrs, stop - x);
+            if next_x - x < span_width {
+                return next_x;
+            }
+            x = next_x;
         }
         x
     }
@@ -350,12 +354,7 @@ pub fn blit_window_layout(
     for (&pid, rect) in &rects {
         if let Some(grid) = grids.get(&pid) {
             // Offset the pane rect into the sub-region before blitting.
-            let placed = Rect::new(
-                ox as u16 + rect.x,
-                oy as u16 + rect.y,
-                rect.cols,
-                rect.rows,
-            );
+            let placed = Rect::new(ox as u16 + rect.x, oy as u16 + rect.y, rect.cols, rect.rows);
             blit_pane(screen, placed, grid);
         }
         // Right divider when this pane doesn't reach the sub-region's right edge.
@@ -401,6 +400,13 @@ impl ClientRenderer {
     /// Produce the VT bytes to bring this client from its last state to
     /// `next`. First call (or after [`invalidate`]) is a full repaint.
     pub fn render(&mut self, next: Screen) -> String {
+        // A requested render can be redundant after event-loop batching (for
+        // example, a no-op hook). Do not emit cursor-only VT for an identical
+        // composed screen; external terminal writes explicitly invalidate this
+        // renderer before requesting their repair frame.
+        if self.last.as_ref() == Some(&next) {
+            return String::new();
+        }
         let out = match &self.last {
             Some(prev) if prev.dimensions() == next.dimensions() => diff(prev, &next),
             _ => full_repaint(&next),

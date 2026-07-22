@@ -8,7 +8,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Bumped whenever the wire format changes incompatibly.
-pub const PROTOCOL_VERSION: u16 = 1;
+pub const PROTOCOL_VERSION: u16 = 5;
 
 /// First frame each side sends after connecting.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,12 +99,33 @@ pub enum ClientMsg {
     },
     /// Raw input bytes from the user's terminal (keystrokes).
     Input(Vec<u8>),
+    /// Whether this interactive client's outer terminal currently has focus.
+    /// The initial state is intentionally implicit/unknown; the daemon treats
+    /// it as potentially focused until the first report arrives.
+    FocusChanged { focused: bool },
     /// The client's terminal was resized.
     Resize(WireSize),
     /// A structured command (the CLI verbs share this path).
     Command(Command),
+    /// A one-shot CLI request that must not join the interactive client set.
+    /// `pane` identifies the caller when the command needs session context.
+    Control(ControlRequest),
     /// Detach this client; the daemon keeps the session alive.
     Detach,
+    /// Raw terminal input paired with the last composed frame the client fully
+    /// wrote and flushed to its terminal. Mouse hit-testing uses the epoch to
+    /// resolve coordinates against what the user actually saw, rather than a
+    /// newer server-side projection that may still be in flight.
+    InputAt { bytes: Vec<u8>, frame_epoch: u64 },
+}
+
+/// Context for a one-shot control request. Unlike [`ClientMsg::Attach`], this
+/// interface has no terminal geometry and therefore cannot resize or render a
+/// session. Hook telemetry and scripting commands use this path.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlRequest {
+    pub command: Command,
+    pub pane: Option<crate::model::PaneId>,
 }
 
 /// Structured control commands (used by both interactive keybindings and the
@@ -113,35 +134,53 @@ pub enum ClientMsg {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum Command {
     ListSessions,
-    KillSession { target: String },
+    KillSession {
+        target: String,
+    },
     KillServer,
-    NewWindow { name: Option<String> },
-    SplitWindow { horizontal: bool },
-    SelectWindow { index: u32 },
+    NewWindow {
+        name: Option<String>,
+    },
+    SplitWindow {
+        horizontal: bool,
+    },
+    SelectWindow {
+        index: u32,
+    },
     NextWindow,
     PrevWindow,
     /// Kill the active window of the client's session (tmux `kill-window`).
     KillWindow,
-    SourceFile { path: String },
-    SendKeys { keys: Vec<u8> },
+    SourceFile {
+        path: String,
+    },
+    SendKeys {
+        keys: Vec<u8>,
+    },
     /// Rename the active window of the client's session.
-    RenameWindow { name: String },
+    RenameWindow {
+        name: String,
+    },
     /// Rename the client's session.
-    RenameSession { name: String },
+    RenameSession {
+        name: String,
+    },
     /// Report a pane's agent state (tmux has no equivalent). Unlike every other
-    /// verb — which acts on the *client's* active session/window — this carries
-    /// an explicit `pane` target, because the reporting process (an agent hook)
-    /// runs detached from the interactive client and may not be the active pane.
-    /// `pane` is the `%N` id string an agent reads from `$LUMUX_PANE`.
+    /// verb — which acts on the *client's* active session/window — the envelope
+    /// carries an explicit pane target, because an agent hook runs detached
+    /// from the interactive client and may not be in the active pane.
     ReportAgentState {
-        pane: String,
-        agent: String,
-        state: crate::agent::AgentState,
+        pane: crate::model::PaneId,
+        report: crate::agent::AgentReport,
     },
     /// Clear a pane's agent status entirely (the agent process exited but the
     /// pane/shell is still alive, so it should leave the agents list). Fired by
-    /// an agent's SessionEnd-style hook. `pane` is the `%N` id from $LUMUX_PANE.
-    ClearAgentState { pane: String },
+    /// an agent's SessionEnd-style hook. The sequence is retained as a tombstone
+    /// so an older in-flight report cannot resurrect the cleared agent.
+    ClearAgentState {
+        pane: crate::model::PaneId,
+        clear: crate::agent::AgentClear,
+    },
 }
 
 /// Daemon -> client.
@@ -159,6 +198,11 @@ pub enum ServerMsg {
     Detached,
     /// A non-fatal error string for display.
     Error(String),
+    /// A composed terminal frame with an interaction epoch. The attach client
+    /// publishes this epoch to its input thread only after stdout is flushed.
+    /// Out-of-band VT sequences such as clipboard and mouse-mode controls keep
+    /// using [`ServerMsg::Frame`] and therefore do not advance interaction state.
+    FrameAt { epoch: u64, bytes: Vec<u8> },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -9,7 +9,7 @@
 
 #![cfg(windows)]
 
-use std::io::{self, Write};
+use std::io;
 
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::System::Console::{
@@ -63,15 +63,15 @@ impl RawTerminal {
             SetConsoleMode(in_handle, new_in);
 
             let mut out = io::stdout();
-            out.write_all(b"\x1b[?1049h\x1b[2J\x1b[H")?;
-            out.flush()?;
-
-            Ok(Self {
-                in_handle,
-                out_handle,
-                orig_in,
-                orig_out,
-            })
+            crate::terminal_control::enter_with_guard(
+                &mut out,
+                Self {
+                    in_handle,
+                    out_handle,
+                    orig_in,
+                    orig_out,
+                },
+            )
         }
     }
 
@@ -92,13 +92,9 @@ impl RawTerminal {
 
 impl Drop for RawTerminal {
     fn drop(&mut self) {
-        // Reset pen + scroll region + autowrap, leave the alt screen, then clear
-        // — so no leftover SGR/geometry/layout bleeds onto the restored primary
-        // screen (mosh ignores the 1049 alt screen). Same sequence as the Unix
-        // backend's RESTORE constant.
+        // Reset every shared VT mode before restoring the native console modes.
         let mut out = io::stdout();
-        let _ = out.write_all(b"\x1b[0m\x1b[r\x1b[?7h\x1b[?1049l\x1b[H\x1b[2J\x1b[?25h");
-        let _ = out.flush();
+        let _ = crate::terminal_control::restore(&mut out);
         unsafe {
             SetConsoleMode(self.in_handle, self.orig_in);
             SetConsoleMode(self.out_handle, self.orig_out);

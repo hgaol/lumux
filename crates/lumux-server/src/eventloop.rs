@@ -13,7 +13,7 @@
 //!
 //! Generic over the backend, so Phase 10's ConPTY backend reuses it verbatim.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::io::Read;
 use std::sync::mpsc::{channel, Sender};
 
@@ -21,10 +21,10 @@ use lumux_core::copymode::osc52;
 use lumux_core::keymap::{Action, BufferKey, CopyKey, PromptKey, Reaction, SearchKey, SessionKey};
 use lumux_core::layout::Direction;
 use lumux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
-use lumux_core::proto::{encode, ClientMsg, Command, Event, ServerMsg};
+use lumux_core::proto::{encode, ClientMsg, Command, ControlRequest, Event, ServerMsg};
 use lumux_core::traits::{FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, Transport};
 
-use crate::daemon::Daemon;
+use crate::daemon::{Daemon, InteractionMap, SidebarClick};
 
 /// Ratio step per keyboard resize-pane keypress (~5% of the split each press).
 const RESIZE_STEP: f32 = 0.05;
@@ -43,6 +43,12 @@ pub enum Msg {
     ClientGone {
         client_id: u64,
     },
+    /// One-shot CLI command. It has no terminal viewport and never becomes an
+    /// interactive client, so it cannot affect PTY sizing or rendering.
+    Control {
+        request: ControlRequest,
+        out: Sender<ServerMsg>,
+    },
     PaneOutput {
         pane: PaneId,
         bytes: Vec<u8>,
@@ -58,10 +64,73 @@ pub enum Msg {
 struct ClientHandle {
     out: Sender<ServerMsg>,
     session: SessionId,
+    /// Host-window focus is unknown until DEC mode 1004 emits its first report.
+    /// Unknown is deliberately observable: terminals that do not implement
+    /// focus reporting retain the historical, conservative behavior.
+    outer_focus: OuterFocus,
     /// Bytes of an SGR mouse report that arrived truncated at a frame boundary
     /// (SSH/TCP can split one report across reads). Held here and prepended to
     /// the next frame so the report is reassembled instead of leaking as text.
     pending_mouse: Vec<u8>,
+    /// Epoch attached to a mouse report whose bytes span protocol messages.
+    /// The first fragment determines which rendered frame its coordinates use.
+    pending_mouse_epoch: Option<u64>,
+    /// Per-client sequence for composed frames. Epoch zero is reserved for the
+    /// pre-first-frame state published by attach.
+    next_frame_epoch: u64,
+    /// Bounded interaction history for frames already sent to this client. A
+    /// slow terminal may report input against an older stdout-applied epoch even
+    /// after newer frames have been queued on the independent writer thread.
+    frame_history: VecDeque<FrameSnapshot>,
+}
+
+#[derive(Clone)]
+struct FrameSnapshot {
+    epoch: u64,
+    interactions: InteractionMap,
+}
+
+#[derive(Clone)]
+enum InputFrame {
+    /// Legacy `ClientMsg::Input`: preserve live hit-testing for protocol fixtures
+    /// and direct control tests that do not model an attach terminal.
+    Live,
+    /// The client named an epoch no longer retained (or epoch zero before its
+    /// first frame). Mouse input fails closed rather than targeting newer UI.
+    Missing,
+    Applied(Box<FrameSnapshot>),
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum OuterFocus {
+    #[default]
+    Unknown,
+    Focused,
+    Lost,
+}
+
+impl OuterFocus {
+    fn may_observe(self) -> bool {
+        self != Self::Lost
+    }
+}
+
+/// A fact that may make an agent pane observable. All Done -> Idle policy is
+/// coordinated from this seam so focus/navigation callers only report what
+/// happened; they do not decide which panes count as seen or how to repaint.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VisibilityTransition {
+    /// Physical input or a DEC 1004 focus-gain report proves this client can
+    /// observe its active window.
+    ClientObserved(u64),
+    /// A DEC 1004 focus-loss report makes this client ineligible to acknowledge
+    /// completions until later input/focus gain.
+    ClientBlurred(u64),
+    /// Navigation, attach, or a topology change exposed the session's current
+    /// rendered pane set.
+    SessionExposed(SessionId),
+    /// A lifecycle report may have completed a pane that was already on screen.
+    AgentReported(PaneId),
 }
 
 /// State owned exclusively by the control loop.
@@ -78,11 +147,17 @@ struct Loop<S: PtySystem> {
     /// the keymap is in `Mode::Repeat`, the same key re-fires without the
     /// prefix until this deadline; `Msg::Tick` expires it back to Normal.
     repeat_deadlines: HashMap<u64, std::time::Instant>,
+    /// Clients whose final composed view must be emitted when the current
+    /// control-loop message finishes. Nested mutations request rendering here
+    /// instead of sending intermediate frames, so one serialized mutation batch
+    /// produces at most one coherent frame per client.
+    pending_renders: BTreeSet<u64>,
 }
 
 /// How long a repeatable binding (tmux `bind -r`) stays armed after firing,
 /// matching tmux's `repeat-time` default (500ms).
 const REPEAT_TIME: std::time::Duration = std::time::Duration::from_millis(500);
+const FRAME_HISTORY_LIMIT: usize = 32;
 
 /// Run the control loop until no sessions and no clients remain. Spawns one
 /// accept thread for `listener` and blocks driving the loop.
@@ -138,6 +213,7 @@ where
         last_autosave: std::time::Instant::now(),
         state_path,
         repeat_deadlines: HashMap::new(),
+        pending_renders: BTreeSet::new(),
     };
     // Hold one tx so the loop never sees a disconnected channel while idle.
     drop(tx);
@@ -155,7 +231,7 @@ where
     // which now drives the loop before any client connects — can't trip the
     // emptiness check at startup and kill a freshly-bound daemon.
     for msg in rx {
-        if matches!(msg, Msg::ClientConnected { .. }) {
+        if matches!(msg, Msg::ClientConnected { .. } | Msg::Control { .. }) {
             served = true;
         }
         lp.handle(msg);
@@ -206,9 +282,21 @@ where
             Msg::ClientConnected { first, out, reply } => self.on_connect(first, out, reply),
             Msg::ClientInput { client_id, msg } => self.on_input(client_id, msg),
             Msg::ClientGone { client_id } => {
-                // Detach != kill: panes keep running. That is persistence.
+                // Detach != kill: panes keep running. Reconcile the session
+                // through the same geometry seam used by attach/resize/sidebar
+                // changes; a departing smallest client may let every window grow.
+                let session = self.clients.get(&client_id).map(|client| client.session);
                 self.daemon.unregister_client(client_id);
                 self.clients.remove(&client_id);
+                if let Some(session) = session {
+                    self.reflow_session(session);
+                }
+            }
+            Msg::Control { request, out } => {
+                if let Some(reply) = self.on_control(request) {
+                    let _ = out.send(ServerMsg::Reply(reply));
+                }
+                let _ = out.send(ServerMsg::Detached);
             }
             Msg::PaneOutput { pane, bytes } => {
                 let feed = self.daemon.feed_pane(pane, &bytes);
@@ -275,6 +363,7 @@ where
                 }
             }
         }
+        self.flush_renders();
     }
 
     fn on_connect(&mut self, first: ClientMsg, out: Sender<ServerMsg>, reply: Sender<u64>) {
@@ -293,6 +382,12 @@ where
             return;
         };
         self.daemon.register_client(client_id);
+        // New sessions are spawned at the outer terminal size. Reconcile all
+        // windows immediately so a default-on sidebar never hides columns and
+        // inactive windows cannot retain a stale grid.
+        self.reconcile_session_geometry(session);
+        self.daemon
+            .ensure_sidebar_session_visible(client_id, session);
         let _ = out.send(ServerMsg::Attached {
             client_id,
             size: size.into(),
@@ -308,11 +403,25 @@ where
             ClientHandle {
                 out,
                 session,
+                outer_focus: OuterFocus::Unknown,
                 pending_mouse: Vec::new(),
+                pending_mouse_epoch: None,
+                next_frame_epoch: 1,
+                frame_history: VecDeque::new(),
             },
         );
         let _ = reply.send(client_id);
-        self.render_client(client_id);
+        // Attaching makes the active window visible. Match Herdr's active-tab
+        // contract by acknowledging every completed split in that window before
+        // its first frame; the visibility coordinator repaints globally when it
+        // changes state.
+        if !self.coordinate_visibility(VisibilityTransition::SessionExposed(session)) {
+            self.render_session(session);
+        }
+        // Preserve attach ordering even when a configured hook performs slow
+        // synchronous work: the Attached acknowledgement and first coherent
+        // frame must reach the terminal before the hook starts.
+        self.flush_renders();
         // tmux fires client-attached once a client connects to a session.
         self.fire_hook(session, "client-attached");
     }
@@ -333,9 +442,9 @@ where
                     Ok((sid, sz))
                 } else {
                     let name = session.clone().unwrap_or_else(|| "0".into());
-                    let sid = self
-                        .spawn_session(name, None, sz)
-                        .ok_or_else(|| "failed to start session (check the shell command)".to_string())?;
+                    let sid = self.spawn_session(name, None, sz).ok_or_else(|| {
+                        "failed to start session (check the shell command)".to_string()
+                    })?;
                     Ok((sid, sz))
                 }
             }
@@ -349,9 +458,9 @@ where
                 if self.daemon.server.find_session_by_name(&name).is_some() {
                     return Err(format!("duplicate session: {name}"));
                 }
-                let sid = self
-                    .spawn_session(name, shell, sz)
-                    .ok_or_else(|| "failed to start session (check the shell command)".to_string())?;
+                let sid = self.spawn_session(name, shell, sz).ok_or_else(|| {
+                    "failed to start session (check the shell command)".to_string()
+                })?;
                 Ok((sid, sz))
             }
             _ => Err("malformed first message".to_string()),
@@ -370,6 +479,10 @@ where
             Ok((sid, pid, reader)) => {
                 self.pane_session.insert(pid, sid);
                 spawn_pane_reader(pid, reader, self.tx.clone());
+                // Session rows are a global projection. Centralizing their
+                // creation repaint here covers interactive new-session,
+                // detached command-prompt creation, and first attach alike.
+                self.render_global_views();
                 Some(sid)
             }
             Err(e) => {
@@ -384,17 +497,39 @@ where
             return;
         };
         match msg {
-            ClientMsg::Input(bytes) => {
+            input @ (ClientMsg::Input(_) | ClientMsg::InputAt { .. }) => {
+                let (bytes, frame_epoch) = match input {
+                    ClientMsg::Input(bytes) => (bytes, None),
+                    ClientMsg::InputAt { bytes, frame_epoch } => (bytes, Some(frame_epoch)),
+                    _ => unreachable!(),
+                };
+                // Physical keyboard/mouse input proves this host terminal is
+                // focused even if its last DEC 1004 notification said Lost
+                // (focus-gain reports can be dropped by terminal transports).
+                // Restore observability before interpreting the input so a
+                // click on a visible Done agent acknowledges it in this same
+                // coalesced render phase.
+                let input_seen =
+                    self.coordinate_visibility(VisibilityTransition::ClientObserved(client_id));
                 // Any input dismisses a pending display-message (tmux behavior).
                 self.daemon.clear_message(client_id);
                 // Mouse reporting sequences are intercepted here (when enabled)
                 // and never reach the keymap or the shell; everything else is
                 // forwarded to the keymap as before.
                 let keyboard = if self.daemon.mouse_enabled() {
-                    self.extract_and_handle_mouse(client_id, session, &bytes)
+                    self.extract_and_handle_mouse(client_id, session, &bytes, frame_epoch)
                 } else {
                     bytes.clone()
                 };
+                // A sidebar click handled above can switch this client to a
+                // different session. Route any keyboard bytes batched after the
+                // SGR mouse sequence to the newly selected session, never the
+                // snapshot taken before mouse extraction.
+                let routed_session = self
+                    .clients
+                    .get(&client_id)
+                    .map(|client| client.session)
+                    .unwrap_or(session);
                 let reactions = self
                     .daemon
                     .keymap_mut(client_id)
@@ -413,7 +548,7 @@ where
                         self.repeat_deadlines.remove(&client_id);
                     }
                 }
-                let mut session = session;
+                let mut session = routed_session;
                 for r in reactions {
                     match r {
                         Reaction::PassThrough(data) => {
@@ -438,13 +573,6 @@ where
                         }
                         Reaction::Prompt(pk) => {
                             self.handle_prompt_key(client_id, session, pk);
-                            // A command-prompt confirm may have run
-                            // switch-client/new-session, moving the client to a
-                            // different session; keep this batch's local
-                            // `session` in sync for any reactions still to come.
-                            if let Some(h) = self.clients.get(&client_id) {
-                                session = h.session;
-                            }
                         }
                         Reaction::Help(hk) => {
                             self.daemon.help_scroll(client_id, hk);
@@ -456,12 +584,34 @@ where
                             self.handle_buffer_key(client_id, session, bk);
                         }
                         Reaction::PaneNumber(pick) => match pick {
-                            Some(n) => self.daemon.pick_pane_number(client_id, session, n),
+                            Some(n) => {
+                                self.pick_numbered_pane(client_id, session, n);
+                            }
                             None => self.daemon.hide_pane_numbers(client_id),
                         },
                     }
+                    // Any reaction can reach a configured command chain that
+                    // switches this client. Treat the client handle as the
+                    // routing authority between ordered reactions so trailing
+                    // bytes in the same input frame follow the switch too.
+                    if let Some(client) = self.clients.get(&client_id) {
+                        session = client.session;
+                    }
                 }
-                self.render_session(session);
+                if !input_seen {
+                    self.render_session(session);
+                }
+            }
+            ClientMsg::FocusChanged { focused } => {
+                // Losing host focus is state-only. On gain, acknowledge every
+                // Done pane currently rendered for this client's session before
+                // the control loop flushes one coherent global-view update.
+                let transition = if focused {
+                    VisibilityTransition::ClientObserved(client_id)
+                } else {
+                    VisibilityTransition::ClientBlurred(client_id)
+                };
+                self.coordinate_visibility(transition);
             }
             ClientMsg::Resize(size) => {
                 // Update this client's stored size first so effective_size (the
@@ -469,8 +619,10 @@ where
                 // composed screen, and the right-aligned status segment, stay at
                 // the attach-time width and overflow/wrap on the real terminal.
                 self.daemon.server.set_client_size(client_id, size.into());
-                self.daemon.resize_session(session, size.into());
-                self.render_session(session);
+                // Never size PTYs from one client's raw dimensions. The model's
+                // effective size is the minimum across clients, and every window
+                // shares that geometry even while inactive.
+                self.reflow_session(session);
             }
             ClientMsg::Detach => {
                 if let Some(h) = self.clients.get(&client_id) {
@@ -483,8 +635,40 @@ where
     }
 
     fn on_command(&mut self, client_id: u64, session: SessionId, cmd: Command) {
+        if let Some(reply) = self.execute_command(Some(session), cmd) {
+            // Attached clients write Reply text directly to their terminal,
+            // outside ClientRenderer's screen model. Emit any command mutation
+            // first, then invalidate and queue a full repair after the text so
+            // the renderer baseline and the real terminal cannot diverge.
+            self.flush_renders();
+            if let Some(client) = self.clients.get(&client_id) {
+                let _ = client.out.send(ServerMsg::Reply(reply));
+            }
+            self.daemon.invalidate_client(client_id);
+            self.render_client(client_id);
+        }
+    }
+
+    /// Execute a one-shot CLI request without registering a render client. A
+    /// caller pane selects the same session context an attached client would;
+    /// commands issued outside a pane retain the historical first-session
+    /// fallback.
+    fn on_control(&mut self, request: ControlRequest) -> Option<String> {
+        let session = request
+            .pane
+            .and_then(|pane| self.pane_session.get(&pane).copied())
+            .or_else(|| self.daemon.server.session_ids().first().copied());
+        self.execute_command(session, request.command)
+    }
+
+    /// Command execution is shared by attached and one-shot callers. Rendering
+    /// is an outcome of a command, never a prerequisite for invoking it.
+    fn execute_command(&mut self, session: Option<SessionId>, cmd: Command) -> Option<String> {
         match cmd {
             Command::SplitWindow { horizontal } => {
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
                 let dir = if horizontal {
                     SplitDir::Horizontal
                 } else {
@@ -492,124 +676,137 @@ where
                 };
                 self.do_split(session, dir);
                 self.render_session(session);
+                None
             }
             Command::NewWindow { .. } => {
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
                 self.do_new_window(session);
                 self.render_session(session);
+                None
             }
             Command::KillWindow => {
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
                 self.do_kill_window(session);
+                None
             }
             Command::NextWindow => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.focus_next_window();
-                }
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
+                self.do_next_window(session);
                 self.render_session(session);
+                None
             }
             Command::PrevWindow => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.focus_prev_window();
-                }
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
+                self.do_prev_window(session);
                 self.render_session(session);
+                None
             }
-            Command::ListSessions => {
-                let text = self.list_sessions();
-                if let Some(h) = self.clients.get(&client_id) {
-                    let _ = h.out.send(ServerMsg::Reply(text));
-                }
-            }
+            Command::ListSessions => Some(self.list_sessions()),
             Command::SelectWindow { index } => {
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
                 self.select_window_by_number(session, index);
                 self.render_session(session);
+                None
             }
             Command::SendKeys { keys } => {
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
                 // Inject keys as if typed into the active pane (bypassing the
                 // prefix keymap — scripting goes straight to the shell).
                 if let Some(pid) = self.active_pane(session) {
                     let _ = self.daemon.write_pane(pid, &keys);
                 }
+                None
             }
             Command::RenameWindow { name } => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    let wid = s.active_window();
-                    if let Some(w) = s.window_mut(wid) {
-                        w.set_name_manual(name);
-                    }
-                }
-                self.render_session(session);
-            }
-            Command::RenameSession { name } => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.name = name;
-                }
-                self.render_session(session);
-            }
-            Command::SourceFile { path } => {
-                let reply = match std::fs::read_to_string(&path) {
-                    Ok(text) => match crate::parse_config(std::path::Path::new(&path), &text) {
-                        Ok(cfg) => {
-                            self.daemon.set_config(cfg);
-                            self.render_session(session);
-                            format!("sourced {path}\n")
-                        }
-                        Err(e) => format!("config error: {e}\n"),
-                    },
-                    Err(e) => format!("cannot read {path}: {e}\n"),
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
                 };
-                if let Some(h) = self.clients.get(&client_id) {
-                    let _ = h.out.send(ServerMsg::Reply(reply));
-                }
-            }
-            Command::KillSession { target } => {
-                // Match by name; fall back to the current session.
-                let sid = self
+                if let Some(window) = self
                     .daemon
                     .server
-                    .find_session_by_name(&target)
-                    .unwrap_or(session);
-                self.kill_whole_session(sid);
+                    .session(session)
+                    .map(|session| session.active_window())
+                {
+                    self.rename_window(session, window, name);
+                }
+                None
+            }
+            Command::RenameSession { name } => {
+                let Some(session) = session else {
+                    return Some("no sessions\n".into());
+                };
+                self.rename_session(session, name);
+                None
+            }
+            Command::SourceFile { path } => Some(match std::fs::read_to_string(&path) {
+                Ok(text) => match crate::parse_config(std::path::Path::new(&path), &text) {
+                    Ok(cfg) => {
+                        self.daemon.set_config(cfg);
+                        self.reflow_all_sessions();
+                        format!("sourced {path}\n")
+                    }
+                    Err(e) => format!("config error: {e}\n"),
+                },
+                Err(e) => format!("cannot read {path}: {e}\n"),
+            }),
+            Command::KillSession { target } => {
+                // Match by name; fall back to the current session.
+                if let Some(sid) = self.daemon.server.find_session_by_name(&target).or(session) {
+                    self.kill_whole_session(sid);
+                }
+                None
             }
             Command::KillServer => {
                 let ids = self.daemon.server.session_ids();
                 for id in ids {
                     self.kill_whole_session(id);
                 }
+                None
             }
-            Command::ReportAgentState { pane, agent, state } => {
+            Command::ReportAgentState { pane, report } => {
                 // The reporting process (an agent hook) is detached from the
                 // interactive client, so the target pane travels in the payload
-                // (parsed from the `%N` id the agent read from $LUMUX_PANE).
-                if let Ok(pid) = pane.parse::<PaneId>() {
-                    self.daemon
-                        .set_agent_status(pid, lumux_core::agent::AgentStatus::new(agent, state));
-                    // Status shows in the sidebar / chooser, which span all
-                    // sessions, so refresh every client — not just this one.
-                    self.render_all_clients();
+                // as a typed id. The daemon rejects stale report sequences.
+                let mut changed = self.pane_session.contains_key(&pane)
+                    && self.daemon.report_agent_state(pane, report);
+                // Match Herdr's seen contract. A completion reported while its
+                // pane is already rendered for an observing client has been
+                // observed; only background completions remain `done`.
+                changed |= self.coordinate_visibility(VisibilityTransition::AgentReported(pane));
+                // Status shows in the sidebar / chooser, which span all
+                // sessions, so refresh every client — not just this one.
+                if changed {
+                    self.render_global_views();
                 }
+                None
             }
-            Command::ClearAgentState { pane } => {
-                if let Ok(pid) = pane.parse::<PaneId>() {
-                    self.daemon.clear_agent_status(pid);
-                    self.render_all_clients();
+            Command::ClearAgentState { pane, clear } => {
+                if self.daemon.clear_agent_status(pane, clear) {
+                    self.render_global_views();
                 }
+                None
             }
         }
     }
 
     /// Kill a session and notify/disconnect its clients.
     fn kill_whole_session(&mut self, session: SessionId) {
-        // Drop the pane->session map entries for this session's panes.
-        let panes: Vec<PaneId> = self
-            .pane_session
-            .iter()
-            .filter(|(_, s)| **s == session)
-            .map(|(p, _)| *p)
-            .collect();
-        for p in panes {
-            self.pane_session.remove(&p);
+        for pane in self.daemon.close_session(session) {
+            self.pane_session.remove(&pane);
         }
         let gone = self.session_clients(session);
-        self.daemon.server.kill_session(session);
         for id in gone {
             if let Some(h) = self.clients.remove(&id) {
                 let _ = h.out.send(ServerMsg::Event(Event::SessionClosed));
@@ -617,38 +814,353 @@ where
             }
             self.daemon.unregister_client(id);
         }
+        self.render_global_views();
     }
 
-    /// Switch `client_id` to `sid` and force a full repaint (tmux `switch-client`,
-    /// and `new-session` without `-d`). Mirrors the choose-tree confirm path
-    /// (`chooser_confirm`/`SessionKey::Confirm`): both the model's client
-    /// registry (`Server::set_client_session`, which `effective_size` and
-    /// rendering key off) and the event loop's own `ClientHandle.session` (used
-    /// for output routing) must move together, or the two fall out of sync.
+    /// Switch `client_id` to `sid`, then reconcile both sessions. This is the
+    /// only seam allowed to move an interactive client: the model registry,
+    /// event-loop routing, smallest-client geometry, and repaint stay atomic.
     fn switch_client_session(&mut self, client_id: u64, sid: SessionId) {
-        self.daemon.server.set_client_session(client_id, sid);
+        let Some(previous_session) = self.clients.get(&client_id).map(|client| client.session)
+        else {
+            return;
+        };
+        if previous_session == sid {
+            self.coordinate_visibility(VisibilityTransition::SessionExposed(sid));
+            return;
+        }
+        if !self.daemon.server.set_client_session(client_id, sid) {
+            return;
+        }
         if let Some(h) = self.clients.get_mut(&client_id) {
             h.session = sid;
         }
         self.daemon.invalidate_client(client_id);
+        // Batch both geometry changes and the newly-visible acknowledgement
+        // before emitting any frame. Rendering the target between these steps
+        // would briefly show Done and then Idle (and could pair new layouts with
+        // old-sized grids).
+        self.reconcile_session_geometry(previous_session);
+        self.reconcile_session_geometry(sid);
+        self.daemon.ensure_sidebar_session_visible(client_id, sid);
+        self.coordinate_visibility(VisibilityTransition::SessionExposed(sid));
+        self.render_global_views();
+    }
+
+    /// Coordinate every transition that can make agent state visible. This is
+    /// the sole policy seam for host focus, rendered-pane selection, Done ->
+    /// Idle acknowledgement, and the global repaint that follows a change.
+    ///
+    /// Rendering only queues work until the control-loop message completes, so
+    /// callers may continue geometry/topology mutations after this returns and
+    /// still emit one coherent final frame.
+    fn coordinate_visibility(&mut self, transition: VisibilityTransition) -> bool {
+        let panes = match transition {
+            VisibilityTransition::ClientObserved(client_id) => {
+                let Some(client) = self.clients.get_mut(&client_id) else {
+                    return false;
+                };
+                client.outer_focus = OuterFocus::Focused;
+                let session = client.session;
+                self.observable_panes(session)
+            }
+            VisibilityTransition::ClientBlurred(client_id) => {
+                if let Some(client) = self.clients.get_mut(&client_id) {
+                    client.outer_focus = OuterFocus::Lost;
+                }
+                return false;
+            }
+            VisibilityTransition::SessionExposed(session) => self.observable_panes(session),
+            VisibilityTransition::AgentReported(pane) => {
+                if self.agent_pane_is_visible(pane) {
+                    vec![pane]
+                } else {
+                    Vec::new()
+                }
+            }
+        };
+
+        let mut changed = false;
+        for pane in panes {
+            // Do not short-circuit: every visible split must be acknowledged.
+            changed |= self.daemon.acknowledge_agent(pane);
+        }
+        if changed {
+            self.render_global_views();
+        }
+        changed
+    }
+
+    /// Return the session's rendered panes only when some attached client can
+    /// observe them. Model focus survives detach, but visibility does not.
+    fn observable_panes(&self, session: SessionId) -> Vec<PaneId> {
+        if self.session_has_observing_client(session) {
+            self.visible_panes_in_active_window(session)
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The panes actually rendered in a session's active window. Zoom hides all
+    /// but the zoomed pane; without zoom, every split is visible.
+    fn visible_panes_in_active_window(&self, session: SessionId) -> Vec<PaneId> {
+        self.daemon
+            .server
+            .session(session)
+            .and_then(|session| session.window(session.active_window()))
+            .map(|window| match window.zoomed_pane() {
+                Some(pane) => vec![pane],
+                None => window.pane_ids(),
+            })
+            .unwrap_or_default()
+    }
+
+    /// Whether a pane is currently rendered for at least one connected client.
+    /// Window focus and zoom are session-global, so this mirrors the active
+    /// window's rendered pane projection.
+    fn agent_pane_is_visible(&self, pane: PaneId) -> bool {
+        self.pane_session.get(&pane).is_some_and(|session| {
+            if !self.session_has_observing_client(*session) {
+                return false;
+            }
+            self.visible_panes_in_active_window(*session)
+                .contains(&pane)
+        })
+    }
+
+    /// Whether at least one client can currently observe this session. A client
+    /// remains eligible until its terminal explicitly reports focus lost.
+    fn session_has_observing_client(&self, session: SessionId) -> bool {
+        self.clients
+            .values()
+            .any(|client| client.session == session && client.outer_focus.may_observe())
+    }
+
+    /// Apply a focus mutation, then expose the resulting rendered pane set when
+    /// the target was valid. `accepted` deliberately means the focus request
+    /// resolved, not necessarily that the selected id changed: selecting the
+    /// already-active target is still evidence that its contents were seen.
+    fn coordinate_focus(
+        &mut self,
+        session: SessionId,
+        focus: impl FnOnce(&mut Daemon<S>) -> bool,
+    ) -> bool {
+        let accepted = focus(&mut self.daemon);
+        if accepted {
+            self.coordinate_visibility(VisibilityTransition::SessionExposed(session));
+        }
+        accepted
+    }
+
+    /// Apply a topology mutation, then expose the resulting rendered pane set.
+    /// Operations return `None` for a rejected/no-op mutation and may return any
+    /// payload needed for their follow-up work (for example a newly spawned pane
+    /// reader). Keeping zoom-clearing model calls behind this seam makes
+    /// Done -> Idle reconciliation an invariant of topology changes rather than a
+    /// convention each split/layout/swap caller must remember independently.
+    fn coordinate_topology<T>(
+        &mut self,
+        session: SessionId,
+        mutation: impl FnOnce(&mut Daemon<S>) -> Option<T>,
+    ) -> Option<T> {
+        let result = mutation(&mut self.daemon)?;
+        self.coordinate_visibility(VisibilityTransition::SessionExposed(session));
+        Some(result)
+    }
+
+    /// Focus a window through the shared focus/visibility seam.
+    fn focus_window(&mut self, session: SessionId, window: lumux_core::model::WindowId) -> bool {
+        self.coordinate_focus(session, |daemon| {
+            daemon
+                .server
+                .session_mut(session)
+                .is_some_and(|session| session.focus_window(window))
+        })
+    }
+
+    /// Focus a pane in the active window through the shared focus/visibility
+    /// seam. Invalid or stale pane ids remain total no-ops.
+    fn focus_pane(&mut self, session: SessionId, pane: PaneId) -> bool {
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                let window = session.active_window();
+                session
+                    .window_mut(window)
+                    .is_some_and(|window| window.focus_pane(pane))
+            })
+        })
+    }
+
+    /// Resolve the display-panes selection and route its focus through the same
+    /// coordinator used by mouse, keyboard, prompt, and sidebar navigation.
+    fn pick_numbered_pane(&mut self, client_id: u64, session: SessionId, number: u32) -> bool {
+        self.coordinate_focus(session, |daemon| {
+            daemon
+                .pick_pane_number(client_id, session, number)
+                .is_some()
+        })
+    }
+
+    /// Rename through the global-view seam. Session names are embedded in both
+    /// sidebar sections and in every open chooser, including clients attached
+    /// to other sessions.
+    fn rename_session(&mut self, session: SessionId, name: String) -> bool {
+        let changed = self
+            .daemon
+            .server
+            .session_mut(session)
+            .is_some_and(|session| {
+                if session.name == name {
+                    false
+                } else {
+                    session.name = name;
+                    true
+                }
+            });
+        if changed {
+            self.render_global_views();
+        }
+        changed
+    }
+
+    /// Window names appear in the global chooser. Keep their mutation behind
+    /// the same projection lifecycle as prompt and CLI session renames.
+    fn rename_window(
+        &mut self,
+        session: SessionId,
+        window: lumux_core::model::WindowId,
+        name: String,
+    ) -> bool {
+        let changed = self
+            .daemon
+            .server
+            .session_mut(session)
+            .and_then(|session| session.window_mut(window))
+            .is_some_and(|window| {
+                if window.name == name {
+                    false
+                } else {
+                    window.set_name_manual(name);
+                    true
+                }
+            });
+        if changed {
+            self.render_global_views();
+        }
+        changed
+    }
+
+    /// Focus the exact pane represented by an agent row, then apply the active
+    /// window's shared seen lifecycle. Keeping this atomic prevents a stale or
+    /// partial target from focusing only the containing window.
+    fn focus_agent_pane(
+        &mut self,
+        session: SessionId,
+        window: lumux_core::model::WindowId,
+        pane: PaneId,
+    ) -> bool {
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                // Validate the complete target before mutating either focus field.
+                // Sidebar rows can age between render and click when another client
+                // restructures a window; a stale pane must be a total no-op.
+                if !session
+                    .window(window)
+                    .is_some_and(|window| window.pane_ids().contains(&pane))
+                {
+                    return false;
+                }
+                session.focus_window(window)
+                    && session
+                        .window_mut(window)
+                        .is_some_and(|window| window.focus_pane(pane))
+            })
+        })
+    }
+
+    /// Focus a validated window on behalf of an interactive client. Copy state
+    /// is pane-owned, so navigation away from its window must retire it before
+    /// the shared focus mutation and before trailing bytes in the input batch
+    /// are decoded by the keymap.
+    fn focus_client_window(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        window: lumux_core::model::WindowId,
+    ) -> bool {
+        if self
+            .daemon
+            .server
+            .session(session)
+            .and_then(|session| session.window(window))
+            .is_none()
+        {
+            return false;
+        }
+        self.daemon
+            .exit_copy_mode_if_focus_changes(client_id, session, window, None);
+        self.focus_window(session, window)
+    }
+
+    /// Focus a validated pane on behalf of an interactive client while keeping
+    /// the copy-mode target invariant atomic with navigation.
+    fn focus_client_pane(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        window: lumux_core::model::WindowId,
+        pane: PaneId,
+    ) -> bool {
+        if self.daemon.server.session(session).is_none_or(|session| {
+            session
+                .window(window)
+                .is_none_or(|window| !window.pane_ids().contains(&pane))
+        }) {
+            return false;
+        }
+        self.daemon
+            .exit_copy_mode_if_focus_changes(client_id, session, window, Some(pane));
+        self.focus_agent_pane(session, window, pane)
     }
 
     /// Act on a sidebar row click: switch the client to the picked session, and
-    /// for an agent row also focus that session's specific window. Re-renders the
-    /// client afterward.
-    fn apply_sidebar_pick(&mut self, client_id: u64, pick: crate::daemon::ChooserPick) {
-        use crate::daemon::ChooserPick;
-        let sid = match pick {
-            ChooserPick::Session(s) => s,
-            ChooserPick::Window(s, wid) => {
-                if let Some(sess) = self.daemon.server.session_mut(s) {
-                    sess.focus_window(wid);
+    /// for an agent row focus its exact pane and acknowledge an unseen
+    /// completion. The target is produced by the same layout used to render.
+    fn apply_sidebar_pick(&mut self, client_id: u64, pick: crate::daemon::SidebarPick) {
+        use crate::daemon::SidebarPick;
+        let current_session = self.clients.get(&client_id).map(|client| client.session);
+        let (sid, changes_target) = match pick {
+            SidebarPick::Session(session) => {
+                // A cached frame may outlive a session. Validate before clearing
+                // copy state or mutating client routing; stale targets fail closed.
+                if self.daemon.server.session(session).is_none() {
+                    return;
                 }
-                s
+                (session, current_session != Some(session))
+            }
+            SidebarPick::Agent {
+                session,
+                window,
+                pane,
+            } => {
+                // The row may have gone stale after another client restructured
+                // its window. Honor focus_client_pane's all-or-nothing contract:
+                // an invalid pane must not partially switch sessions or dismiss
+                // this client's copy mode.
+                if !self.focus_client_pane(client_id, session, window, pane) {
+                    return;
+                }
+                // focus_client_pane already retired target-bound copy state.
+                (session, false)
             }
         };
+        if changes_target {
+            self.daemon.exit_copy_mode(client_id);
+        }
         self.switch_client_session(client_id, sid);
-        self.render_client(client_id);
+        // Focus affects every client on the target session; acknowledgement is
+        // visible in every sidebar, including clients attached elsewhere.
+        self.render_global_views();
     }
 
     /// The lowest numeric name ("0", "1", …) not already taken by a session,
@@ -657,7 +1169,12 @@ where
         let mut n = 0u32;
         loop {
             let candidate = n.to_string();
-            if self.daemon.server.find_session_by_name(&candidate).is_none() {
+            if self
+                .daemon
+                .server
+                .find_session_by_name(&candidate)
+                .is_none()
+            {
                 return candidate;
             }
             n += 1;
@@ -698,8 +1215,11 @@ where
                     .open_prompt(client_id, session, crate::daemon::PromptTarget::Session);
             }
             Action::FindWindow => {
-                self.daemon
-                    .open_prompt(client_id, session, crate::daemon::PromptTarget::FindWindow);
+                self.daemon.open_prompt(
+                    client_id,
+                    session,
+                    crate::daemon::PromptTarget::FindWindow,
+                );
             }
             Action::CommandPrompt => {
                 self.daemon
@@ -742,7 +1262,11 @@ where
                 let marked = self.daemon.toggle_marked_pane(session);
                 self.daemon.flash_message(
                     client_id,
-                    if marked { "pane marked" } else { "mark cleared" },
+                    if marked {
+                        "pane marked"
+                    } else {
+                        "mark cleared"
+                    },
                 );
                 self.invalidate_session(session);
             }
@@ -751,8 +1275,15 @@ where
             // A bound command chain (tmux `bind key cmd1 \; cmd2`): run each
             // parsed command through the same executor as the `:` prompt.
             Action::RunCommands(cmds) => {
+                let mut routed_session = session;
                 for cmd in cmds {
-                    self.dispatch_parsed(client_id, session, cmd);
+                    self.dispatch_parsed(client_id, routed_session, cmd);
+                    // A command in the chain may switch this client. Route every
+                    // following command through its newly selected session,
+                    // matching command-prompt chains and batched input routing.
+                    if let Some(client) = self.clients.get(&client_id) {
+                        routed_session = client.session;
+                    }
                 }
             }
         }
@@ -766,14 +1297,19 @@ where
         client_id: u64,
         session: SessionId,
         bytes: &[u8],
+        frame_epoch: Option<u64>,
     ) -> Vec<u8> {
         use lumux_core::mouse::{self, MouseButton, MouseKind};
         // Prepend any mouse-report prefix held back from the previous frame (an
         // SGR report split across reads, e.g. over SSH). Taken out of the handle
         // so we don't borrow self.clients across the &mut self calls below.
         let mut input: Vec<u8> = Vec::new();
+        let mut inherited_len = 0;
+        let mut inherited_epoch = None;
         if let Some(h) = self.clients.get_mut(&client_id) {
             if !h.pending_mouse.is_empty() {
+                inherited_len = h.pending_mouse.len();
+                inherited_epoch = h.pending_mouse_epoch.take();
                 input.append(&mut h.pending_mouse);
             }
         }
@@ -786,9 +1322,82 @@ where
 
         let mut rest = Vec::new();
         let mut pending: Vec<u8> = Vec::new();
+        let mut pending_epoch = None;
         let mut i = 0;
         while i < combined.len() {
             if let Some((ev, used)) = mouse::parse(&combined[i..]) {
+                let event_epoch = if i < inherited_len {
+                    inherited_epoch
+                } else {
+                    frame_epoch
+                };
+                let input_frame = self.input_frame(client_id, event_epoch);
+                // A preceding mouse report in this same socket frame may have
+                // selected a sidebar session. Resolve routing per event so a
+                // following wheel/drag never acts on the stale source session.
+                let event_session = match &input_frame {
+                    InputFrame::Live => self
+                        .clients
+                        .get(&client_id)
+                        .map(|client| client.session)
+                        .unwrap_or(session),
+                    InputFrame::Applied(frame) => frame.interactions.session(),
+                    InputFrame::Missing => session,
+                };
+                // Full-screen overlays replace the sidebar and pane plane. A
+                // mouse report over those coordinates must be consumed by the
+                // modal surface, never routed to invisible controls behind it.
+                let frame_is_modal_or_unknown = match &input_frame {
+                    InputFrame::Live => self.daemon.full_screen_overlay_active(client_id),
+                    InputFrame::Missing => true,
+                    InputFrame::Applied(frame) => {
+                        frame.interactions.is_modal()
+                            || self
+                                .daemon
+                                .server
+                                .session(frame.interactions.session())
+                                .is_none()
+                    }
+                };
+                if frame_is_modal_or_unknown {
+                    if matches!(ev.kind, MouseKind::Down(_) | MouseKind::Up(_)) {
+                        self.daemon.cancel_mouse_gestures(client_id);
+                    }
+                    i += used;
+                    continue;
+                }
+                let applied_session_mismatch = match &input_frame {
+                    InputFrame::Applied(frame) => self
+                        .clients
+                        .get(&client_id)
+                        .is_none_or(|client| client.session != frame.interactions.session()),
+                    InputFrame::Live | InputFrame::Missing => false,
+                };
+                if applied_session_mismatch {
+                    if matches!(ev.kind, MouseKind::Down(_) | MouseKind::Up(_)) {
+                        self.daemon.cancel_mouse_gestures(client_id);
+                    }
+                    // Sidebar rows are global navigation targets and remain the
+                    // only safe action on a retained frame from the previously
+                    // routed session. All pane/status/gesture actions fail closed.
+                    if matches!(ev.kind, MouseKind::Down(_))
+                        && matches!(
+                            &input_frame,
+                            InputFrame::Applied(frame)
+                                if frame.interactions.sidebar_click(ev.col, ev.row).is_some()
+                        )
+                    {
+                        self.mouse_select_pane(
+                            client_id,
+                            event_session,
+                            ev.col,
+                            ev.row,
+                            &input_frame,
+                        );
+                    }
+                    i += used;
+                    continue;
+                }
                 // A mouse *press* selects the pane under the pointer first, even
                 // when that pane is a mouse-aware app — otherwise clicking into a
                 // pane running Claude Code / vim / htop forwards the click but
@@ -797,8 +1406,28 @@ where
                 // possible divider drag. Scroll/drag/motion do NOT change focus, so
                 // hover-to-scroll over an unfocused pane keeps working.
                 if matches!(ev.kind, MouseKind::Down(_)) {
-                    self.mouse_select_pane(client_id, session, ev.col, ev.row);
-                    self.daemon.begin_drag(client_id, session, ev.col, ev.row);
+                    self.daemon.cancel_mouse_gestures(client_id);
+                    if self.mouse_select_pane(
+                        client_id,
+                        event_session,
+                        ev.col,
+                        ev.row,
+                        &input_frame,
+                    ) {
+                        i += used;
+                        continue;
+                    }
+                    match &input_frame {
+                        InputFrame::Live => {
+                            self.daemon
+                                .begin_drag(client_id, event_session, ev.col, ev.row);
+                        }
+                        InputFrame::Applied(frame) => self.daemon.begin_drag_in_frame(
+                            client_id,
+                            frame.interactions.divider_at(ev.col, ev.row),
+                        ),
+                        InputFrame::Missing => {}
+                    }
                     // A left-press that didn't grab a divider arms a text
                     // selection; the first drag motion turns it into a copy-mode
                     // selection (tmux drag-to-copy). A press on a divider resizes
@@ -806,20 +1435,32 @@ where
                     if matches!(ev.kind, MouseKind::Down(MouseButton::Left))
                         && !self.daemon.is_dragging_divider(client_id)
                     {
-                        self.daemon.mouse_sel_arm(client_id, session, ev.col, ev.row);
+                        match &input_frame {
+                            InputFrame::Live => {
+                                self.daemon
+                                    .mouse_sel_arm(client_id, event_session, ev.col, ev.row)
+                            }
+                            InputFrame::Applied(frame) => self.daemon.mouse_sel_arm_in_frame(
+                                client_id,
+                                &frame.interactions,
+                                ev.col,
+                                ev.row,
+                            ),
+                            InputFrame::Missing => {}
+                        }
                     }
                 }
                 // If the app in the pane under the pointer enabled mouse
                 // reporting, forward the raw event to it (pane-relative) and skip
                 // lumux's own handling — so the wheel/clicks work inside vim,
-                // htop, Claude Code, etc. (matches tmux). BUT once a divider is
-                // grabbed, the whole gesture (drag + release) is a resize that
-                // belongs to lumux: forwarding it would hand the drag to whatever
-                // mouse-aware app the pointer wanders over, so the divider stops
-                // tracking after a single cell — the classic "can't drag the
-                // separator". While grabbed, never forward.
+                // htop, Claude Code, etc. (matches tmux). BUT once a divider or
+                // text selection is grabbed, the whole gesture (drag + release)
+                // belongs to lumux: forwarding it would hand only the trailing
+                // events to whatever mouse-aware app the pointer wanders over.
+                // While either server gesture owns the pointer, never forward.
                 if !self.daemon.is_dragging_divider(client_id)
-                    && self.try_forward_mouse_to_app(session, &ev)
+                    && !self.daemon.mouse_sel_pending(client_id)
+                    && self.try_forward_mouse_to_app(event_session, &ev, &input_frame)
                 {
                     i += used;
                     continue;
@@ -828,16 +1469,43 @@ where
                     // The press already selected the pane + armed a divider drag
                     // above; nothing more to do for a non-mouse-aware pane.
                     MouseKind::Down(_) => {}
-                    MouseKind::ScrollUp => self.mouse_scroll(client_id, session, ev.col, ev.row, true),
-                    MouseKind::ScrollDown => self.mouse_scroll(client_id, session, ev.col, ev.row, false),
+                    MouseKind::ScrollUp => self.mouse_scroll(
+                        client_id,
+                        event_session,
+                        ev.col,
+                        ev.row,
+                        true,
+                        &input_frame,
+                    ),
+                    MouseKind::ScrollDown => self.mouse_scroll(
+                        client_id,
+                        event_session,
+                        ev.col,
+                        ev.row,
+                        false,
+                        &input_frame,
+                    ),
                     MouseKind::Drag(_) => {
                         // A live/armed text selection takes the drag (extending
                         // the copy-mode selection under the pointer). Otherwise
                         // fall back to moving a grabbed divider.
-                        if self.daemon.mouse_sel_drag(client_id, session, ev.col, ev.row) {
+                        let selecting = match &input_frame {
+                            InputFrame::Live => {
+                                self.daemon
+                                    .mouse_sel_drag(client_id, event_session, ev.col, ev.row)
+                            }
+                            InputFrame::Applied(frame) => self.daemon.mouse_sel_drag_in_frame(
+                                client_id,
+                                &frame.interactions,
+                                ev.col,
+                                ev.row,
+                            ),
+                            InputFrame::Missing => false,
+                        };
+                        if selecting {
                             self.render_client(client_id);
                         } else {
-                            self.mouse_drag(client_id, session, ev.col, ev.row);
+                            self.mouse_drag(client_id, event_session, ev.col, ev.row);
                         }
                     }
                     MouseKind::Up(_) => {
@@ -845,7 +1513,7 @@ where
                         // copy-mode) and emits OSC-52 so the client's local
                         // terminal clipboard is set too — same as keyboard Yank.
                         if self.daemon.mouse_sel_active(client_id) {
-                            let text = self.daemon.mouse_sel_finish(client_id, session);
+                            let text = self.daemon.mouse_sel_finish(client_id);
                             if let Some(k) = self.daemon.keymap_mut(client_id) {
                                 k.reset();
                             }
@@ -854,7 +1522,12 @@ where
                             }
                             self.render_client(client_id);
                         } else {
-                            self.daemon.end_drag(client_id);
+                            // A click without motion leaves MouseSel::Armed;
+                            // release must retire that ownership as well as a
+                            // possible divider grab. Otherwise a later drag or
+                            // wheel can be captured as a continuation of a
+                            // gesture that physically ended here.
+                            self.daemon.cancel_mouse_gestures(client_id);
                         }
                     }
                     // Bare pointer motion: consumed (so it can't leak as text) but
@@ -866,6 +1539,11 @@ where
                 // An SGR report truncated at this frame's end: hold it for the
                 // next frame instead of leaking the bytes to the app as text.
                 pending.extend_from_slice(&combined[i..]);
+                pending_epoch = if i < inherited_len {
+                    inherited_epoch
+                } else {
+                    frame_epoch
+                };
                 break;
             } else if mouse::is_introducer_prefix(&combined[i..])
                 && self.daemon.mouse_sel_pending(client_id)
@@ -877,6 +1555,11 @@ where
                 // the next report is expected: hold it so the release
                 // reassembles instead of being dropped (which would lose the copy).
                 pending.extend_from_slice(&combined[i..]);
+                pending_epoch = if i < inherited_len {
+                    inherited_epoch
+                } else {
+                    frame_epoch
+                };
                 break;
             } else {
                 rest.push(combined[i]);
@@ -885,14 +1568,75 @@ where
         }
         if let Some(h) = self.clients.get_mut(&client_id) {
             h.pending_mouse = pending;
+            h.pending_mouse_epoch = pending_epoch;
         }
         rest
     }
 
+    fn input_frame(&self, client_id: u64, epoch: Option<u64>) -> InputFrame {
+        let Some(epoch) = epoch else {
+            return InputFrame::Live;
+        };
+        self.clients
+            .get(&client_id)
+            .and_then(|client| {
+                client
+                    .frame_history
+                    .iter()
+                    .find(|frame| frame.epoch == epoch)
+            })
+            .cloned()
+            .map(Box::new)
+            .map(InputFrame::Applied)
+            .unwrap_or(InputFrame::Missing)
+    }
+
     /// Click: focus the pane under the cursor, switch windows when the click
     /// lands on a window entry in the status bar's bottom row, or act on a
-    /// sidebar row (switch session / jump to an agent's window).
-    fn mouse_select_pane(&mut self, client_id: u64, session: SessionId, col: u16, row: u16) {
+    /// sidebar row (switch session / jump to an agent's window). Returns true
+    /// when session chrome consumed the press and it must not reach a pane.
+    fn mouse_select_pane(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        col: u16,
+        row: u16,
+        input_frame: &InputFrame,
+    ) -> bool {
+        match input_frame {
+            InputFrame::Missing => return true,
+            InputFrame::Applied(frame) => {
+                let interactions = &frame.interactions;
+                if let Some(click) = interactions.sidebar_click(col, row) {
+                    match click {
+                        SidebarClick::Toggle { collapsed } => {
+                            self.set_session_sidebar_collapsed(interactions.session(), collapsed);
+                        }
+                        SidebarClick::Pick(pick) => {
+                            self.apply_sidebar_pick(client_id, pick);
+                        }
+                        SidebarClick::Chrome => {}
+                    }
+                    return true;
+                }
+                if interactions.on_status_row(row) {
+                    if let Some(window) = interactions.status_window_at(col, row) {
+                        self.focus_client_window(client_id, interactions.session(), window);
+                    }
+                    return true;
+                }
+                if let Some(target) = interactions.pane_at(col, row) {
+                    self.focus_client_pane(
+                        client_id,
+                        target.session(),
+                        target.window(),
+                        target.pane(),
+                    );
+                }
+                return false;
+            }
+            InputFrame::Live => {}
+        }
         let size = self
             .daemon
             .server
@@ -905,65 +1649,49 @@ where
                 .daemon
                 .status_window_at(session, col, size.cols as usize)
             {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.focus_window(wid);
-                }
+                self.focus_client_window(client_id, session, wid);
             }
-            return;
+            return true;
         }
         let Some(viewport) = self.daemon.content_viewport(session) else {
-            return;
+            return false;
         };
         // A click in the sidebar columns (left of the content origin) either
         // hits the collapse/expand toggle button or selects the session/agent
         // row it lands on.
         if col < viewport.x {
-            if self
-                .daemon
-                .sidebar_toggle_hit(session, col, row, size.rows as usize)
-            {
+            if self.daemon.sidebar_toggle_hit(session, col, row) {
                 let now = self.daemon.sidebar_collapsed(session);
                 self.set_session_sidebar_collapsed(session, !now);
             } else if let Some(pick) =
                 self.daemon
-                    .sidebar_pick_at(session, row as usize, size.rows as usize)
+                    .sidebar_pick_at(client_id, session, row as usize, size.rows as usize)
             {
                 self.apply_sidebar_pick(client_id, pick);
             }
-            return;
+            return true;
         }
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            let wid = s.active_window();
-            if let Some(w) = s.window_mut(wid) {
-                let rects = lumux_core::layout::compute(&w.layout, viewport);
-                if let Some(pid) = lumux_core::layout::pane_at(&rects, col, row) {
-                    w.focus_pane(pid);
-                }
+        let pane = self.daemon.pane_at_screen(session, col, row);
+        if let Some(pane) = pane {
+            if let Some(window) = self
+                .daemon
+                .server
+                .session(session)
+                .map(|session| session.active_window())
+            {
+                self.focus_client_pane(client_id, session, window, pane);
             }
         }
+        false
     }
 
     /// Focus the pane whose rectangle contains (col,row), if any. Returns true if
     /// a pane was focused. Used by scroll to target the pane under the pointer.
     fn focus_pane_at(&mut self, session: SessionId, col: u16, row: u16) -> bool {
-        let Some(viewport) = self.daemon.content_viewport(session) else {
+        let Some(pid) = self.daemon.pane_at_screen(session, col, row) else {
             return false;
         };
-        // The status bar row and the sidebar columns hold no pane.
-        if row >= viewport.y + viewport.rows || col < viewport.x {
-            return false;
-        }
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            let wid = s.active_window();
-            if let Some(w) = s.window_mut(wid) {
-                let rects = lumux_core::layout::compute(&w.layout, viewport);
-                if let Some(pid) = lumux_core::layout::pane_at(&rects, col, row) {
-                    w.focus_pane(pid);
-                    return true;
-                }
-            }
-        }
-        false
+        self.focus_pane(session, pid)
     }
 
     /// Wheel: scroll the pane under the pointer. Two cases, matching tmux:
@@ -974,8 +1702,97 @@ where
     ///
     /// While already in copy-mode the current pane keeps scrolling, so an
     /// in-progress selection isn't hijacked.
-    fn mouse_scroll(&mut self, client_id: u64, session: SessionId, col: u16, row: u16, up: bool) {
+    fn mouse_scroll(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        col: u16,
+        row: u16,
+        up: bool,
+        input_frame: &InputFrame,
+    ) {
         use lumux_core::keymap::CopyKey;
+
+        if matches!(input_frame, InputFrame::Missing) {
+            return;
+        }
+        let applied_sidebar = match input_frame {
+            InputFrame::Applied(frame) => frame.interactions.sidebar(),
+            InputFrame::Live | InputFrame::Missing => None,
+        };
+        let live_sidebar = matches!(input_frame, InputFrame::Live)
+            && self
+                .daemon
+                .content_viewport(session)
+                .is_some_and(|viewport| col < viewport.x);
+        if live_sidebar || applied_sidebar.is_some_and(|sidebar| sidebar.contains(col, row)) {
+            let height = match input_frame {
+                InputFrame::Applied(frame) => frame.interactions.size().rows as usize,
+                InputFrame::Live | InputFrame::Missing => self
+                    .daemon
+                    .server
+                    .effective_size(session)
+                    .map(|size| size.rows as usize)
+                    .unwrap_or(24),
+            };
+            let changed = if let Some(sidebar) = applied_sidebar {
+                sidebar.section_at(col, row).is_some_and(|section| {
+                    self.daemon
+                        .scroll_sidebar_section(client_id, session, section, height, up)
+                })
+            } else {
+                self.daemon
+                    .scroll_sidebar(client_id, session, row, height, up)
+            };
+            if changed {
+                self.render_session(session);
+            }
+            return;
+        }
+
+        if let InputFrame::Applied(frame) = input_frame {
+            let interactions = &frame.interactions;
+            let live_copy_mode = self.daemon.in_copy_mode(client_id);
+            if live_copy_mode != interactions.is_copy_mode() {
+                return;
+            }
+            if interactions.is_copy_mode()
+                && interactions
+                    .copy_pane()
+                    .is_none_or(|target| !self.daemon.copy_target_matches(client_id, target))
+            {
+                return;
+            }
+            if !interactions.is_copy_mode() {
+                let Some(target) = interactions.pane_at(col, row) else {
+                    return;
+                };
+                if !self.daemon.interaction_pane_modes_match(target) {
+                    return;
+                }
+                if target.alt_screen() {
+                    let arrow: &[u8] = if up { b"\x1b[A" } else { b"\x1b[B" };
+                    for _ in 0..3 {
+                        let _ = self.daemon.write_pane(target.pane(), arrow);
+                    }
+                    return;
+                }
+                if !up {
+                    return;
+                }
+                if !self.focus_agent_pane(target.session(), target.window(), target.pane()) {
+                    return;
+                }
+                self.daemon
+                    .enter_copy_mode(client_id, interactions.session());
+            }
+            let key = if up { CopyKey::Up } else { CopyKey::Down };
+            for _ in 0..3 {
+                self.daemon
+                    .copy_navigate(client_id, interactions.session(), key);
+            }
+            return;
+        }
 
         // Not yet in copy-mode: decide between alt-screen passthrough and copy.
         if !self.daemon.in_copy_mode(client_id) {
@@ -1006,14 +1823,7 @@ where
 
     /// The pane id whose rectangle contains (col,row), without changing focus.
     fn pane_at_point(&self, session: SessionId, col: u16, row: u16) -> Option<PaneId> {
-        let viewport = self.daemon.content_viewport(session)?;
-        if row >= viewport.y + viewport.rows || col < viewport.x {
-            return None; // status bar row or sidebar column
-        }
-        let s = self.daemon.server.session(session)?;
-        let w = s.window(s.active_window())?;
-        let rects = lumux_core::layout::compute(&w.layout, viewport);
-        lumux_core::layout::pane_at(&rects, col, row)
+        self.daemon.pane_at_screen(session, col, row)
     }
 
     /// The pane and its rectangle containing (col,row) — used to translate a
@@ -1024,16 +1834,7 @@ where
         col: u16,
         row: u16,
     ) -> Option<(PaneId, lumux_core::layout::Rect)> {
-        let viewport = self.daemon.content_viewport(session)?;
-        if row >= viewport.y + viewport.rows || col < viewport.x {
-            return None;
-        }
-        let s = self.daemon.server.session(session)?;
-        let w = s.window(s.active_window())?;
-        let rects = lumux_core::layout::compute(&w.layout, viewport);
-        let pid = lumux_core::layout::pane_at(&rects, col, row)?;
-        let rect = *rects.get(&pid)?;
-        Some((pid, rect))
+        self.daemon.pane_and_rect_at_screen(session, col, row)
     }
 
     /// If the pane under the pointer has mouse reporting on, forward the raw event
@@ -1044,16 +1845,42 @@ where
         &mut self,
         session: SessionId,
         ev: &lumux_core::mouse::MouseEvent,
+        input_frame: &InputFrame,
     ) -> bool {
-        let Some((pid, rect)) = self.pane_and_rect_at_point(session, ev.col, ev.row) else {
-            return false;
+        let (pid, rect, wants_mouse) = match input_frame {
+            InputFrame::Missing => return false,
+            InputFrame::Applied(frame) => {
+                if frame.interactions.is_copy_mode() {
+                    return false;
+                }
+                let Some(target) = frame.interactions.pane_at(ev.col, ev.row) else {
+                    return false;
+                };
+                if !self.daemon.interaction_pane_modes_match(target) {
+                    return false;
+                }
+                (target.pane(), target.rect(), target.wants_mouse())
+            }
+            InputFrame::Live => {
+                let Some((pane, rect)) = self.pane_and_rect_at_point(session, ev.col, ev.row)
+                else {
+                    return false;
+                };
+                (pane, rect, self.daemon.pane_wants_mouse(pane))
+            }
         };
-        if !self.daemon.pane_wants_mouse(pid) {
+        if !wants_mouse {
             return false;
         }
         // Translate screen coords to pane-relative (clamped into the rect).
-        let rel_col = ev.col.saturating_sub(rect.x).min(rect.cols.saturating_sub(1));
-        let rel_row = ev.row.saturating_sub(rect.y).min(rect.rows.saturating_sub(1));
+        let rel_col = ev
+            .col
+            .saturating_sub(rect.x)
+            .min(rect.cols.saturating_sub(1));
+        let rel_row = ev
+            .row
+            .saturating_sub(rect.y)
+            .min(rect.rows.saturating_sub(1));
         let bytes = lumux_core::mouse::encode_sgr(ev.raw_button, rel_col, rel_row, ev.press);
         let _ = self.daemon.write_pane(pid, &bytes);
         true
@@ -1073,11 +1900,12 @@ where
     fn select_window_by_number(&mut self, session: SessionId, number: u32) {
         let base = self.daemon.base_index();
         let pos = number.saturating_sub(base) as usize;
-        if let Some(s) = self.daemon.server.session_mut(session) {
+        let window = self.daemon.server.session(session).and_then(|s| {
             let ids = s.window_ids();
-            if let Some(&wid) = ids.get(pos) {
-                s.focus_window(wid);
-            }
+            ids.get(pos).copied()
+        });
+        if let Some(window) = window {
+            self.focus_window(session, window);
         }
     }
 
@@ -1087,12 +1915,15 @@ where
         let Some(viewport) = self.daemon.content_viewport(session) else {
             return;
         };
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            let wid = s.active_window();
-            if let Some(w) = s.window_mut(wid) {
-                w.focus_direction(dir, viewport);
-            }
-        }
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                let window = session.active_window();
+                session.window_mut(window).is_some_and(|window| {
+                    window.focus_direction(dir, viewport);
+                    true
+                })
+            })
+        });
     }
 
     /// Adjust the divider nearest the active pane (tmux resize-pane) and re-fit
@@ -1128,7 +1959,12 @@ where
     /// ratio-based resize, not an absolute-cell one. No `N` (or an unknown size)
     /// falls back to the same fixed step the interactive Ctrl/Alt-arrow bindings
     /// use.
-    fn do_resize_pane_amount(&mut self, session: SessionId, dir: lumux_core::layout::Direction, cells: Option<u16>) {
+    fn do_resize_pane_amount(
+        &mut self,
+        session: SessionId,
+        dir: lumux_core::layout::Direction,
+        cells: Option<u16>,
+    ) {
         use lumux_core::layout::Direction;
         let (axis, sign): (SplitDir, f32) = match dir {
             Direction::Left => (SplitDir::Horizontal, -1.0),
@@ -1177,8 +2013,10 @@ where
                 if want != on_now {
                     self.daemon.toggle_sync(client_id, session);
                 }
-                self.daemon
-                    .flash_message(client_id, format!("synchronize-panes {}", if want { "on" } else { "off" }));
+                self.daemon.flash_message(
+                    client_id,
+                    format!("synchronize-panes {}", if want { "on" } else { "off" }),
+                );
             }
             return;
         }
@@ -1218,7 +2056,11 @@ where
                         }
                     }
                 }
-                self.daemon.flash_message(client_id, format!("set {option} {value}"));
+                if option == "sidebar-width" {
+                    self.reflow_all_sessions();
+                }
+                self.daemon
+                    .flash_message(client_id, format!("set {option} {value}"));
             }
             Err(msg) => self.daemon.flash_message(client_id, msg),
         }
@@ -1228,14 +2070,15 @@ where
     /// zoomed pane now fills the whole content area (or returns to its split).
     fn zoom_pane(&mut self, session: SessionId) {
         let toggled = self
-            .daemon
-            .server
-            .session_mut(session)
-            .map(|s| {
-                let wid = s.active_window();
-                s.window_mut(wid).map(|w| w.toggle_zoom()).is_some()
+            .coordinate_topology(session, |daemon| {
+                daemon.server.session_mut(session).and_then(|session| {
+                    let window = session.active_window();
+                    session
+                        .window_mut(window)
+                        .map(|window| window.toggle_zoom())
+                })
             })
-            .unwrap_or(false);
+            .is_some();
         if toggled {
             if let Some(size) = self.daemon.server.effective_size(session) {
                 self.daemon.resize_session(session, size);
@@ -1247,19 +2090,15 @@ where
     /// prefix Space) and re-fit the PTYs to the new pane rectangles.
     fn next_layout(&mut self, session: SessionId) {
         let applied = self
-            .daemon
-            .server
-            .session_mut(session)
-            .map(|s| {
-                let wid = s.active_window();
-                if let Some(w) = s.window_mut(wid) {
-                    w.next_layout();
-                    true
-                } else {
-                    false
-                }
+            .coordinate_topology(session, |daemon| {
+                daemon.server.session_mut(session).and_then(|session| {
+                    let window = session.active_window();
+                    session
+                        .window_mut(window)
+                        .map(|window| window.next_layout())
+                })
             })
-            .unwrap_or(false);
+            .is_some();
         if applied {
             if let Some(size) = self.daemon.server.effective_size(session) {
                 self.daemon.resize_session(session, size);
@@ -1271,19 +2110,15 @@ where
     /// `previous-layout`); mirrors [`Self::next_layout`].
     fn prev_layout(&mut self, session: SessionId) {
         let applied = self
-            .daemon
-            .server
-            .session_mut(session)
-            .map(|s| {
-                let wid = s.active_window();
-                if let Some(w) = s.window_mut(wid) {
-                    w.prev_layout();
-                    true
-                } else {
-                    false
-                }
+            .coordinate_topology(session, |daemon| {
+                daemon.server.session_mut(session).and_then(|session| {
+                    let window = session.active_window();
+                    session
+                        .window_mut(window)
+                        .map(|window| window.prev_layout())
+                })
             })
-            .unwrap_or(false);
+            .is_some();
         if applied {
             if let Some(size) = self.daemon.server.effective_size(session) {
                 self.daemon.resize_session(session, size);
@@ -1296,19 +2131,15 @@ where
     /// which cycles, this sets the exact layout the user asked for.
     fn apply_named_layout(&mut self, session: SessionId, kind: lumux_core::model::LayoutKind) {
         let applied = self
-            .daemon
-            .server
-            .session_mut(session)
-            .map(|s| {
-                let wid = s.active_window();
-                if let Some(w) = s.window_mut(wid) {
-                    w.apply_layout(kind);
-                    true
-                } else {
-                    false
-                }
+            .coordinate_topology(session, |daemon| {
+                daemon.server.session_mut(session).and_then(|session| {
+                    let window = session.active_window();
+                    session
+                        .window_mut(window)
+                        .map(|window| window.apply_layout(kind))
+                })
             })
-            .unwrap_or(false);
+            .is_some();
         if applied {
             if let Some(size) = self.daemon.server.effective_size(session) {
                 self.daemon.resize_session(session, size);
@@ -1320,14 +2151,14 @@ where
     /// Reloads from the first existing config candidate, format chosen by
     /// extension (so a tmux-syntax lumux.conf reloads as tmux).
     fn reload_config(&mut self, client_id: u64, session: SessionId) {
-        let found = crate::config_candidates()
-            .into_iter()
-            .find(|p| p.exists());
+        let found = crate::config_candidates().into_iter().find(|p| p.exists());
+        let mut geometry_may_have_changed = false;
         let msg = match found {
             Some(path) => match std::fs::read_to_string(&path) {
                 Ok(text) => match crate::parse_config(&path, &text) {
                     Ok(cfg) => {
                         self.daemon.set_config(cfg);
+                        geometry_may_have_changed = true;
                         "lumux configuration reloaded".to_string()
                     }
                     Err(e) => format!("config error: {e}"),
@@ -1337,7 +2168,11 @@ where
             None => "no config file found".to_string(),
         };
         self.daemon.flash_message(client_id, msg);
-        self.render_session(session);
+        if geometry_may_have_changed {
+            self.reflow_all_sessions();
+        } else {
+            self.render_session(session);
+        }
     }
 
     /// Drive the session switcher. Returns Some(new_session) when the user
@@ -1369,18 +2204,18 @@ where
                 None
             }
             SessionKey::Confirm => {
-                // A pick may be a session or a specific window (choose-tree). The
-                // daemon already switched the client's session (and focused the
-                // window for a window pick); we just sync the loop's mapping.
+                // The chooser returns navigation intent only. Route it through
+                // the same focus + client-switch seams as mouse and commands so
+                // acknowledgement and geometry cannot be bypassed.
                 let pick = self.daemon.chooser_confirm(client_id)?;
                 let sid = match pick {
-                    crate::daemon::ChooserPick::Session(s)
-                    | crate::daemon::ChooserPick::Window(s, _) => s,
+                    crate::daemon::ChooserPick::Session(s) => s,
+                    crate::daemon::ChooserPick::Window(s, window) => {
+                        self.focus_window(s, window);
+                        s
+                    }
                 };
-                if let Some(h) = self.clients.get_mut(&client_id) {
-                    h.session = sid;
-                }
-                self.daemon.invalidate_client(client_id);
+                self.switch_client_session(client_id, sid);
                 Some(sid)
             }
         }
@@ -1392,22 +2227,24 @@ where
         match bk {
             BufferKey::Up => self.daemon.buffer_chooser_move(client_id, -1, None),
             BufferKey::Down => self.daemon.buffer_chooser_move(client_id, 1, None),
-            BufferKey::Index(n) => self.daemon.buffer_chooser_move(client_id, 0, Some(n as usize)),
+            BufferKey::Index(n) => self
+                .daemon
+                .buffer_chooser_move(client_id, 0, Some(n as usize)),
             BufferKey::Delete => self.daemon.buffer_chooser_delete(client_id),
             BufferKey::Cancel => self.daemon.buffer_chooser_cancel(client_id),
             BufferKey::Confirm => self.daemon.buffer_chooser_confirm(client_id, session),
         }
     }
 
-    /// Drive an open rename prompt: edit the buffer, or commit/cancel it.
+    /// Drive an open prompt: edit it, or route its confirmed intent through the
+    /// same focus/command seams used by every other navigation surface.
     fn handle_prompt_key(&mut self, client_id: u64, session: SessionId, pk: PromptKey) {
-        let mut command_line = None;
+        let mut outcome = None;
         match pk {
             PromptKey::Char(c) => self.daemon.prompt_push(client_id, c),
             PromptKey::Backspace => self.daemon.prompt_backspace(client_id),
             PromptKey::Cancel => self.daemon.prompt_cancel(client_id),
-            // Confirm may return a command-prompt line for us to dispatch.
-            PromptKey::Confirm => command_line = self.daemon.prompt_confirm(client_id, session),
+            PromptKey::Confirm => outcome = self.daemon.prompt_confirm(client_id, session),
         }
         // Reset the keymap out of Prompt mode once the prompt closes.
         if matches!(pk, PromptKey::Confirm | PromptKey::Cancel) {
@@ -1415,8 +2252,20 @@ where
                 k.reset();
             }
         }
-        if let Some(line) = command_line {
-            self.dispatch_command_line(client_id, session, &line);
+        match outcome {
+            Some(crate::daemon::PromptOutcome::FocusWindow(window)) => {
+                self.focus_window(session, window);
+            }
+            Some(crate::daemon::PromptOutcome::Command(line)) => {
+                self.dispatch_command_line(client_id, session, &line);
+            }
+            Some(crate::daemon::PromptOutcome::RenameSession(name)) => {
+                self.rename_session(session, name);
+            }
+            Some(crate::daemon::PromptOutcome::RenameWindow { window, name }) => {
+                self.rename_window(session, window, name);
+            }
+            None => {}
         }
     }
 
@@ -1443,7 +2292,12 @@ where
     /// Execute a single parsed command-prompt command. Split out of
     /// [`Self::dispatch_command_line`] so a `;`-chained line runs each segment
     /// through the same logic. Rendering is done once by the caller.
-    fn dispatch_parsed(&mut self, client_id: u64, session: SessionId, cmd: lumux_core::command::ParsedCommand) {
+    fn dispatch_parsed(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        cmd: lumux_core::command::ParsedCommand,
+    ) {
         use lumux_core::command::{Dir, ParsedCommand};
         let dir_to_split = |d: Dir| match d {
             Dir::Horizontal => SplitDir::Horizontal,
@@ -1460,17 +2314,17 @@ where
             ParsedCommand::LastPane => self.do_last_pane(session),
             ParsedCommand::SelectWindow(n) => self.select_window_by_number(session, n),
             ParsedCommand::RenameWindow(name) => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    let wid = s.active_window();
-                    if let Some(w) = s.window_mut(wid) {
-                        w.set_name_manual(name);
-                    }
+                if let Some(window) = self
+                    .daemon
+                    .server
+                    .session(session)
+                    .map(|session| session.active_window())
+                {
+                    self.rename_window(session, window, name);
                 }
             }
             ParsedCommand::RenameSession(name) => {
-                if let Some(s) = self.daemon.server.session_mut(session) {
-                    s.name = name;
-                }
+                self.rename_session(session, name);
             }
             ParsedCommand::FindWindow(q) => {
                 let target = self.daemon.server.session(session).and_then(|s| {
@@ -1483,21 +2337,25 @@ where
                 });
                 match target {
                     Some(wid) => {
-                        if let Some(s) = self.daemon.server.session_mut(session) {
-                            s.focus_window(wid);
-                        }
+                        self.focus_window(session, wid);
                     }
-                    None => self.daemon.flash_message(client_id, format!("no window matching \"{q}\"")),
+                    None => self
+                        .daemon
+                        .flash_message(client_id, format!("no window matching \"{q}\"")),
                 }
             }
             ParsedCommand::BreakPane => self.do_break_pane(session),
             ParsedCommand::RotateWindow { down } => self.do_rotate_window(session, down),
-            ParsedCommand::SwapWindow { src, dst } => self.do_swap_window(client_id, session, src, dst),
+            ParsedCommand::SwapWindow { src, dst } => {
+                self.do_swap_window(client_id, session, src, dst)
+            }
             ParsedCommand::MoveWindow { dst } => self.do_move_window_to(client_id, session, dst),
             ParsedCommand::SwapPane { next, target } => {
                 self.do_swap_pane_target(client_id, session, next, target)
             }
-            ParsedCommand::JoinPane { dir, src } => self.do_join_pane(client_id, session, dir_to_split(dir), src),
+            ParsedCommand::JoinPane { dir, src } => {
+                self.do_join_pane(client_id, session, dir_to_split(dir), src)
+            }
             ParsedCommand::SynchronizePanes(state) => {
                 let on_now = self.daemon.is_synchronized(session);
                 let want = state.unwrap_or(!on_now);
@@ -1507,7 +2365,9 @@ where
             }
             ParsedCommand::DisplayPanes => self.daemon.show_pane_numbers(client_id),
             ParsedCommand::CapturePane => match self.daemon.capture_pane(session) {
-                Some(name) => self.daemon.flash_message(client_id, format!("captured to {name}")),
+                Some(name) => self
+                    .daemon
+                    .flash_message(client_id, format!("captured to {name}")),
                 None => self.daemon.flash_message(client_id, "nothing to capture"),
             },
             ParsedCommand::RespawnPane => self.do_respawn_pane(client_id, session),
@@ -1527,7 +2387,9 @@ where
                 // A named preset applies that layout; a bad name flashes an error.
                 Some(n) => match lumux_core::model::LayoutKind::from_name(&n) {
                     Some(kind) => self.apply_named_layout(session, kind),
-                    None => self.daemon.flash_message(client_id, format!("unknown layout: {n}")),
+                    None => self
+                        .daemon
+                        .flash_message(client_id, format!("unknown layout: {n}")),
                 },
                 // Bare select-layout cycles, like next-layout.
                 None => self.next_layout(session),
@@ -1537,7 +2399,9 @@ where
                 let path = self.state_path.clone();
                 match self.daemon.save_state(&path) {
                     Ok(()) => self.daemon.flash_message(client_id, "state saved"),
-                    Err(e) => self.daemon.flash_message(client_id, format!("save failed: {e}")),
+                    Err(e) => self
+                        .daemon
+                        .flash_message(client_id, format!("save failed: {e}")),
                 }
             }
             ParsedCommand::SetBuffer { name, text } => {
@@ -1550,12 +2414,16 @@ where
             }
             ParsedCommand::SaveBuffer { name, path } => {
                 match self.daemon.save_buffer(name.as_deref(), &path) {
-                    Ok(()) => self.daemon.flash_message(client_id, format!("saved to {path}")),
+                    Ok(()) => self
+                        .daemon
+                        .flash_message(client_id, format!("saved to {path}")),
                     Err(e) => self.daemon.flash_message(client_id, e),
                 }
             }
             ParsedCommand::LoadBuffer { path } => match self.daemon.load_buffer(&path) {
-                Ok(name) => self.daemon.flash_message(client_id, format!("loaded {name}")),
+                Ok(name) => self
+                    .daemon
+                    .flash_message(client_id, format!("loaded {name}")),
                 Err(e) => self.daemon.flash_message(client_id, e),
             },
             ParsedCommand::DeleteBuffer { name } => {
@@ -1566,7 +2434,8 @@ where
             ParsedCommand::NewSession { name, detached } => {
                 let name = name.unwrap_or_else(|| self.next_free_session_name());
                 if self.daemon.server.find_session_by_name(&name).is_some() {
-                    self.daemon.flash_message(client_id, format!("duplicate session: {name}"));
+                    self.daemon
+                        .flash_message(client_id, format!("duplicate session: {name}"));
                 } else {
                     let size = self
                         .daemon
@@ -1576,7 +2445,9 @@ where
                     match self.spawn_session(name, None, size) {
                         Some(sid) if !detached => self.switch_client_session(client_id, sid),
                         Some(_) => {}
-                        None => self.daemon.flash_message(client_id, "new-session: failed to start shell"),
+                        None => self
+                            .daemon
+                            .flash_message(client_id, "new-session: failed to start shell"),
                     }
                 }
             }
@@ -1585,7 +2456,8 @@ where
                     Some(name) => match self.daemon.server.find_session_by_name(&name) {
                         Some(sid) => sid,
                         None => {
-                            self.daemon.flash_message(client_id, format!("no such session: {name}"));
+                            self.daemon
+                                .flash_message(client_id, format!("no such session: {name}"));
                             return;
                         }
                     },
@@ -1599,11 +2471,17 @@ where
                     self.kill_whole_session(id);
                 }
             }
-            ParsedCommand::SwitchClient { target } => match self.daemon.server.find_session_by_name(&target) {
-                Some(sid) => self.switch_client_session(client_id, sid),
-                None => self.daemon.flash_message(client_id, format!("no such session: {target}")),
-            },
-            ParsedCommand::ResizePane { dir, cells } => self.do_resize_pane_amount(session, dir, cells),
+            ParsedCommand::SwitchClient { target } => {
+                match self.daemon.server.find_session_by_name(&target) {
+                    Some(sid) => self.switch_client_session(client_id, sid),
+                    None => self
+                        .daemon
+                        .flash_message(client_id, format!("no such session: {target}")),
+                }
+            }
+            ParsedCommand::ResizePane { dir, cells } => {
+                self.do_resize_pane_amount(session, dir, cells)
+            }
             ParsedCommand::SetOption { option, value } => {
                 self.do_set_option(client_id, &option, &value)
             }
@@ -1616,7 +2494,9 @@ where
                     (Some(dir), _) => self.select_pane(session, dir),
                     // -t .N focuses pane N in the active window (base-index
                     // adjusted, reusing the display-panes picker path).
-                    (None, Some(Target::Pane(n))) => self.daemon.pick_pane_number(client_id, session, n),
+                    (None, Some(Target::Pane(n))) => {
+                        self.pick_numbered_pane(client_id, session, n);
+                    }
                     // -t :N (a window target) or no argument: nothing to do here
                     // (tmux -t on a window would move focus there; v1 keeps
                     // select-pane pane-scoped).
@@ -1630,7 +2510,8 @@ where
             }
             ParsedCommand::BadArgs(usage) => self.daemon.flash_message(client_id, usage),
             ParsedCommand::Unknown(verb) => {
-                self.daemon.flash_message(client_id, format!("unknown command: {verb}"));
+                self.daemon
+                    .flash_message(client_id, format!("unknown command: {verb}"));
             }
         }
     }
@@ -1712,7 +2593,10 @@ where
     /// session, so no spawn/teardown is needed — only the layout changes. The new
     /// window becomes active; we re-fit so the moved pane fills it.
     fn do_break_pane(&mut self, session: SessionId) {
-        if self.daemon.server.break_active_pane(session).is_none() {
+        if self
+            .coordinate_topology(session, |daemon| daemon.server.break_active_pane(session))
+            .is_none()
+        {
             return; // single-pane window: nothing to break out (tmux no-op).
         }
         let size = self
@@ -1724,6 +2608,7 @@ where
         // window and the source window (whose remaining panes grew), then repaint.
         self.daemon.resize_all_windows(session, size);
         self.invalidate_session(session);
+        self.render_global_views();
     }
 
     /// Swap the active pane with its previous (`{`) or next (`}`) sibling in the
@@ -1732,7 +2617,12 @@ where
         let Some(other) = self.daemon.server.sibling_pane(session, next) else {
             return; // single pane: nothing to swap with.
         };
-        if self.daemon.server.swap_active_pane(session, other) {
+        if self
+            .coordinate_topology(session, |daemon| {
+                daemon.server.swap_active_pane(session, other).then_some(())
+            })
+            .is_some()
+        {
             let size = self
                 .daemon
                 .server
@@ -1740,6 +2630,7 @@ where
                 .unwrap_or(PtySize::new(80, 24));
             self.daemon.resize_session(session, size);
             self.invalidate_session(session);
+            self.render_global_views();
         }
     }
 
@@ -1747,16 +2638,27 @@ where
     /// `src` is a window index (base-index offset); None means the previously-
     /// active window. The moved pane keeps its PTY/grid; if the source window
     /// empties it is closed. Re-fits all windows since two changed.
-    fn do_join_pane(&mut self, client_id: u64, session: SessionId, dir: SplitDir, src: Option<u32>) {
+    fn do_join_pane(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        dir: SplitDir,
+        src: Option<u32>,
+    ) {
         // With no -s, tmux joins the MARKED pane if one is set (which may live in
         // another window) — that's the pane-marking workflow. Fall back to the
         // last window's active pane when nothing is marked.
         if src.is_none() {
             if let Some((msid, mpid)) = self.daemon.marked_pane() {
                 if msid == session {
-                    match self.daemon.server.join_specific_pane(session, mpid, dir) {
+                    match self.coordinate_topology(session, |daemon| {
+                        let joined = daemon.server.join_specific_pane(session, mpid, dir);
+                        if joined.is_some() {
+                            daemon.clear_mark_if(mpid);
+                        }
+                        joined
+                    }) {
                         Some(_) => {
-                            self.daemon.clear_mark_if(mpid);
                             let size = self
                                 .daemon
                                 .server
@@ -1764,6 +2666,7 @@ where
                                 .unwrap_or(PtySize::new(80, 24));
                             self.daemon.resize_all_windows(session, size);
                             self.invalidate_session(session);
+                            self.render_global_views();
                             return;
                         }
                         None => { /* marked pane already here / gone: fall through */ }
@@ -1783,17 +2686,17 @@ where
                     s.window_ids().get(idx).copied()
                 }
                 // No -s given: tmux uses the last (previously-active) window.
-                None => s
-                    .window_ids()
-                    .into_iter()
-                    .find(|&w| w != s.active_window()),
+                None => s.window_ids().into_iter().find(|&w| w != s.active_window()),
             }
         };
         let Some(src_wid) = src_wid else {
-            self.daemon.flash_message(client_id, "join-pane: no source window");
+            self.daemon
+                .flash_message(client_id, "join-pane: no source window");
             return;
         };
-        match self.daemon.server.join_pane(session, src_wid, dir) {
+        match self.coordinate_topology(session, |daemon| {
+            daemon.server.join_pane(session, src_wid, dir)
+        }) {
             Some(_) => {
                 let size = self
                     .daemon
@@ -1802,6 +2705,7 @@ where
                     .unwrap_or(PtySize::new(80, 24));
                 self.daemon.resize_all_windows(session, size);
                 self.invalidate_session(session);
+                self.render_global_views();
             }
             None => { /* self-join or unknown window: ignore */ }
         }
@@ -1855,6 +2759,7 @@ where
             .unwrap_or(false);
         if moved {
             self.invalidate_session(session);
+            self.render_global_views();
         }
     }
 
@@ -1862,14 +2767,15 @@ where
     /// re-fit them to their new slots.
     fn do_rotate_window(&mut self, session: SessionId, down: bool) {
         let rotated = self
-            .daemon
-            .server
-            .session_mut(session)
-            .map(|s| {
-                let wid = s.active_window();
-                s.window_mut(wid).map(|w| w.rotate_panes(down)).unwrap_or(false)
+            .coordinate_topology(session, |daemon| {
+                daemon.server.session_mut(session).and_then(|session| {
+                    let window = session.active_window();
+                    session
+                        .window_mut(window)
+                        .and_then(|window| window.rotate_panes(down).then_some(()))
+                })
             })
-            .unwrap_or(false);
+            .is_some();
         if rotated {
             let size = self
                 .daemon
@@ -1878,6 +2784,7 @@ where
                 .unwrap_or(PtySize::new(80, 24));
             self.daemon.resize_session(session, size);
             self.invalidate_session(session);
+            self.render_global_views();
         }
     }
 
@@ -1893,7 +2800,10 @@ where
                 let ids = s.window_ids();
                 let a = match src {
                     Some(n) => (n.saturating_sub(base)) as usize,
-                    None => ids.iter().position(|&w| w == s.active_window()).unwrap_or(0),
+                    None => ids
+                        .iter()
+                        .position(|&w| w == s.active_window())
+                        .unwrap_or(0),
                 };
                 let b = (dst.saturating_sub(base)) as usize;
                 s.swap_windows(a, b)
@@ -1901,8 +2811,10 @@ where
             .unwrap_or(false);
         if swapped {
             self.invalidate_session(session);
+            self.render_global_views();
         } else {
-            self.daemon.flash_message(client_id, "swap-window: bad index");
+            self.daemon
+                .flash_message(client_id, "swap-window: bad index");
         }
     }
 
@@ -1917,8 +2829,10 @@ where
             .unwrap_or(false);
         if moved {
             self.invalidate_session(session);
+            self.render_global_views();
         } else {
-            self.daemon.flash_message(client_id, "move-window: bad index");
+            self.daemon
+                .flash_message(client_id, "move-window: bad index");
         }
     }
 
@@ -1928,7 +2842,9 @@ where
             .server
             .effective_size(session)
             .unwrap_or(PtySize::new(80, 24));
-        if let Ok(Some((pid, reader))) = self.daemon.split_active(session, dir, size) {
+        if let Some((pid, reader)) = self.coordinate_topology(session, |daemon| {
+            daemon.split_active(session, dir, size).ok().flatten()
+        }) {
             self.pane_session.insert(pid, session);
             spawn_pane_reader(pid, reader, self.tx.clone());
             // Re-fit every pane in the window to its exact layout rect (the new
@@ -1936,6 +2852,7 @@ where
             // are now smaller).
             self.daemon.resize_session(session, size);
             self.fire_hook(session, "after-split-window");
+            self.render_global_views();
         }
     }
 
@@ -1950,37 +2867,50 @@ where
             spawn_pane_reader(pid, reader, self.tx.clone());
             self.daemon.resize_session(session, size);
             self.fire_hook(session, "after-new-window");
+            self.render_global_views();
         }
     }
 
     /// Focus the next / previous / last-active window (tmux next/previous/last-
     /// window). Extracted so the keymap and `:` command surfaces share one impl.
     fn do_next_window(&mut self, session: SessionId) {
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            s.focus_next_window();
-        }
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                session.focus_next_window();
+                true
+            })
+        });
     }
 
     fn do_prev_window(&mut self, session: SessionId) {
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            s.focus_prev_window();
-        }
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                session.focus_prev_window();
+                true
+            })
+        });
     }
 
     fn do_last_window(&mut self, session: SessionId) {
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            s.focus_last_window();
-        }
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                session.focus_last_window();
+                true
+            })
+        });
     }
 
     /// Focus the previously-active pane in the active window (tmux `last-pane`).
     fn do_last_pane(&mut self, session: SessionId) {
-        if let Some(s) = self.daemon.server.session_mut(session) {
-            let wid = s.active_window();
-            if let Some(w) = s.window_mut(wid) {
-                w.focus_last_pane();
-            }
-        }
+        self.coordinate_focus(session, |daemon| {
+            daemon.server.session_mut(session).is_some_and(|session| {
+                let window = session.active_window();
+                session.window_mut(window).is_some_and(|window| {
+                    window.focus_last_pane();
+                    true
+                })
+            })
+        });
     }
 
     /// Kill the active pane and run the pane-exit cascade (tmux `kill-pane`).
@@ -2026,7 +2956,15 @@ where
             if let Some((msid, mpid)) = self.daemon.marked_pane() {
                 if msid == session {
                     if let Some(active) = self.active_pane(session) {
-                        if self.daemon.server.swap_panes(session, active, mpid) {
+                        if self
+                            .coordinate_topology(session, |daemon| {
+                                daemon
+                                    .server
+                                    .swap_panes(session, active, mpid)
+                                    .then_some(())
+                            })
+                            .is_some()
+                        {
                             let size = self
                                 .daemon
                                 .server
@@ -2034,6 +2972,7 @@ where
                                 .unwrap_or(PtySize::new(80, 24));
                             self.daemon.resize_all_windows(session, size);
                             self.invalidate_session(session);
+                            self.render_global_views();
                         }
                     }
                     return;
@@ -2047,7 +2986,15 @@ where
         };
         // Swap across windows if needed (target may be in another window).
         if let Some(active) = self.active_pane(session) {
-            if self.daemon.server.swap_panes(session, active, other) {
+            if self
+                .coordinate_topology(session, |daemon| {
+                    daemon
+                        .server
+                        .swap_panes(session, active, other)
+                        .then_some(())
+                })
+                .is_some()
+            {
                 let size = self
                     .daemon
                     .server
@@ -2055,6 +3002,7 @@ where
                     .unwrap_or(PtySize::new(80, 24));
                 self.daemon.resize_all_windows(session, size);
                 self.invalidate_session(session);
+                self.render_global_views();
             }
         }
     }
@@ -2074,15 +3022,18 @@ where
             return Err("no such session".to_string());
         };
         match target {
-            None => Ok(s.window(s.active_window()).map(|w| w.active_pane()).unwrap_or_else(|| {
-                // active_window always resolves in a live session; unreachable in
-                // practice, but avoid an unwrap.
-                s.window_ids()
-                    .first()
-                    .and_then(|&w| s.window(w))
-                    .map(|w| w.active_pane())
-                    .expect("session has at least one window")
-            })),
+            None => Ok(s
+                .window(s.active_window())
+                .map(|w| w.active_pane())
+                .unwrap_or_else(|| {
+                    // active_window always resolves in a live session; unreachable in
+                    // practice, but avoid an unwrap.
+                    s.window_ids()
+                        .first()
+                        .and_then(|&w| s.window(w))
+                        .map(|w| w.active_pane())
+                        .expect("session has at least one window")
+                })),
             Some(Target::Window(n)) => {
                 let pos = n.saturating_sub(base) as usize;
                 s.window_ids()
@@ -2094,7 +3045,10 @@ where
             Some(Target::Pane(n)) => {
                 let pos = n.saturating_sub(base) as usize;
                 let w = s.window(s.active_window()).ok_or("no active window")?;
-                w.pane_ids().get(pos).copied().ok_or_else(|| format!("no pane {n}"))
+                w.pane_ids()
+                    .get(pos)
+                    .copied()
+                    .ok_or_else(|| format!("no pane {n}"))
             }
         }
     }
@@ -2124,8 +3078,16 @@ where
                 self.pane_session.remove(&pane);
                 self.on_pane_exit(session, pane, result);
             }
-            None => self.render_session(session),
+            // remain-on-exit keeps the pane but clears its agent lifecycle.
+            // Agent rows are a global projection, so clients attached to other
+            // sessions must receive that removal too.
+            None => self.render_global_views(),
         }
+        // Historically cleanup was visible before pane-exited hooks ran. Keep
+        // that responsiveness when a hook invokes a slow synchronous command,
+        // while letting any hook-produced mutation form a second coherent
+        // render phase at the outer message flush.
+        self.flush_renders();
         // Fire the pane-exited hook if the session still exists.
         if self.daemon.server.session(session).is_some() {
             self.fire_hook(session, "pane-exited");
@@ -2178,6 +3140,11 @@ where
                     .unwrap_or(PtySize::new(80, 24));
                 self.daemon.resize_all_windows(session, size);
                 self.invalidate_session(session);
+                // Closing a pane/window may reveal a background window. Batch
+                // its seen transition after PTYs/grids have their final geometry
+                // so no intermediate frame combines the new layout with old
+                // dimensions.
+                self.coordinate_visibility(VisibilityTransition::SessionExposed(session));
 
                 let ids = self.session_clients(session);
                 for id in ids {
@@ -2187,10 +3154,14 @@ where
                             status: 0,
                         }));
                     }
-                    self.render_client(id);
                 }
             }
         }
+        // Pane/session cleanup changes the globally rendered session and agent
+        // rows even for clients attached elsewhere. This is the single
+        // invalidation seam for that projection; damage tracking keeps the
+        // resulting update incremental.
+        self.render_global_views();
     }
 
     fn active_pane(&self, session: SessionId) -> Option<PaneId> {
@@ -2206,23 +3177,44 @@ where
             .collect()
     }
 
+    /// Request a final frame for every client attached to `session`. Requests
+    /// are coalesced by client id until the next render-phase flush.
     fn render_session(&mut self, session: SessionId) {
-        for id in self.session_clients(session) {
-            self.render_client(id);
+        self.pending_renders.extend(self.session_clients(session));
+    }
+
+    /// Apply the session's shared outer size to every window. Outer geometry and
+    /// sidebar width are session-global, so inactive windows must be fitted too.
+    fn reconcile_session_geometry(&mut self, session: SessionId) {
+        if let Some(size) = self.daemon.server.effective_size(session) {
+            self.daemon.resize_all_windows(session, size);
         }
     }
 
-    /// Re-render every connected client, regardless of session. Used when a
-    /// change affects views that span all sessions — e.g. an agent-status report
-    /// updates the sidebar / chooser on clients attached to *other* sessions.
-    /// Each renderer is invalidated first so the mostly-static sidebar region
-    /// actually re-emits rather than diffing to nothing.
-    fn render_all_clients(&mut self) {
-        let ids: Vec<u64> = self.clients.keys().copied().collect();
-        for id in ids {
-            self.daemon.invalidate_client(id);
-            self.render_client(id);
+    /// Reconcile one session and repaint its attached clients. Attach uses the
+    /// lower-level reconciler because its Attached acknowledgement must precede
+    /// the first frame; every other lifecycle path uses this complete operation.
+    fn reflow_session(&mut self, session: SessionId) {
+        self.reconcile_session_geometry(session);
+        self.render_session(session);
+    }
+
+    /// Re-fit every session after a config change that may alter sidebar
+    /// geometry. Source-file, reload, and runtime options share this lifecycle.
+    fn reflow_all_sessions(&mut self) {
+        let sessions = self.daemon.server.session_ids();
+        for session in sessions {
+            self.reflow_session(session);
         }
+    }
+
+    /// Request a render for every connected client, regardless of session. Used
+    /// when a change affects views that span all sessions — e.g. an agent-status
+    /// report updates the sidebar / chooser on clients attached to *other* sessions.
+    /// Renderers retain their prior screen so an agent transition emits only
+    /// the changed sidebar/chooser cells rather than clearing every terminal.
+    fn render_global_views(&mut self) {
+        self.pending_renders.extend(self.clients.keys().copied());
     }
 
     /// Show/hide the sidebar for `session` and reflow. Because the sidebar steals
@@ -2233,11 +3225,7 @@ where
             return;
         }
         self.daemon.set_sidebar_visible(session, on);
-        if let Some(size) = self.daemon.server.effective_size(session) {
-            // resize_session reads the new sidebar width via content_viewport, so
-            // the PTYs reflow to cols - sidebar_width.
-            self.daemon.resize_session(session, size);
-        }
+        self.reconcile_session_geometry(session);
         for id in self.session_clients(session) {
             self.daemon.invalidate_client(id);
             self.render_client(id);
@@ -2251,24 +3239,60 @@ where
             return;
         }
         self.daemon.set_sidebar_collapsed(session, collapsed);
-        if let Some(size) = self.daemon.server.effective_size(session) {
-            self.daemon.resize_session(session, size);
-        }
+        self.reconcile_session_geometry(session);
         for id in self.session_clients(session) {
             self.daemon.invalidate_client(id);
             self.render_client(id);
         }
     }
 
+    /// Request one client's final view; repeated requests in the same phase are
+    /// intentionally idempotent.
     fn render_client(&mut self, client_id: u64) {
+        if self.clients.contains_key(&client_id) {
+            self.pending_renders.insert(client_id);
+        }
+    }
+
+    /// Emit the final view requested during this control-loop message. Rendering
+    /// is deliberately delayed until every model, geometry, acknowledgement,
+    /// and overlay mutation in the batch has completed.
+    fn flush_renders(&mut self) {
+        let ids = std::mem::take(&mut self.pending_renders);
+        for client_id in ids {
+            self.emit_client(client_id);
+        }
+    }
+
+    fn emit_client(&mut self, client_id: u64) {
         let Some(session) = self.clients.get(&client_id).map(|h| h.session) else {
             return;
         };
-        if let Some(vt) = self.daemon.render_for_client(client_id, session) {
-            if !vt.is_empty() {
-                if let Some(h) = self.clients.get(&client_id) {
-                    let _ = h.out.send(ServerMsg::Frame(vt.into_bytes()));
+        if let Some(frame) = self.daemon.render_client_frame(client_id, session) {
+            if let Some(h) = self.clients.get_mut(&client_id) {
+                let interactions_changed = h
+                    .frame_history
+                    .back()
+                    .is_none_or(|previous| previous.interactions != frame.interactions);
+                if frame.bytes.is_empty() && !interactions_changed {
+                    return;
                 }
+                let epoch = h.next_frame_epoch;
+                h.next_frame_epoch = epoch.checked_add(1).unwrap_or(1);
+                if epoch == u64::MAX {
+                    h.frame_history.clear();
+                }
+                h.frame_history.push_back(FrameSnapshot {
+                    epoch,
+                    interactions: frame.interactions,
+                });
+                while h.frame_history.len() > FRAME_HISTORY_LIMIT {
+                    h.frame_history.pop_front();
+                }
+                let _ = h.out.send(ServerMsg::FrameAt {
+                    epoch,
+                    bytes: frame.bytes.into_bytes(),
+                });
             }
         }
     }
@@ -2355,6 +3379,26 @@ fn spawn_client<C: Transport + 'static>(conn: C, tx: Sender<Msg>) -> std::io::Re
         .ok_or_else(|| std::io::Error::other("client closed before attach"))?;
     let first: ClientMsg = lumux_core::proto::decode(&first_bytes)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
+
+    // One-shot control requests never register as terminal clients. Keeping
+    // this path before ClientConnected is the architectural guarantee that a
+    // hook/CLI process cannot influence effective_size or receive a render.
+    if let ClientMsg::Control(request) = first {
+        let (out_tx, out_rx) = channel::<ServerMsg>();
+        tx.send(Msg::Control {
+            request,
+            out: out_tx,
+        })
+        .map_err(|_| std::io::Error::other("control loop gone"))?;
+        for msg in out_rx {
+            let done = matches!(msg, ServerMsg::Detached);
+            writer.write_frame(&encode(&msg).map_err(|e| std::io::Error::other(e.to_string()))?)?;
+            if done {
+                break;
+            }
+        }
+        return Ok(());
+    }
 
     let (out_tx, out_rx) = channel::<ServerMsg>();
     let (reply_tx, reply_rx) = channel::<u64>();

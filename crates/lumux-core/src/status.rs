@@ -13,6 +13,8 @@
 use termwiz::cell::CellAttributes;
 use termwiz::color::ColorAttribute;
 
+use crate::render::display_width;
+
 /// A run of text with uniform attributes.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Span {
@@ -81,7 +83,11 @@ pub fn window_list_formatted(
         let ectx = StatusContext {
             window: e.name.clone(),
             window_index: e.index,
-            flags: if e.active { "*".to_string() } else { String::new() },
+            flags: if e.active {
+                "*".to_string()
+            } else {
+                String::new()
+            },
             // Session/host/time carry through so a format may reference them.
             session: ctx.session.clone(),
             host: ctx.host.clone(),
@@ -91,7 +97,10 @@ pub fn window_list_formatted(
         };
         let fmt = if e.active { current_fmt } else { inactive_fmt };
         let entry_spans = format(fmt, &ectx);
-        let width: usize = entry_spans.iter().map(|s| s.text.chars().count()).sum();
+        let width: usize = entry_spans
+            .iter()
+            .map(|span| display_width(&span.text))
+            .sum();
         // Entries default their background to the bar base when unset, so the
         // pill fills correctly (mirrors StyledStatus::paint's inheritance).
         for mut sp in entry_spans {
@@ -107,7 +116,7 @@ pub fn window_list_formatted(
                 text: separator.to_string(),
                 attrs: base.clone(),
             });
-            col += separator.chars().count();
+            col += display_width(separator);
         }
     }
     (spans, ranges)
@@ -123,7 +132,7 @@ pub fn window_list_hit_ranges(entries: &[WindowEntry]) -> Vec<(usize, usize, usi
     let mut ranges = Vec::new();
     let mut col = 0usize;
     for (i, e) in entries.iter().enumerate() {
-        let width = entry_text(e).chars().count();
+        let width = display_width(&entry_text(e));
         ranges.push((i, col, col + width));
         col += width;
         if i + 1 < entries.len() {
@@ -287,7 +296,11 @@ fn substitute_block(body: &str, ctx: &StatusContext) -> String {
         let cond = parts.first().map(String::as_str).unwrap_or("");
         let then_s = parts.get(1).map(String::as_str).unwrap_or("");
         let else_s = parts.get(2).map(String::as_str).unwrap_or("");
-        let chosen = if eval_condition(cond, ctx) { then_s } else { else_s };
+        let chosen = if eval_condition(cond, ctx) {
+            then_s
+        } else {
+            else_s
+        };
         // Expand the chosen branch (it may hold tokens/styles). We only want its
         // text here, so join the resulting spans' text.
         return format(chosen, ctx).into_iter().map(|s| s.text).collect();
@@ -357,7 +370,6 @@ fn split_top_level(s: &str, sep: char) -> Vec<String> {
     out.push(cur);
     out
 }
-
 
 fn substitute_time(t: char, ctx: &StatusContext) -> String {
     let tm = &ctx.time;
@@ -625,7 +637,10 @@ mod tests {
         c.client_prefix = true;
         // The then-branch holds a further #{...} with its own comma; the outer
         // split must not break on that inner comma.
-        let out = joined(&format("#{?client_prefix,#{?client_prefix,YES,no},off}", &c));
+        let out = joined(&format(
+            "#{?client_prefix,#{?client_prefix,YES,no},off}",
+            &c,
+        ));
         assert_eq!(out, "YES");
     }
 
@@ -645,14 +660,22 @@ mod tests {
     fn window_list_formatted_expands_tokens_and_ranges() {
         use termwiz::color::ColorAttribute;
         let entries = vec![
-            WindowEntry { index: 1, name: "bash".into(), active: false },
-            WindowEntry { index: 2, name: "vim".into(), active: true },
+            WindowEntry {
+                index: 1,
+                name: "bash".into(),
+                active: false,
+            },
+            WindowEntry {
+                index: 2,
+                name: "vim".into(),
+                active: true,
+            },
         ];
         let base = CellAttributes::default();
         let (spans, ranges) = window_list_formatted(
             &entries,
-            " #I:#W ",                     // inactive
-            "#[fg=green,bold] #I:#W#F ",   // current (with a #F flag)
+            " #I:#W ",                   // inactive
+            "#[fg=green,bold] #I:#W#F ", // current (with a #F flag)
             "|",
             &ctx(),
             &base,
@@ -662,7 +685,9 @@ mod tests {
         assert_eq!(text, " 1:bash | 2:vim* ");
         // The current window's spans carry the green fg from its format.
         assert!(
-            spans.iter().any(|s| s.attrs.foreground() == ColorAttribute::PaletteIndex(2)),
+            spans
+                .iter()
+                .any(|s| s.attrs.foreground() == ColorAttribute::PaletteIndex(2)),
             "current window format should apply its color"
         );
         // Hit ranges: entry 0 = cols 0..8, entry 1 starts after the 1-col sep.
@@ -768,16 +793,33 @@ mod tests {
         // "1:bash 2:vim* 3:logs"
         //  0123456789...
         let entries = vec![
-            WindowEntry { index: 1, name: "bash".into(), active: false },
-            WindowEntry { index: 2, name: "vim".into(), active: true },
-            WindowEntry { index: 3, name: "logs".into(), active: false },
+            WindowEntry {
+                index: 1,
+                name: "bash".into(),
+                active: false,
+            },
+            WindowEntry {
+                index: 2,
+                name: "vim".into(),
+                active: true,
+            },
+            WindowEntry {
+                index: 3,
+                name: "logs".into(),
+                active: false,
+            },
         ];
         let ranges = window_list_hit_ranges(&entries);
         // "1:bash" = cols 0..6, sep at 6, "2:vim*" = 7..13, sep at 13,
         // "3:logs" = 14..20.
         assert_eq!(ranges, vec![(0, 0, 6), (1, 7, 13), (2, 14, 20)]);
         // The separator column (6) belongs to no entry.
-        let hit = |c: usize| ranges.iter().find(|(_, s, e)| c >= *s && c < *e).map(|(i, _, _)| *i);
+        let hit = |c: usize| {
+            ranges
+                .iter()
+                .find(|(_, s, e)| c >= *s && c < *e)
+                .map(|(i, _, _)| *i)
+        };
         assert_eq!(hit(0), Some(0)); // '1'
         assert_eq!(hit(5), Some(0)); // 'h' of bash
         assert_eq!(hit(6), None); // the space
@@ -786,5 +828,62 @@ mod tests {
         assert_eq!(hit(14), Some(2)); // '3'
         assert_eq!(hit(19), Some(2)); // 's' of logs
         assert_eq!(hit(20), None); // past the end
+    }
+
+    #[test]
+    fn built_in_window_hit_ranges_use_terminal_cell_width() {
+        let entries = vec![
+            WindowEntry {
+                index: 1,
+                name: "界".into(),
+                active: false,
+            },
+            WindowEntry {
+                index: 2,
+                name: "e\u{301}".into(),
+                active: true,
+            },
+        ];
+
+        // "1:界" occupies four cells, followed by one separator cell. The
+        // combining sequence in "2:é*" remains a single display cell.
+        let ranges = window_list_hit_ranges(&entries);
+        assert_eq!(ranges, vec![(0, 0, 4), (1, 5, 9)]);
+        let hit = |col: usize| {
+            ranges
+                .iter()
+                .find(|(_, start, end)| col >= *start && col < *end)
+                .map(|(position, _, _)| *position)
+        };
+        assert_eq!(hit(3), Some(0), "second cell of the wide name");
+        assert_eq!(hit(4), None, "separator");
+        assert_eq!(hit(5), Some(1));
+        assert_eq!(hit(8), Some(1));
+        assert_eq!(hit(9), None);
+    }
+
+    #[test]
+    fn formatted_window_hit_ranges_include_wide_separators() {
+        let entries = vec![
+            WindowEntry {
+                index: 1,
+                name: "界".into(),
+                active: false,
+            },
+            WindowEntry {
+                index: 2,
+                name: "e\u{301}".into(),
+                active: true,
+            },
+        ];
+        let base = CellAttributes::default();
+        let (_spans, ranges) =
+            window_list_formatted(&entries, "#W", "#W", "🙂", &StatusContext::default(), &base);
+
+        // Wide name 0..2, wide separator 2..4, combining name 4..5.
+        assert_eq!(ranges, vec![(0, 0, 2), (1, 4, 5)]);
+        assert!(ranges
+            .iter()
+            .all(|(_, start, end)| !(3 >= *start && 3 < *end)));
     }
 }

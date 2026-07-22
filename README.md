@@ -215,10 +215,10 @@ another window — mark a pane in one window and pull or swap it into another.
 ## Sessions & agents sidebar
 
 A persistent left sidebar (herdr-style) lists your **sessions** on top and, below
-them, every pane running an **agent** with its live status — idle (`.`), working
-(`*`), blocked/needs-input (`!`), or done (`=`). Click a session row to switch to
-it, or an agent row to jump straight to that agent's window. The prefix-`s`
-chooser shows the same status on each window row.
+them, every pane running an **agent** with its live status — idle (`○`), working
+(`●`), blocked/needs-input (`●`, in red), or done (`✓`). Click a session row to
+switch to it, or an agent row to jump straight to that agent's pane. The
+prefix-`s` chooser shows the same status on each window row.
 
 Toggle it at runtime with `:set sidebar on` / `off` (session-global — it reflows
 every client of the session), or set the defaults in config:
@@ -228,15 +228,33 @@ set -g sidebar on
 set -g sidebar-width 26
 ```
 
-Agents report their own state — no screen-scraping. Wire up an agent's hooks
-once with `lumux integration <agent>` (Claude Code supported today):
+Agents report their own state — no screen-scraping. Wire up each agent's hooks
+once with `lumux integration <agent>`:
 
 ```
 lumux integration claude
+lumux integration codex
+lumux integration copilot
 ```
 
-This installs Claude Code hooks that call `lumux report-state` at the right
-moments. Any program can report directly from inside a pane:
+CLI-style aliases are also accepted: `claude-code`, `codex-cli`,
+`openai-codex`, `copilot-cli`, `github-copilot`, and `github-copilot-cli`.
+
+The installers preserve unrelated configuration and place a managed wrapper in
+the agent's config directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
+`COPILOT_HOME` overrides the default). Copilot uses its dedicated documented
+`hooks/lumux-agent-state.json` file, leaving `settings.json` untouched. Use
+GitHub Copilot CLI 1.0.22 or newer for reliable once-per-session lifecycle
+events. Codex asks you to review newly installed user hooks; open `/hooks`
+inside Codex and trust the lumux entries once.
+
+Claude Code and GitHub Copilot CLI expose session-end hooks, so their sidebar
+entry is removed when the CLI exits. Codex exposes turn completion but no
+documented session-end hook; its adapter launches a detached,
+process-identity-checked watcher at SessionStart and removes the same lifecycle
+when the native Codex process exits.
+
+Any program can report directly from inside a pane:
 
 ```
 lumux report-state working   # idle | working | blocked | done

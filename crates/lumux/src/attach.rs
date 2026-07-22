@@ -8,6 +8,7 @@
 use std::io::{self, Read, Write};
 
 use lumux_core::proto::{encode, ClientMsg, Event, Hello, ServerMsg, WireSize};
+use lumux_core::terminal_input::{OuterInputDecoder, OuterInputEvent};
 use lumux_core::traits::{FrameReader, FrameWriter};
 
 #[cfg(unix)]
@@ -38,6 +39,7 @@ pub enum ReaderAction {
 pub fn reader_action(msg: ServerMsg) -> ReaderAction {
     match msg {
         ServerMsg::Frame(vt) => ReaderAction::Write(vt),
+        ServerMsg::FrameAt { bytes, .. } => ReaderAction::Write(bytes),
         ServerMsg::Reply(text) => ReaderAction::Write(text.into_bytes()),
         ServerMsg::Detached => ReaderAction::Stop,
         ServerMsg::Event(Event::SessionClosed) => ReaderAction::Stop,
@@ -155,6 +157,11 @@ where
     // the stdin loop can notice even while no keys are being pressed.
     let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let reader_done = done.clone();
+    // Epoch 0 means no composed frame has reached the terminal yet. The reader
+    // advances it only after a successful stdout flush; the input thread reads
+    // that published value when it packages terminal bytes for the daemon.
+    let applied_frame_epoch = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let reader_frame_epoch = applied_frame_epoch.clone();
 
     // Reader thread: daemon frames -> stdout.
     let reader_handle = std::thread::spawn(move || {
@@ -163,16 +170,28 @@ where
         loop {
             match reader.read_frame() {
                 Ok(Some(bytes)) => match lumux_core::proto::decode::<ServerMsg>(&bytes) {
-                    Ok(msg) => match reader_action(msg) {
-                        ReaderAction::Write(bytes) => {
-                            if stdout.write_all(&bytes).is_err() {
-                                break;
+                    Ok(msg) => {
+                        let frame_epoch = match &msg {
+                            ServerMsg::FrameAt { epoch, .. } => Some(*epoch),
+                            _ => None,
+                        };
+                        match reader_action(msg) {
+                            ReaderAction::Write(bytes) => {
+                                if stdout.write_all(&bytes).is_err() {
+                                    break;
+                                }
+                                if stdout.flush().is_err() {
+                                    break;
+                                }
+                                if let Some(epoch) = frame_epoch {
+                                    reader_frame_epoch
+                                        .store(epoch, std::sync::atomic::Ordering::Release);
+                                }
                             }
-                            let _ = stdout.flush();
+                            ReaderAction::Ignore => {}
+                            ReaderAction::Stop => break,
                         }
-                        ReaderAction::Ignore => {}
-                        ReaderAction::Stop => break,
-                    },
+                    }
                     Err(_) => break,
                 },
                 _ => break,
@@ -225,6 +244,7 @@ where
     // detach delivered while the user is idle still ends the client promptly.
     let mut stdin = io::stdin();
     let mut buf = [0u8; 4096];
+    let mut input_decoder = OuterInputDecoder::default();
     loop {
         if done.load(std::sync::atomic::Ordering::SeqCst) {
             break;
@@ -233,7 +253,19 @@ where
         // detach flag rather than blocking forever in read().
         match stdin_ready(&stdin, std::time::Duration::from_millis(100)) {
             StdinState::Ready => {}
-            StdinState::Idle => continue,
+            StdinState::Idle => {
+                // ESC and ESC[ are ambiguous at a read boundary. Once stdin has
+                // gone idle they cannot be a fragmented focus report, so release
+                // them promptly (notably preserving a literal Escape key).
+                let Some(event) = input_decoder.flush_pending() else {
+                    continue;
+                };
+                if write_outer_input(&writer, &applied_frame_epoch, std::iter::once(event)).is_err()
+                {
+                    break;
+                }
+                continue;
+            }
             StdinState::Closed => break,
         }
         let n = match stdin.read(&mut buf) {
@@ -241,9 +273,8 @@ where
             Ok(n) => n,
             Err(_) => break,
         };
-        let frame = encode(&ClientMsg::Input(buf[..n].to_vec()))?;
-        let Ok(mut w) = writer.lock() else { break };
-        if w.write_frame(&frame).is_err() {
+        let events = input_decoder.feed(&buf[..n]);
+        if write_outer_input(&writer, &applied_frame_epoch, events).is_err() {
             break;
         }
     }
@@ -261,6 +292,37 @@ where
         let _ = out.flush();
     }
     Ok(())
+}
+
+/// Write decoded outer-terminal events to the daemon in their original order.
+/// Focus reports cross the protocol as typed state and can therefore never be
+/// mistaken for keyboard input by the server or pane.
+fn write_outer_input<W: FrameWriter>(
+    writer: &std::sync::Mutex<W>,
+    applied_frame_epoch: &std::sync::atomic::AtomicU64,
+    events: impl IntoIterator<Item = OuterInputEvent>,
+) -> anyhow::Result<()> {
+    let mut writer = writer
+        .lock()
+        .map_err(|_| anyhow::anyhow!("attach transport writer lock poisoned"))?;
+    for event in events {
+        let msg = outer_input_message(
+            event,
+            applied_frame_epoch.load(std::sync::atomic::Ordering::Acquire),
+        );
+        writer.write_frame(&encode(&msg)?)?;
+    }
+    Ok(())
+}
+
+fn outer_input_message(event: OuterInputEvent, applied_frame_epoch: u64) -> ClientMsg {
+    match event {
+        OuterInputEvent::Input(bytes) => ClientMsg::InputAt {
+            bytes,
+            frame_epoch: applied_frame_epoch,
+        },
+        OuterInputEvent::FocusChanged { focused } => ClientMsg::FocusChanged { focused },
+    }
 }
 
 /// Result of waiting for stdin readiness.
@@ -421,8 +483,9 @@ fn spawn_daemon_process() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{reader_action, ReaderAction};
-    use lumux_core::proto::{Event, ServerMsg};
+    use super::{outer_input_message, reader_action, ReaderAction};
+    use lumux_core::proto::{ClientMsg, Event, ServerMsg};
+    use lumux_core::terminal_input::OuterInputEvent;
 
     #[test]
     fn pane_exit_does_not_end_the_attach() {
@@ -472,6 +535,32 @@ mod tests {
         assert_eq!(
             reader_action(ServerMsg::Frame(vec![b'h', b'i'])),
             ReaderAction::Write(vec![b'h', b'i']),
+        );
+    }
+
+    #[test]
+    fn epoch_frame_is_written_to_stdout() {
+        assert_eq!(
+            reader_action(ServerMsg::FrameAt {
+                epoch: 9,
+                bytes: vec![b'h', b'i'],
+            }),
+            ReaderAction::Write(vec![b'h', b'i']),
+        );
+    }
+
+    #[test]
+    fn terminal_input_carries_the_last_flushed_frame_epoch() {
+        assert_eq!(
+            outer_input_message(OuterInputEvent::Input(b"click".to_vec()), 73),
+            ClientMsg::InputAt {
+                bytes: b"click".to_vec(),
+                frame_epoch: 73,
+            }
+        );
+        assert_eq!(
+            outer_input_message(OuterInputEvent::FocusChanged { focused: true }, 73),
+            ClientMsg::FocusChanged { focused: true }
         );
     }
 }

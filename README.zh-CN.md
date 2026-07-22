@@ -176,7 +176,7 @@ lumux source-file <path>                          # 实时重载配置
 
 ## 会话与 agent 侧边栏
 
-一个常驻的左侧边栏（herdr 风格）：上半部分列出你的**会话**，下半部分列出每个正在运行 **agent** 的窗格及其实时状态——空闲（`.`）、工作中（`*`）、被阻塞/等待输入（`!`）、已完成（`=`）。点击会话行即可切换过去，点击 agent 行则直接跳到该 agent 的窗口。prefix-`s` 选择器的每个窗口行也显示相同状态。
+一个常驻的左侧边栏（herdr 风格）：上半部分列出你的**会话**，下半部分列出每个正在运行 **agent** 的窗格及其实时状态——空闲（`○`）、工作中（`●`）、被阻塞/等待输入（红色 `●`）、已完成（`✓`）。点击会话行即可切换过去，点击 agent 行则直接跳到该 agent 的具体窗格。prefix-`s` 选择器的每个窗口行也显示相同状态。
 
 运行时用 `:set sidebar on` / `off` 切换（会话级——它会重排该会话的所有客户端），或在配置中设默认值：
 
@@ -185,13 +185,29 @@ set -g sidebar on
 set -g sidebar-width 26
 ```
 
-agent 自行上报状态——无需抓屏。用 `lumux integration <agent>` 一次性接入某个 agent 的 hooks（目前支持 Claude Code）：
+agent 自行上报状态——无需抓屏。用 `lumux integration <agent>` 一次性接入其 hooks：
 
 ```
 lumux integration claude
+lumux integration codex
+lumux integration copilot
 ```
 
-它会安装在恰当时机调用 `lumux report-state` 的 Claude Code hooks。任何程序都可以在窗格内直接上报：
+也支持 CLI 风格的别名：`claude-code`、`codex-cli`、`openai-codex`、
+`copilot-cli`、`github-copilot` 和 `github-copilot-cli`。安装器会保留无关配置，
+并把受 lumux 管理的 wrapper 放入对应的 agent 配置目录；可分别用
+`CLAUDE_CONFIG_DIR`、`CODEX_HOME` 或 `COPILOT_HOME` 覆盖默认目录。Copilot
+使用文档规定的独立 `hooks/lumux-agent-state.json`，不会修改 `settings.json`。
+请使用 GitHub Copilot CLI 1.0.22 或更高版本，以确保每个会话只触发一次可靠的
+生命周期事件。
+
+Claude Code 和 GitHub Copilot CLI 提供会话结束 hook，因此 CLI 退出后会从
+侧边栏移除。Codex 提供轮次结束但没有文档支持的会话结束 hook；其适配器会在
+SessionStart 时启动一个脱离终端、校验进程身份的 watcher，并在原生 Codex
+进程退出时只移除对应的生命周期。Codex 会要求审核新安装的用户 hooks；请在
+Codex 中打开 `/hooks` 并信任 lumux 条目。
+
+任何程序也可以在窗格内直接上报：
 
 ```
 lumux report-state working   # idle | working | blocked | done

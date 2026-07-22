@@ -27,6 +27,7 @@ async-trait = "0.1"
 # pty + terminal emulation
 portable-pty = "0.8"
 termwiz = "0.22"
+unicode-segmentation = "1"
 
 # serialization / protocol
 serde = { version = "1", features = ["derive"] }
@@ -37,12 +38,14 @@ bytes = "1"
 # cli / config
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
+toml_edit = "0.22"
 
 # diagnostics
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1"
 thiserror = "1"
+tempfile = "3"
 
 [profile.release]
 lto = true

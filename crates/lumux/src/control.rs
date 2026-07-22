@@ -4,7 +4,7 @@
 //! These don't enter raw mode. The byte logic is platform-independent; the
 //! per-OS `platform::connect` picks the transport.
 
-use lumux_core::proto::{encode, ClientMsg, Command, ServerMsg, WireSize};
+use lumux_core::proto::{encode, ClientMsg, Command, ControlRequest, ServerMsg};
 use lumux_core::traits::{FrameReader, FrameWriter};
 
 /// Send a control command and return the daemon's reply text (empty if none).
@@ -17,31 +17,25 @@ pub fn send_command(cmd: Command) -> anyhow::Result<String> {
     // Protocol handshake before issuing commands.
     crate::attach::handshake(&mut reader, &mut writer)?;
 
-    // Attach so the daemon assigns a client slot, then issue the command.
-    let attach = ClientMsg::Attach {
-        session: None,
-        size: WireSize { cols: 80, rows: 24 },
-    };
-    writer.write_frame(&encode(&attach)?)?;
-    let _ = reader.read_frame()?; // drain the Attached ack / first frame
-
-    // Issue the command, then immediately detach. Detaching is what bounds the
-    // read below: most commands (new-window, split-window, send-keys) produce no
-    // Reply, only render frames, so waiting for a Reply would block forever once
-    // the pane goes idle. The daemon always answers Detach with Detached (then
-    // closes the connection), so reading until Detached is guaranteed to finish —
-    // and the command is processed before the detach because the daemon handles
-    // client messages in order.
-    writer.write_frame(&encode(&ClientMsg::Command(cmd))?)?;
-    let _ = writer.write_frame(&encode(&ClientMsg::Detach)?);
+    // A one-shot control request is deliberately not an Attach. It carries no
+    // viewport, never enters the interactive client registry, and therefore
+    // cannot participate in smallest-client-wins sizing or receive VT frames.
+    // `$LUMUX_PANE` supplies caller context for session-scoped CLI commands.
+    let pane = std::env::var_os("LUMUX_PANE")
+        .and_then(|value| value.into_string().ok())
+        .and_then(|value| value.parse().ok());
+    writer.write_frame(&encode(&ClientMsg::Control(ControlRequest {
+        command: cmd,
+        pane,
+    }))?)?;
     let reply = read_until_detached(&mut reader);
     Ok(reply.unwrap_or_default())
 }
 
 /// Drain frames until the daemon sends `Detached` (or the connection ends),
 /// returning the text of any `Reply` seen along the way. Always terminates:
-/// `Detached` is the daemon's guaranteed response to our `Detach`, after which
-/// it stops writing, so a subsequent read returns EOF.
+/// `Detached` terminates every one-shot [`ClientMsg::Control`] request, after
+/// which the server closes this control connection.
 fn read_until_detached<R: FrameReader>(reader: &mut R) -> Option<String> {
     let mut reply = None;
     #[allow(clippy::while_let_loop)] // body breaks on Detached, not only on EOF

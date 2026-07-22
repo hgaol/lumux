@@ -14,6 +14,10 @@ fn roundtrip_server(msg: ServerMsg) {
     assert_eq!(msg, back);
 }
 
+fn identity(agent: &str, owner: Option<&str>) -> crate::agent::AgentIdentity {
+    crate::agent::AgentIdentity::new(agent, owner.map(str::to_string))
+}
+
 #[test]
 fn client_messages_roundtrip() {
     roundtrip_client(ClientMsg::Attach {
@@ -29,6 +33,12 @@ fn client_messages_roundtrip() {
         },
     });
     roundtrip_client(ClientMsg::Input(vec![0x1b, b'[', b'A']));
+    roundtrip_client(ClientMsg::InputAt {
+        bytes: vec![0x1b, b'[', b'A'],
+        frame_epoch: 41,
+    });
+    roundtrip_client(ClientMsg::FocusChanged { focused: true });
+    roundtrip_client(ClientMsg::FocusChanged { focused: false });
     roundtrip_client(ClientMsg::Resize(WireSize { cols: 1, rows: 1 }));
     roundtrip_client(ClientMsg::Detach);
     roundtrip_client(ClientMsg::Command(Command::ListSessions));
@@ -42,13 +52,66 @@ fn client_messages_roundtrip() {
         keys: b"echo hi\r".to_vec(),
     }));
     roundtrip_client(ClientMsg::Command(Command::ReportAgentState {
-        pane: "%7".into(),
-        agent: "claude".into(),
-        state: crate::agent::AgentState::Blocked,
+        pane: crate::model::PaneId(7),
+        report: crate::agent::AgentReport::new(
+            identity("claude", Some("session-41")),
+            true,
+            crate::agent::AgentState::Blocked,
+            41,
+        ),
     }));
     roundtrip_client(ClientMsg::Command(Command::ClearAgentState {
-        pane: "%7".into(),
+        pane: crate::model::PaneId(7),
+        clear: crate::agent::AgentClear::new(identity("claude", Some("session-41")), 42),
     }));
+    roundtrip_client(ClientMsg::Control(ControlRequest {
+        command: Command::ReportAgentState {
+            pane: crate::model::PaneId(7),
+            report: crate::agent::AgentReport::new(
+                identity("claude", None),
+                false,
+                crate::agent::AgentState::Done,
+                43,
+            ),
+        },
+        pane: Some(crate::model::PaneId(7)),
+    }));
+}
+
+#[test]
+fn lifecycle_envelopes_preserve_the_v4_wire_layout() {
+    // Captured before lifecycle metadata was grouped into AgentIdentity,
+    // AgentReport, and AgentClear. Bincode ignores struct names/nesting, so
+    // keeping the old field order lets v4 clients and daemons interoperate.
+    const REPORT_V4: &[u8] = &[
+        0, 0, 0, 58, 5, 0, 0, 0, 13, 0, 0, 0, 7, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 99, 108, 97, 117,
+        100, 101, 1, 10, 0, 0, 0, 0, 0, 0, 0, 115, 101, 115, 115, 105, 111, 110, 45, 52, 49, 1, 2,
+        0, 0, 0, 41, 0, 0, 0, 0, 0, 0, 0,
+    ];
+    const CLEAR_V4: &[u8] = &[
+        0, 0, 0, 53, 5, 0, 0, 0, 14, 0, 0, 0, 7, 0, 0, 0, 6, 0, 0, 0, 0, 0, 0, 0, 99, 108, 97, 117,
+        100, 101, 1, 10, 0, 0, 0, 0, 0, 0, 0, 115, 101, 115, 115, 105, 111, 110, 45, 52, 49, 42, 0,
+        0, 0, 0, 0, 0, 0,
+    ];
+
+    let report = ClientMsg::Command(Command::ReportAgentState {
+        pane: crate::model::PaneId(7),
+        report: crate::agent::AgentReport::new(
+            identity("claude", Some("session-41")),
+            true,
+            crate::agent::AgentState::Blocked,
+            41,
+        ),
+    });
+    let clear = ClientMsg::Command(Command::ClearAgentState {
+        pane: crate::model::PaneId(7),
+        clear: crate::agent::AgentClear::new(identity("claude", Some("session-41")), 42),
+    });
+
+    assert_eq!(encode(&report).unwrap(), REPORT_V4);
+    assert_eq!(encode(&clear).unwrap(), CLEAR_V4);
+    assert_eq!(decode::<ClientMsg>(&REPORT_V4[4..]).unwrap(), report);
+    assert_eq!(decode::<ClientMsg>(&CLEAR_V4[4..]).unwrap(), clear);
 }
 
 #[test]
@@ -58,6 +121,10 @@ fn server_messages_roundtrip() {
         size: WireSize { cols: 80, rows: 24 },
     });
     roundtrip_server(ServerMsg::Frame(vec![0x1b, b'[', b'2', b'J']));
+    roundtrip_server(ServerMsg::FrameAt {
+        epoch: 41,
+        bytes: vec![0x1b, b'[', b'2', b'J'],
+    });
     roundtrip_server(ServerMsg::Event(Event::LayoutChanged));
     roundtrip_server(ServerMsg::Event(Event::PaneExited {
         pane: "%3".into(),

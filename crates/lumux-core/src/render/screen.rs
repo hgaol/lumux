@@ -6,7 +6,17 @@
 //! previous one and emits minimal VT. Keeping composition and diffing over a
 //! single flat buffer keeps the renderer simple and fully testable.
 
-use termwiz::cell::{Cell, CellAttributes};
+use termwiz::cell::{grapheme_column_width, Cell, CellAttributes};
+use unicode_segmentation::UnicodeSegmentation;
+
+/// Terminal display width of `text`, measured in cells rather than Unicode
+/// scalar values. Standalone zero-width graphemes occupy one model cell so the
+/// result matches [`Screen::write_str`].
+pub fn display_width(text: &str) -> usize {
+    text.graphemes(true).fold(0, |width, grapheme| {
+        width.saturating_add(grapheme_column_width(grapheme, None).max(1))
+    })
+}
 
 #[derive(Clone, PartialEq)]
 pub struct Screen {
@@ -63,16 +73,41 @@ impl Screen {
         }
     }
 
-    /// Write a string with given attributes starting at (x,y), clipped to the
-    /// row. Returns the next x after the written text.
+    /// Write graphemes with given attributes starting at (x,y), clipped to the
+    /// row by terminal display width. Returns the next x after the written text.
     pub fn write_str(&mut self, x: usize, y: usize, s: &str, attrs: &CellAttributes) -> usize {
+        self.write_str_clipped(x, y, s, attrs, self.width.saturating_sub(x))
+    }
+
+    /// Like [`write_str`](Self::write_str), but writes at most `max_width`
+    /// display cells. Wide graphemes are written atomically and never cross the
+    /// segment or row boundary.
+    pub fn write_str_clipped(
+        &mut self,
+        x: usize,
+        y: usize,
+        s: &str,
+        attrs: &CellAttributes,
+        max_width: usize,
+    ) -> usize {
         let mut cx = x;
-        for ch in s.chars() {
-            if cx >= self.width {
+        let end = x.saturating_add(max_width).min(self.width);
+        for grapheme in s.graphemes(true) {
+            if cx >= end {
                 break;
             }
-            self.set_cell(cx, y, Cell::new(ch, attrs.clone()));
-            cx += 1;
+
+            let cell_width = display_width(grapheme);
+            if cell_width > end - cx {
+                break;
+            }
+
+            let cell = Cell::new_grapheme(grapheme, attrs.clone(), None);
+            self.set_cell(cx, y, cell);
+            for spacer_x in cx + 1..cx + cell_width {
+                self.set_cell(spacer_x, y, Cell::blank_with_attrs(attrs.clone()));
+            }
+            cx += cell_width;
         }
         cx
     }
@@ -81,6 +116,11 @@ impl Screen {
     /// that don't depend on termwiz types (e.g. the daemon's copy-mode view).
     pub fn write_plain(&mut self, x: usize, y: usize, s: &str) {
         self.write_str(x, y, s, &CellAttributes::default());
+    }
+
+    /// Write default-styled text within a display-cell segment.
+    pub fn write_plain_clipped(&mut self, x: usize, y: usize, s: &str, max_width: usize) {
+        self.write_str_clipped(x, y, s, &CellAttributes::default(), max_width);
     }
 
     /// Fill row `y` with a reverse-video bar and write `text` left-aligned into
@@ -110,7 +150,7 @@ impl Screen {
         for x in 0..width.min(self.width) {
             self.set_cell(x, y, Cell::new(' ', attrs.clone()));
         }
-        self.write_str(0, y, text, &attrs);
+        self.write_str_clipped(0, y, text, &attrs, width);
     }
 
     /// Write a reverse-video label spanning columns `[x, x+width)` of row `y`,
@@ -126,9 +166,7 @@ impl Screen {
         for cx in x..end {
             self.set_cell(cx, y, Cell::new(' ', attrs.clone()));
         }
-        // Clip text to the segment width.
-        let clipped: String = text.chars().take(width).collect();
-        self.write_str(x, y, &clipped, &attrs);
+        self.write_str_clipped(x, y, text, &attrs, width);
     }
 
     /// Blit a pane's visible cells into the rectangle at (ox,oy) of size
@@ -241,5 +279,58 @@ impl std::fmt::Debug for Screen {
             writeln!(f, "  |{}|", self.row_string(y))?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::{diff, full_repaint};
+
+    #[test]
+    fn write_str_places_and_renders_graphemes_by_display_width() {
+        let mut attrs = CellAttributes::default();
+        attrs.set_reverse(true);
+        let mut screen = Screen::new(7, 2);
+        let label = "界👩‍💻e\u{301}Z";
+
+        assert_eq!(screen.write_str(0, 0, label, &attrs), 6);
+
+        let expected = [
+            ("界", 2),
+            (" ", 1),
+            ("👩‍💻", 2),
+            (" ", 1),
+            ("e\u{301}", 1),
+            ("Z", 1),
+        ];
+        for (x, (text, width)) in expected.into_iter().enumerate() {
+            let cell = screen.cell(x, 0).expect("expected an in-bounds cell");
+            assert_eq!((cell.str(), cell.width()), (text, width));
+            assert_eq!(cell.attrs(), &attrs);
+        }
+        assert_eq!(screen.cell(6, 0), Some(&Cell::blank()));
+
+        // A wide grapheme must not be partially written at the right edge.
+        assert_eq!(screen.write_str(6, 1, "界!", &attrs), 6);
+        assert_eq!(screen.cell(6, 1), Some(&Cell::blank()));
+
+        let repaint = full_repaint(&screen);
+        assert_eq!(repaint.matches(label).count(), 1, "{repaint:?}");
+
+        let delta = diff(&Screen::new(7, 2), &screen);
+        assert_eq!(delta.matches(label).count(), 1, "{delta:?}");
+    }
+
+    #[test]
+    fn write_str_clipped_keeps_wide_graphemes_inside_the_segment() {
+        let attrs = CellAttributes::default();
+        let mut screen = Screen::new(4, 1);
+        screen.set_cell(2, 0, Cell::new('|', attrs.clone()));
+
+        assert_eq!(screen.write_str_clipped(0, 0, "A界", &attrs, 2), 1);
+        assert_eq!(screen.cell(0, 0).map(Cell::str), Some("A"));
+        assert_eq!(screen.cell(1, 0), Some(&Cell::blank()));
+        assert_eq!(screen.cell(2, 0).map(Cell::str), Some("|"));
     }
 }

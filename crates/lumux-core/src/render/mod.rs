@@ -13,10 +13,10 @@ pub use compose::{
     blit_window_layout, border_attrs, compose, ClientRenderer, Justify, StatusBar, StyledStatus,
     WindowView,
 };
-pub use termwiz::cell::{Cell, CellAttributes};
 pub use diff::{diff, full_repaint};
-pub use screen::Screen;
+pub use screen::{display_width, Screen};
 pub use sgr::sgr_for;
+pub use termwiz::cell::{Cell, CellAttributes};
 
 #[cfg(test)]
 mod tests;

@@ -105,7 +105,7 @@ pub struct Config {
     /// window after it first fires (tmux `repeat-time`).
     pub repeat_bindings: std::collections::BTreeSet<String>,
     /// Whether the sessions/agents sidebar is shown by default on new sessions.
-    /// Off by default; toggled live per session (`:set sidebar on|off`).
+    /// On by default; toggled live per session (`:set sidebar on|off`).
     pub sidebar: bool,
     /// Width of the sessions/agents sidebar in columns when shown.
     pub sidebar_width: u16,
@@ -135,7 +135,8 @@ impl Default for Config {
             // the left, window list centred, a clock on the right) so a fresh
             // install without a config file still looks good.
             status_left: "#[bg=green,fg=black,bold] #S #[bg=colour236,fg=green] ".to_string(),
-            status_right: "#[bg=colour236,fg=cyan] %H:%M #[bg=green,fg=black,bold] %d-%b ".to_string(),
+            status_right: "#[bg=colour236,fg=cyan] %H:%M #[bg=green,fg=black,bold] %d-%b "
+                .to_string(),
             status_justify: "centre".to_string(),
             status_bg: "colour236".to_string(),
             status_fg: "white".to_string(),
@@ -362,8 +363,14 @@ mod tests {
         use termwiz::color::ColorAttribute;
         let c = Config::default();
         // A fresh install should have a non-empty, styled status bar (not blank).
-        assert!(!c.status_left.is_empty(), "default status-left should be set");
-        assert!(!c.status_right.is_empty(), "default status-right should be set");
+        assert!(
+            !c.status_left.is_empty(),
+            "default status-left should be set"
+        );
+        assert!(
+            !c.status_right.is_empty(),
+            "default status-right should be set"
+        );
         assert_eq!(c.status_justify, "centre");
 
         // The left segment formats to spans containing the session name on a
@@ -384,7 +391,10 @@ mod tests {
         // The right segment carries a clock token that formats to digits.
         let clock = status::format(&c.status_right, &ctx);
         let ctext: String = clock.iter().map(|s| s.text.as_str()).collect();
-        assert!(ctext.contains(':'), "right segment has a HH:MM clock; got {ctext:?}");
+        assert!(
+            ctext.contains(':'),
+            "right segment has a HH:MM clock; got {ctext:?}"
+        );
     }
 
     #[test]
