@@ -69,6 +69,11 @@ const HOOK_EVENTS: &[HookEvent] = &[
         matcher: None,
     },
     HookEvent {
+        event: "ErrorOccurred",
+        action: "error",
+        matcher: None,
+    },
+    HookEvent {
         event: "Stop",
         action: "stop",
         matcher: None,
@@ -76,7 +81,7 @@ const HOOK_EVENTS: &[HookEvent] = &[
     HookEvent {
         event: "notification",
         action: "notification",
-        matcher: Some("permission_prompt|elicitation_dialog|agent_idle"),
+        matcher: Some("permission_prompt|elicitation_dialog"),
     },
     HookEvent {
         event: "SessionEnd",
@@ -282,13 +287,16 @@ mod tests {
     fn powershell_wrapper_matches_exit_and_turn_boundary_mapping() {
         for expected in [
             r#"$Action -in @("stop", "idle")"#,
-            r#"$stopReason -eq "end_turn""#,
-            r#"$notification -eq "agent_idle""#,
+            r#"$state = "idle""#,
+            r#"$Action -eq "error""#,
+            r#"$recoverable -is [bool] -and -not $recoverable"#,
             r#"$Action -in @("session-end", "clear")"#,
             "including complete/error/timeout",
             "StartTime.ToUniversalTime().Ticks",
             "$nativePidSupplied = $PSBoundParameters.ContainsKey(\"NativePid\")",
             "$nativePidSupplied -and $null -eq $nativeIdentity",
+            "$env:LUMUX_BIN",
+            "& $lumuxBin report-state $state --agent copilot",
         ] {
             assert!(
                 POWERSHELL_WRAPPER.contains(expected),
@@ -331,11 +339,12 @@ mod tests {
             ("PermissionRequest", "blocked", None),
             ("PostToolUse", "post-tool", None),
             ("PostToolUseFailure", "post-tool", None),
+            ("ErrorOccurred", "error", None),
             ("Stop", "stop", None),
             (
                 "notification",
                 "notification",
-                Some("permission_prompt|elicitation_dialog|agent_idle"),
+                Some("permission_prompt|elicitation_dialog"),
             ),
             ("SessionEnd", "session-end", None),
         ];
@@ -381,22 +390,22 @@ mod tests {
     #[cfg(not(windows))]
     fn run_wrapper(
         wrapper: &Path,
-        bin: &Path,
+        reporter: &Path,
         log: &Path,
         action: &str,
         payload: &str,
         inside: bool,
         native_pid: Option<u32>,
     ) -> std::process::Output {
-        let path = std::env::join_paths(std::iter::once(bin.to_path_buf()).chain(
-            std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()),
-        ))
-        .unwrap();
         let mut command = std::process::Command::new("sh");
         command
             .arg(wrapper)
             .arg(action)
-            .env("PATH", path)
+            // The provider hook must use the pane's exact reporter instead of
+            // relying on the interactive PATH. The fake is intentionally not
+            // present in this system-tool-only PATH.
+            .env("PATH", "/usr/bin:/bin")
+            .env("LUMUX_BIN", reporter)
             .env("LUMUX_AGENT_OWNER", "inherited-owner")
             .env("LUMUX_AGENT_SEQUENCE", "7")
             .env("LUMUX_AGENT_CLAIM", "inherited-claim")
@@ -490,9 +499,9 @@ mod tests {
                 "0",
             ),
             (
-                "notification",
-                r#"{"notification_type":"agent_idle","sessionId":"copilot-session"}"#,
-                "idle",
+                "error",
+                r#"{"error_context":"model_call","recoverable":false,"session_id":"copilot-session"}"#,
+                "blocked",
                 "0",
             ),
             (
@@ -504,6 +513,12 @@ mod tests {
             (
                 "stop",
                 r#"{"stopReason":"end_turn","sessionId":"copilot-session"}"#,
+                "idle",
+                "0",
+            ),
+            (
+                "stop",
+                r#"{"stopReason":"error","sessionId":"copilot-session"}"#,
                 "idle",
                 "0",
             ),
@@ -540,7 +555,7 @@ mod tests {
             ),
         ];
         for (action, payload, state, expected_claim) in cases {
-            let output = run_wrapper(&wrapper, &bin, &log, action, payload, true, None);
+            let output = run_wrapper(&wrapper, &fake, &log, action, payload, true, None);
             assert!(output.status.success());
             assert!(output.stdout.is_empty());
             assert!(output.stderr.is_empty());
@@ -576,13 +591,18 @@ mod tests {
                 r#"{"notification_type":"shell_completed","sessionId":"copilot-session"}"#,
             ),
             (
-                "stop",
+                "notification",
                 true,
-                r#"{"stopReason":"error","sessionId":"copilot-session"}"#,
+                r#"{"notification_type":"agent_idle","sessionId":"background-agent-session"}"#,
+            ),
+            (
+                "error",
+                true,
+                r#"{"error_context":"tool_execution","recoverable":true,"session_id":"copilot-session"}"#,
             ),
             ("unknown", true, "{}"),
         ] {
-            let output = run_wrapper(&wrapper, &bin, &log, action, payload, inside, None);
+            let output = run_wrapper(&wrapper, &fake, &log, action, payload, inside, None);
             assert!(output.status.success());
             assert!(output.stdout.is_empty());
             assert!(output.stderr.is_empty());
@@ -592,7 +612,7 @@ mod tests {
         for unknown_pid in [0, u32::MAX] {
             let unknown_generation = run_wrapper(
                 &wrapper,
-                &bin,
+                &fake,
                 &log,
                 "working",
                 r#"{"prompt":"continue","sessionId":"copilot-session"}"#,
@@ -618,7 +638,7 @@ mod tests {
             .unwrap();
         let first = run_wrapper(
             &wrapper,
-            &bin,
+            &fake,
             &log,
             "working",
             r#"{"prompt":"first","sessionId":"reused-session"}"#,
@@ -632,7 +652,7 @@ mod tests {
             .unwrap();
         let replacement = run_wrapper(
             &wrapper,
-            &bin,
+            &fake,
             &log,
             "working",
             r#"{"prompt":"replacement","sessionId":"reused-session"}"#,

@@ -186,7 +186,21 @@ const CLAUDE_HOOK_WRAPPER: &str = r#"#!/bin/sh
 # managed by lumux; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # LUMUX_INTEGRATION_ID=claude
-# LUMUX_INTEGRATION_VERSION=4
+# LUMUX_INTEGRATION_VERSION=5
+
+resolve_lumux_bin() {
+  lumux_bin="${LUMUX_BIN:-}"
+  if [ -z "$lumux_bin" ]; then
+    lumux_bin="$(command -v lumux 2>/dev/null)" || return 1
+  fi
+  case "$lumux_bin" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -x "$lumux_bin" ] || return 1
+  LUMUX_BIN="$lumux_bin"
+  export LUMUX_BIN
+}
 
 state="${1:-}"
 native_pid="${2:-}"
@@ -197,7 +211,7 @@ esac
 
 [ -n "${LUMUX:-}" ] || { cat >/dev/null 2>&1 || true; exit 0; }
 [ -n "${LUMUX_PANE:-}" ] || { cat >/dev/null 2>&1 || true; exit 0; }
-command -v lumux >/dev/null 2>&1 || { cat >/dev/null 2>&1 || true; exit 0; }
+resolve_lumux_bin || { cat >/dev/null 2>&1 || true; exit 0; }
 command -v python3 >/dev/null 2>&1 || { cat >/dev/null 2>&1 || true; exit 0; }
 
 # Claude runs these global hooks for both the root conversation and nested
@@ -287,7 +301,7 @@ environment["LUMUX_AGENT_CLAIM"] = (
 
 try:
     subprocess.run(
-        ["lumux", "report-state", sys.argv[1], "--agent", "claude"],
+        [os.environ["LUMUX_BIN"], "report-state", sys.argv[1], "--agent", "claude"],
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -311,7 +325,7 @@ rem installed by lumux\r\n\
 rem managed by lumux; reinstalling or updating the integration overwrites this file.\r\n\
 rem add custom hooks beside this file instead of editing it.\r\n\
 rem LUMUX_INTEGRATION_ID=claude\r\n\
-rem LUMUX_INTEGRATION_VERSION=4\r\n\
+rem LUMUX_INTEGRATION_VERSION=5\r\n\
 set \"state=%~1\"\r\n\
 set \"native_pid=%~2\"\r\n\
 if /I \"%state%\"==\"idle\" goto valid_state\r\n\
@@ -323,9 +337,8 @@ goto drain_and_exit\r\n\
 :valid_state\r\n\
 if not defined LUMUX goto drain_and_exit\r\n\
 if not defined LUMUX_PANE goto drain_and_exit\r\n\
-where lumux >nul 2>nul || goto drain_and_exit\r\n\
 where powershell.exe >nul 2>nul || goto drain_and_exit\r\n\
-powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$sequence = ([System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks - 621355968000000000L) * 100L; $inputText = [Console]::In.ReadToEnd(); try { $payload = if ([string]::IsNullOrWhiteSpace($inputText)) { $null } else { $inputText | ConvertFrom-Json -ErrorAction Stop } } catch { exit 0 }; if ($null -eq $payload) { exit 0 }; if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }; if ($payload.hook_event_name -eq 'SubagentStop') { exit 0 }; if ($payload.session_id -isnot [string] -or [string]::IsNullOrWhiteSpace($payload.session_id)) { exit 0 }; $nativePidText='%native_pid%'; $nativePidSupplied=-not [string]::IsNullOrWhiteSpace($nativePidText); $nativeIdentity=$null; if ($nativePidSupplied) { try { $nativePid=[int]$nativePidText; if ($nativePid -le 0) { exit 0 }; $native=Get-Process -Id $nativePid -ErrorAction Stop; $nativeIdentity=$native.StartTime.ToUniversalTime().Ticks } catch { exit 0 } }; Remove-Item -Path Env:LUMUX_AGENT_OWNER -ErrorAction SilentlyContinue; $owner=[string]$payload.session_id; if ($null -ne $nativeIdentity) { $owner=\"${owner}@win:${nativeIdentity}\" }; $env:LUMUX_AGENT_OWNER=$owner; $env:LUMUX_AGENT_SEQUENCE = [string]$sequence; $env:LUMUX_AGENT_CLAIM = if ($payload.hook_event_name -in @('SessionStart', 'UserPromptSubmit')) { '1' } else { '0' }; try { & lumux report-state '%state%' --agent claude *> $null } catch {}; exit 0\" >nul 2>nul\r\n\
+powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$sequence = ([System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks - 621355968000000000L) * 100L; $inputText = [Console]::In.ReadToEnd(); $lumuxBin=$env:LUMUX_BIN; if ([string]::IsNullOrWhiteSpace($lumuxBin)) { $command=Get-Command lumux -CommandType Application -ErrorAction SilentlyContinue; if ($null -eq $command) { exit 0 }; $lumuxBin=$command.Source } elseif (-not (Test-Path -LiteralPath $lumuxBin -PathType Leaf)) { exit 0 }; try { $payload = if ([string]::IsNullOrWhiteSpace($inputText)) { $null } else { $inputText | ConvertFrom-Json -ErrorAction Stop } } catch { exit 0 }; if ($null -eq $payload) { exit 0 }; if (-not [string]::IsNullOrWhiteSpace($payload.agent_id)) { exit 0 }; if ($payload.hook_event_name -eq 'SubagentStop') { exit 0 }; if ($payload.session_id -isnot [string] -or [string]::IsNullOrWhiteSpace($payload.session_id)) { exit 0 }; $nativePidText='%native_pid%'; $nativePidSupplied=-not [string]::IsNullOrWhiteSpace($nativePidText); $nativeIdentity=$null; if ($nativePidSupplied) { try { $nativePid=[int]$nativePidText; if ($nativePid -le 0) { exit 0 }; $native=Get-Process -Id $nativePid -ErrorAction Stop; $nativeIdentity=$native.StartTime.ToUniversalTime().Ticks } catch { exit 0 } }; Remove-Item -Path Env:LUMUX_AGENT_OWNER -ErrorAction SilentlyContinue; $owner=[string]$payload.session_id; if ($null -ne $nativeIdentity) { $owner=\"${owner}@win:${nativeIdentity}\" }; $env:LUMUX_AGENT_OWNER=$owner; $env:LUMUX_AGENT_SEQUENCE = [string]$sequence; $env:LUMUX_AGENT_CLAIM = if ($payload.hook_event_name -in @('SessionStart', 'UserPromptSubmit')) { '1' } else { '0' }; try { & $lumuxBin report-state '%state%' --agent claude *> $null } catch {}; exit 0\" >nul 2>nul\r\n\
 exit /b 0\r\n\
 :drain_and_exit\r\n\
 more >nul 2>nul\r\n\
@@ -359,10 +372,66 @@ impl IntegrationTarget {
 /// Install one provider adapter behind the shared `report-state` seam. Native
 /// hook schemas and lifecycle semantics remain private to each adapter.
 pub fn install(agent: &str) -> anyhow::Result<()> {
-    match IntegrationTarget::parse(agent)? {
+    let target = IntegrationTarget::parse(agent)?;
+    match target {
         IntegrationTarget::Claude => install_claude(claude_settings_path()?),
         IntegrationTarget::Codex => codex::install(),
         IntegrationTarget::Copilot => copilot::install(),
+    }?;
+    for step in activation_steps(target, |key| std::env::var_os(key)) {
+        println!("{step}");
+    }
+    Ok(())
+}
+
+/// Provider config is read by the provider process, while the reporter path is
+/// inherited when a pane is created. Installation cannot reload either piece
+/// of external state, so make the activation contract explicit and honest.
+fn activation_steps(
+    target: IntegrationTarget,
+    getenv: impl Fn(&str) -> Option<OsString>,
+) -> Vec<&'static str> {
+    let mut steps = Vec::new();
+    let reporter_is_current = getenv("LUMUX_BIN")
+        .filter(|value| !value.is_empty())
+        .map(std::path::PathBuf::from)
+        .is_some_and(|path| reporter_is_usable(&path));
+    let inside_lumux = getenv("LUMUX").is_some_and(|value| !value.is_empty());
+    if inside_lumux && !reporter_is_current {
+        steps.push(
+            "Restart the Lumux daemon and recreate this pane; it predates reliable hook delivery.",
+        );
+    }
+    match target {
+        IntegrationTarget::Claude => {
+            steps.push("Next: Restart Claude Code; running processes do not reload hooks.");
+        }
+        IntegrationTarget::Codex => {
+            steps.push("Next: Restart Codex; running processes do not reload hooks.");
+            steps.push(
+                "Codex hooks execute zero times until you open `/hooks` and trust every Lumux entry.",
+            );
+        }
+        IntegrationTarget::Copilot => {
+            steps.push("Next: Restart GitHub Copilot CLI; running processes do not reload hooks.");
+        }
+    }
+    steps
+}
+
+fn reporter_is_usable(path: &Path) -> bool {
+    if !path.is_absolute() || !path.is_file() {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        true
     }
 }
 
@@ -748,6 +817,75 @@ mod tests {
     }
 
     #[test]
+    fn activation_steps_cover_provider_reload_trust_and_old_panes() {
+        let codex = activation_steps(IntegrationTarget::Codex, env_of(&[]));
+        assert!(codex.iter().any(|step| step.contains("Restart Codex")));
+        assert!(codex
+            .iter()
+            .any(|step| step.contains("hooks execute zero times until")));
+
+        let copilot = activation_steps(IntegrationTarget::Copilot, env_of(&[]));
+        assert!(copilot
+            .iter()
+            .any(|step| step.contains("Restart GitHub Copilot CLI")));
+        assert!(!copilot.iter().any(|step| step.contains("/hooks")));
+
+        let old_pane = activation_steps(
+            IntegrationTarget::Copilot,
+            env_of(&[("LUMUX", "/run/lumux.sock")]),
+        );
+        assert!(old_pane
+            .iter()
+            .any(|step| step.contains("Restart the Lumux daemon")));
+
+        let empty_sentinel = activation_steps(
+            IntegrationTarget::Copilot,
+            env_of(&[("LUMUX", "")]),
+        );
+        assert!(!empty_sentinel
+            .iter()
+            .any(|step| step.contains("Restart the Lumux daemon")));
+
+        let reporter = std::env::current_exe().unwrap();
+        let reporter = reporter.to_str().unwrap();
+        let current_pane = activation_steps(
+            IntegrationTarget::Copilot,
+            env_of(&[("LUMUX", "/run/lumux.sock"), ("LUMUX_BIN", reporter)]),
+        );
+        assert!(!current_pane
+            .iter()
+            .any(|step| step.contains("Restart the Lumux daemon")));
+
+        for invalid in ["", "relative/lumux", "/missing/lumux"] {
+            let stale = activation_steps(
+                IntegrationTarget::Copilot,
+                env_of(&[("LUMUX", "/run/lumux.sock"), ("LUMUX_BIN", invalid)]),
+            );
+            assert!(stale
+                .iter()
+                .any(|step| step.contains("Restart the Lumux daemon")));
+        }
+
+        #[cfg(unix)]
+        {
+            let dir = tempfile::tempdir().unwrap();
+            let non_executable = dir.path().join("lumux");
+            std::fs::write(&non_executable, b"not executable").unwrap();
+            let non_executable = non_executable.to_str().unwrap();
+            let stale = activation_steps(
+                IntegrationTarget::Copilot,
+                env_of(&[
+                    ("LUMUX", "/run/lumux.sock"),
+                    ("LUMUX_BIN", non_executable),
+                ]),
+            );
+            assert!(stale
+                .iter()
+                .any(|step| step.contains("Restart the Lumux daemon")));
+        }
+    }
+
+    #[test]
     fn claude_hook_mapping_covers_lifecycle_and_blocking_events() {
         let map: std::collections::HashMap<_, _> = CLAUDE_HOOK_EVENTS
             .iter()
@@ -839,6 +977,8 @@ mod tests {
             "$native.StartTime.ToUniversalTime().Ticks",
             "${owner}@win:${nativeIdentity}",
             "if ($nativePid -le 0) { exit 0 }",
+            "$lumuxBin=$env:LUMUX_BIN",
+            "& $lumuxBin report-state '%state%' --agent claude",
         ] {
             assert!(
                 CLAUDE_WINDOWS_HOOK_WRAPPER.contains(expected),
@@ -904,11 +1044,6 @@ mod tests {
         payload: &str,
         native_pid: Option<&str>,
     ) -> std::process::Output {
-        let mut search_paths = vec![fake_bin.to_path_buf()];
-        search_paths.extend(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        ));
-        let search_path = std::env::join_paths(search_paths).unwrap();
         let mut command = std::process::Command::new("sh");
         command.arg(wrapper).arg(state);
         if let Some(native_pid) = native_pid {
@@ -921,7 +1056,8 @@ mod tests {
             .env("LUMUX_AGENT_SEQUENCE", "7")
             .env("LUMUX_AGENT_CLAIM", "inherited-claim")
             .env("LUMUX_TEST_LOG", log)
-            .env("PATH", search_path)
+            .env("LUMUX_BIN", fake_bin.join("lumux"))
+            .env("PATH", "/usr/bin:/bin")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())

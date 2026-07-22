@@ -527,6 +527,39 @@ fn shell_command_output_appears_in_frames() {
 }
 
 #[test]
+fn pane_shell_inherits_bound_endpoint_and_daemon_executable() {
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("hook-runtime".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    let (acked, _) = c.collect_until(Duration::from_secs(2), |message| {
+        matches!(message, ServerMsg::Attached { .. })
+    });
+    assert!(acked);
+
+    // This in-process daemon advertises the test harness executable. In
+    // production the daemon is the re-executed lumux binary; this test covers
+    // propagation of that executable path, while the CLI-level tests exercise
+    // it as a report-state command.
+    c.send(&ClientMsg::Input(
+        b"m=LUMUX_RUNTIME; endpoint=missing; [ -n \"$LUMUX\" ] && endpoint=set; absolute=no; case \"$LUMUX_BIN\" in /*) absolute=yes;; esac; exists=no; [ -f \"$LUMUX_BIN\" ] && exists=yes; printf '%s<%s|%s|%s|%s>\\n' \"$m\" \"$endpoint\" \"$LUMUX_PANE\" \"$absolute\" \"$exists\"\n".to_vec(),
+    ));
+    let (_, vt) = c.collect_until(Duration::from_secs(2), |_| false);
+    let marker = "LUMUX_RUNTIME<";
+    let start = vt.rfind(marker).expect("runtime marker") + marker.len();
+    let end = vt[start..].find('>').expect("runtime marker end") + start;
+    let values = vt[start..end].split('|').collect::<Vec<_>>();
+    assert_eq!(values.len(), 4, "invalid runtime marker: {vt:?}");
+    assert_eq!(values[0], "set", "LUMUX endpoint is empty: {vt:?}");
+    values[1].parse::<PaneId>().expect("valid LUMUX_PANE");
+    assert_eq!(values[2], "yes", "LUMUX_BIN is not absolute: {vt:?}");
+    assert_eq!(values[3], "yes", "LUMUX_BIN does not exist: {vt:?}");
+}
+
+#[test]
 fn detach_then_reattach_preserves_session() {
     let path = start_daemon();
 

@@ -12,6 +12,7 @@ use clap::{Parser, Subcommand};
 mod attach;
 mod control;
 mod integration;
+mod runtime;
 mod server;
 #[cfg(unix)]
 mod term_unix;

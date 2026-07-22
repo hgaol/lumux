@@ -24,7 +24,7 @@ use lumux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use lumux_core::proto::{encode, ClientMsg, Command, ControlRequest, Event, ServerMsg};
 use lumux_core::traits::{FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, Transport};
 
-use crate::daemon::{Daemon, InteractionMap, SidebarClick};
+use crate::daemon::{Daemon, InteractionMap, PaneRuntime, SidebarClick};
 
 /// Ratio step per keyboard resize-pane keypress (~5% of the split each press).
 const RESIZE_STEP: f32 = 0.05;
@@ -199,11 +199,12 @@ where
     <S::Pty as Pty>::Reader: Send + 'static,
     L: Listener + 'static,
 {
+    let pane_runtime = PaneRuntime::for_listener(listener.endpoint());
     let (tx, rx) = channel::<Msg>();
     spawn_accept(listener, tx.clone());
     spawn_ticker(tx.clone());
 
-    let mut daemon = Daemon::new(pty_system);
+    let mut daemon = Daemon::with_pane_runtime(pty_system, pane_runtime);
     daemon.set_config(config);
     let mut lp = Loop {
         daemon,

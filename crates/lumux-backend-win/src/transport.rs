@@ -286,6 +286,10 @@ impl PipeListener {
 impl Listener for PipeListener {
     type Conn = PipeTransport;
 
+    fn endpoint(&self) -> Option<std::ffi::OsString> {
+        Some(self.path.clone().into())
+    }
+
     fn accept(&mut self) -> io::Result<Self::Conn> {
         let handle = self.create_instance()?;
         // ConnectNamedPipe on an overlapped handle returns 0 / ERROR_IO_PENDING

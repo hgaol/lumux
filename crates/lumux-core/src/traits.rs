@@ -115,6 +115,13 @@ pub trait FrameWriter: Send {
 /// Accepts incoming client [`Transport`] connections on the daemon side.
 pub trait Listener: Send {
     type Conn: Transport;
+    /// Stable endpoint identity clients can use to reconnect to this exact
+    /// listener. The daemon injects it into pane runtimes; deriving it from
+    /// ambient process environment would make custom sockets/pipes report to a
+    /// different server.
+    fn endpoint(&self) -> Option<std::ffi::OsString> {
+        None
+    }
     /// Block until a client connects.
     fn accept(&mut self) -> io::Result<Self::Conn>;
 }

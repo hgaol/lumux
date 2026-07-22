@@ -284,23 +284,41 @@ fn tmux_config_default_shell_is_used() {
 }
 
 #[test]
-fn pane_shell_sees_lumux_env_var() {
+fn pane_shell_sees_bound_endpoint_and_daemon_executable() {
     // Every spawned pane must have $LUMUX set so children know they're inside
     // lumux (mirrors tmux's $TMUX), which is what the client's nesting guard
-    // checks. cmd.exe expands %LUMUX%. In the in-process test daemon LUMUX_PIPE
-    // isn't set, so lumux_pane_env falls back to LUMUX=1 — assert the expansion
-    // "LX<1>END" appears (not the unexpanded literal).
+    // checks. Detached provider hooks also need the daemon executable path
+    // because their PATH may be sanitized. Here that executable is the
+    // in-process test harness; in production it is the re-executed lumux binary.
+    // The endpoint must come from the bound pipe even though this test daemon
+    // has no LUMUX_PIPE environment.
     let path = start_daemon();
     let mut c = new_cmd_session(&path, "envcheck");
     // Avoid cmd redirection metachars (< >): wrap the expansion in plain letters.
-    // Unset -> cmd prints the literal "LXa%LUMUX%zEND"; set to 1 -> "LXa1zEND".
+    // Unset -> cmd prints the literal "LXa%LUMUX%zEND"; a correct pane expands
+    // it to the exact bound named-pipe endpoint.
     c.send(&ClientMsg::Command(Command::SendKeys {
         keys: b"echo LXa%LUMUX%zEND\r\n".to_vec(),
     }));
-    let vt = c.collect_text(Duration::from_secs(10), "LXa1zEND").1;
+    let endpoint_marker = format!("LXa{path}zEND");
+    let vt = c
+        .collect_text(Duration::from_secs(10), &endpoint_marker)
+        .1;
     assert!(
-        vt.contains("LXa1zEND"),
-        "the pane shell must have $LUMUX set (expected LXa1zEND from %LUMUX%); got:\n{vt}"
+        vt.contains(&endpoint_marker),
+        "the pane shell must expose the bound pipe through $LUMUX; got:\n{vt}"
+    );
+
+    // Let the pane validate the path so a long test executable path wrapping in
+    // the rendered terminal cannot corrupt a value reconstructed by the test.
+    // Split the success marker in the command so echoed input is not a match.
+    c.send(&ClientMsg::Command(Command::SendKeys {
+        keys: b"powershell.exe -NoLogo -NoProfile -NonInteractive -Command \"$p=$env:LUMUX_BIN; $full=[IO.Path]::GetFullPath($p); if ([IO.Path]::IsPathRooted($p) -and [StringComparer]::OrdinalIgnoreCase.Equals($full,$p) -and (Test-Path -LiteralPath $p -PathType Leaf)) { Write-Output ('LUMUX_RUNTIME_' + 'BIN_OK') } else { Write-Output ('LUMUX_RUNTIME_' + 'BIN_BAD') }\"\r\n".to_vec(),
+    }));
+    let (found, vt) = c.collect_text(Duration::from_secs(10), "LUMUX_RUNTIME_BIN_OK");
+    assert!(
+        found,
+        "LUMUX_BIN must be populated, absolute, and identify a file; got:\n{vt}"
     );
 }
 

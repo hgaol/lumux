@@ -3,7 +3,21 @@
 # managed by lumux; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # LUMUX_INTEGRATION_ID=codex
-# LUMUX_INTEGRATION_VERSION=4
+# LUMUX_INTEGRATION_VERSION=5
+
+resolve_lumux_bin() {
+  lumux_bin="${LUMUX_BIN:-}"
+  if [ -z "$lumux_bin" ]; then
+    lumux_bin="$(command -v lumux 2>/dev/null)" || return 1
+  fi
+  case "$lumux_bin" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -x "$lumux_bin" ] || return 1
+  LUMUX_BIN="$lumux_bin"
+  export LUMUX_BIN
+}
 
 # Internal detached watcher mode. SessionStart launches this process with the
 # native Codex pid and its creation identity in the environment. It owns no
@@ -13,7 +27,7 @@ if [ "${1:-}" = "--watch" ]; then
   if [ -z "${LUMUX:-}" ] || [ -z "${LUMUX_PANE:-}" ] || \
      [ -z "${LUMUX_AGENT_OWNER:-}" ] || [ -z "${LUMUX_CODEX_WATCH_PID:-}" ] || \
      [ -z "${LUMUX_CODEX_WATCH_IDENTITY:-}" ] || \
-     ! command -v python3 >/dev/null 2>&1 || ! command -v lumux >/dev/null 2>&1; then
+     ! command -v python3 >/dev/null 2>&1 || ! resolve_lumux_bin; then
     exit 0
   fi
 
@@ -65,7 +79,7 @@ environment.pop("LUMUX_CODEX_WATCH_PID", None)
 environment.pop("LUMUX_CODEX_WATCH_IDENTITY", None)
 try:
     subprocess.run(
-        ["lumux", "report-state", "clear", "--agent", "codex"],
+        [os.environ["LUMUX_BIN"], "report-state", "clear", "--agent", "codex"],
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
@@ -89,7 +103,7 @@ esac
 # Codex supplies one JSON object on stdin. State mapping is owned by hooks.json;
 # this adapter extracts only lifecycle ownership and event-start order.
 if [ -z "${LUMUX:-}" ] || [ -z "${LUMUX_PANE:-}" ] || \
-   ! command -v python3 >/dev/null 2>&1 || ! command -v lumux >/dev/null 2>&1; then
+   ! command -v python3 >/dev/null 2>&1 || ! resolve_lumux_bin; then
   cat >/dev/null 2>&1 || true
   exit 0
 fi
@@ -164,7 +178,7 @@ environment["LUMUX_AGENT_CLAIM"] = (
 
 try:
     subprocess.run(
-        ["lumux", "report-state", sys.argv[1], "--agent", "codex"],
+        [os.environ["LUMUX_BIN"], "report-state", sys.argv[1], "--agent", "codex"],
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

@@ -2,7 +2,7 @@
 # managed by lumux; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # LUMUX_INTEGRATION_ID=codex
-# LUMUX_INTEGRATION_VERSION=4
+# LUMUX_INTEGRATION_VERSION=5
 
 param(
     [string]$State = "",
@@ -11,6 +11,23 @@ param(
 
 $nativePidSupplied = $PSBoundParameters.ContainsKey("NativePid")
 $ErrorActionPreference = "SilentlyContinue"
+
+function Resolve-LumuxBin {
+    if (-not [string]::IsNullOrWhiteSpace($env:LUMUX_BIN)) {
+        try {
+            $candidate = Get-Item -LiteralPath $env:LUMUX_BIN -ErrorAction Stop
+            if (-not $candidate.PSIsContainer) { return $candidate.FullName }
+        } catch {
+        }
+        return $null
+    }
+    $command = Get-Command lumux -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $command) { return $command.Source }
+    return $null
+}
+
+$lumuxBin = Resolve-LumuxBin
+if (-not [string]::IsNullOrWhiteSpace($lumuxBin)) { $env:LUMUX_BIN = $lumuxBin }
 
 # Internal detached watcher mode. The initial SessionStart hook records the
 # native Codex process creation time, so pid reuse cannot keep this watcher on a
@@ -40,13 +57,13 @@ if ($State -eq "watch") {
         if (-not $sameProcess) { break }
         Start-Sleep -Milliseconds 250
     }
-    if ($null -eq (Get-Command lumux -ErrorAction SilentlyContinue)) { exit 0 }
+    if ([string]::IsNullOrWhiteSpace($lumuxBin)) { exit 0 }
     $env:LUMUX_AGENT_SEQUENCE = [string](([DateTime]::UtcNow.Ticks - 621355968000000000L) * 100L)
     $env:LUMUX_AGENT_CLAIM = "0"
     Remove-Item -Path Env:LUMUX_CODEX_WATCH_PID -ErrorAction SilentlyContinue
     Remove-Item -Path Env:LUMUX_CODEX_WATCH_IDENTITY -ErrorAction SilentlyContinue
     try {
-        & lumux report-state clear --agent codex *> $null
+        & $lumuxBin report-state clear --agent codex *> $null
     } catch {
     }
     exit 0
@@ -59,7 +76,7 @@ $inputText = [Console]::In.ReadToEnd()
 if ($State -notin @("idle", "working", "blocked")) { exit 0 }
 if ([string]::IsNullOrWhiteSpace($env:LUMUX)) { exit 0 }
 if ([string]::IsNullOrWhiteSpace($env:LUMUX_PANE)) { exit 0 }
-if ($null -eq (Get-Command lumux -ErrorAction SilentlyContinue)) { exit 0 }
+if ([string]::IsNullOrWhiteSpace($lumuxBin)) { exit 0 }
 
 try {
     $payload = if ([string]::IsNullOrWhiteSpace($inputText)) { $null } else { $inputText | ConvertFrom-Json -ErrorAction Stop }
@@ -89,7 +106,7 @@ $env:LUMUX_AGENT_SEQUENCE = [string]$sequence
 $env:LUMUX_AGENT_CLAIM = if ($payload.hook_event_name -in @("SessionStart", "UserPromptSubmit")) { "1" } else { "0" }
 
 try {
-    & lumux report-state $State --agent codex *> $null
+    & $lumuxBin report-state $State --agent codex *> $null
 } catch {
 }
 

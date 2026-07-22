@@ -3,19 +3,34 @@
 # managed by lumux; reinstalling or updating the integration overwrites this file.
 # add custom hooks beside this file instead of editing it.
 # LUMUX_INTEGRATION_ID=copilot
-# LUMUX_INTEGRATION_VERSION=5
+# LUMUX_INTEGRATION_VERSION=7
+
+resolve_lumux_bin() {
+  lumux_bin="${LUMUX_BIN:-}"
+  if [ -z "$lumux_bin" ]; then
+    lumux_bin="$(command -v lumux 2>/dev/null)" || return 1
+  fi
+  case "$lumux_bin" in
+    /*) ;;
+    *) return 1 ;;
+  esac
+  [ -x "$lumux_bin" ] || return 1
+  LUMUX_BIN="$lumux_bin"
+  export LUMUX_BIN
+}
 
 action="${1:-}"
 native_pid="${2:-}"
 case "$action" in
-  session-start|working|blocked|pre-tool|post-tool|stop|notification|session-end|idle|clear) ;;
+  session-start|working|blocked|pre-tool|post-tool|error|stop|notification|session-end|idle|clear) ;;
   *) cat >/dev/null 2>&1 || true; exit 0 ;;
 esac
 
 # Copilot command PreToolUse hooks fail closed on hook errors. Every branch in
 # this telemetry-only wrapper therefore consumes stdin, suppresses output, and
 # returns zero—even with malformed JSON, missing tools, or no lumux pane.
-if [ -z "${LUMUX:-}" ] || [ -z "${LUMUX_PANE:-}" ] || ! command -v python3 >/dev/null 2>&1; then
+if [ -z "${LUMUX:-}" ] || [ -z "${LUMUX_PANE:-}" ] || \
+   ! command -v python3 >/dev/null 2>&1 || ! resolve_lumux_bin; then
   cat >/dev/null 2>&1 || true
   exit 0
 fi
@@ -92,12 +107,17 @@ elif action == "notification":
     notification = first_text("notification_type", "notificationType")
     if notification in ("permission_prompt", "elicitation_dialog"):
         state = "blocked"
-    elif notification == "agent_idle":
-        state = "idle"
+elif action == "error":
+    # Recoverable errors may be handled while the main agent keeps working.
+    # A non-recoverable error leaves the interactive session open but needing
+    # attention; Stop/SessionEnd will later settle or clear the lifecycle.
+    if payload.get("recoverable") is False:
+        state = "blocked"
 elif action in ("stop", "idle"):
-    stop_reason = first_text("stop_reason", "stopReason")
-    if not stop_reason or stop_reason == "end_turn":
-        state = "idle"
+    # Stop is the main-agent turn boundary. Even if a provider version adds a
+    # new reason, leaving working/blocked sticky after the turn is worse than
+    # settling the pane back to idle.
+    state = "idle"
 elif action in ("session-end", "clear"):
     # SessionEnd is emitted only when the session terminates. Its documented
     # reasons (including complete/error/timeout) all end this lifecycle.
@@ -128,7 +148,7 @@ environment["LUMUX_AGENT_SEQUENCE"] = str(sequence)
 environment["LUMUX_AGENT_CLAIM"] = "1" if action in ("session-start", "working") else "0"
 try:
     subprocess.run(
-        ["lumux", "report-state", state, "--agent", "copilot"],
+        [os.environ["LUMUX_BIN"], "report-state", state, "--agent", "copilot"],
         env=environment,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,

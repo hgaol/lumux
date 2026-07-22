@@ -6,6 +6,7 @@
 //! (dev/CI) and the Windows ConPTY backend (Phase 10).
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 
 use lumux_core::agent::{AgentClear, AgentIdentity, AgentReport};
 use lumux_core::config::Config;
@@ -92,19 +93,58 @@ pub fn default_shell() -> Vec<String> {
     }
 }
 
-/// Environment to inject into every spawned pane shell so it knows it is running
-/// inside lumux (mirrors tmux's `$TMUX`). `LUMUX` carries the daemon's
-/// listener path (pipe/socket) when known — like tmux's `socket,pid,session` —
-/// falling back to `1`. `LUMUX_PANE` carries this pane's id. The client checks
-/// `LUMUX` before creating a new session to avoid accidental nesting.
-fn lumux_pane_env(pane: PaneId) -> Vec<(String, String)> {
-    let listener = std::env::var("LUMUX_PIPE")
-        .or_else(|_| std::env::var("LUMUX_SOCK"))
-        .unwrap_or_else(|_| "1".to_string());
-    vec![
-        ("LUMUX".to_string(), listener),
-        ("LUMUX_PANE".to_string(), pane.to_string()),
-    ]
+/// Authoritative runtime contract inherited by every pane and detached hook.
+///
+/// The endpoint comes from the bound [`lumux_core::traits::Listener`], not the
+/// daemon process environment. Keeping endpoint and reporter together ensures
+/// provider adapters need only one stable pane interface: `LUMUX`,
+/// `LUMUX_PANE`, and `LUMUX_BIN`.
+#[derive(Clone, Debug)]
+pub(crate) struct PaneRuntime {
+    endpoint: Option<OsString>,
+    reporter: Option<std::path::PathBuf>,
+}
+
+impl PaneRuntime {
+    pub(crate) fn for_listener(endpoint: Option<OsString>) -> Self {
+        Self {
+            endpoint: endpoint.filter(|value| !value.is_empty()),
+            reporter: std::env::current_exe().ok(),
+        }
+    }
+
+    fn from_process() -> Self {
+        #[cfg(unix)]
+        let endpoint = std::env::var_os("LUMUX_SOCK");
+        #[cfg(windows)]
+        let endpoint = std::env::var_os("LUMUX_PIPE");
+        #[cfg(not(any(unix, windows)))]
+        let endpoint = std::env::var_os("LUMUX_PIPE").or_else(|| std::env::var_os("LUMUX_SOCK"));
+        Self::for_listener(endpoint)
+    }
+
+    fn environment(&self, pane: PaneId) -> Vec<(String, String)> {
+        let endpoint = self
+            .endpoint
+            .clone()
+            .and_then(|value| value.into_string().ok())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| "1".to_string());
+        let mut env = vec![
+            ("LUMUX".to_string(), endpoint),
+            ("LUMUX_PANE".to_string(), pane.to_string()),
+        ];
+        if let Some(reporter) = self
+            .reporter
+            .as_ref()
+            .filter(|path| path.is_absolute())
+            .and_then(|path| path.to_str())
+            .filter(|path| !path.is_empty())
+        {
+            env.push(("LUMUX_BIN".to_string(), reporter.to_string()));
+        }
+        env
+    }
 }
 
 /// Latest accepted lifecycle event for a pane. Keeping identity, sequence, and
@@ -208,6 +248,7 @@ impl AgentLifecycle {
 pub struct Daemon<S: PtySystem> {
     pub server: Server,
     pty_system: S,
+    pane_runtime: PaneRuntime,
     panes: BTreeMap<PaneId, LivePane<<S::Pty as Pty>::Writer>>,
     /// One keymap per attached client id.
     keymaps: BTreeMap<u64, Keymap>,
@@ -937,13 +978,30 @@ impl SidebarFrame {
 
 impl<S: PtySystem> Daemon<S> {
     pub fn new(pty_system: S) -> Self {
-        Self::with_clipboard(pty_system, Box::new(NullClipboard))
+        Self::with_clipboard_and_runtime(
+            pty_system,
+            Box::new(NullClipboard),
+            PaneRuntime::from_process(),
+        )
     }
 
     pub fn with_clipboard(pty_system: S, clipboard: Box<dyn Clipboard>) -> Self {
+        Self::with_clipboard_and_runtime(pty_system, clipboard, PaneRuntime::from_process())
+    }
+
+    pub(crate) fn with_pane_runtime(pty_system: S, pane_runtime: PaneRuntime) -> Self {
+        Self::with_clipboard_and_runtime(pty_system, Box::new(NullClipboard), pane_runtime)
+    }
+
+    fn with_clipboard_and_runtime(
+        pty_system: S,
+        clipboard: Box<dyn Clipboard>,
+        pane_runtime: PaneRuntime,
+    ) -> Self {
         Self {
             server: Server::new(),
             pty_system,
+            pane_runtime,
             panes: BTreeMap::new(),
             keymaps: BTreeMap::new(),
             renderers: BTreeMap::new(),
@@ -1069,7 +1127,7 @@ impl<S: PtySystem> Daemon<S> {
         let cmd = ShellCommand {
             argv: shell.to_vec(),
             cwd,
-            env: lumux_pane_env(id),
+            env: self.pane_runtime.environment(id),
         };
         let pty = self.pty_system.spawn(&cmd, content)?;
         let (writer, reader) = pty.split()?;
@@ -4854,6 +4912,39 @@ mod agent_status_tests {
     use lumux_backend_unix::UnixPtySystem;
     use lumux_core::agent::{AgentClear, AgentIdentity, AgentReport, AgentState};
     use lumux_core::traits::PtySize;
+
+    #[test]
+    fn pane_environment_carries_endpoint_identity_and_exact_reporter() {
+        let pane: PaneId = "%7".parse().unwrap();
+        let runtime = PaneRuntime {
+            endpoint: Some(OsString::from("/run/lumux-test.sock")),
+            reporter: Some(std::path::PathBuf::from("/opt/lumux/bin/lumux")),
+        };
+        let env = runtime
+            .environment(pane)
+            .into_iter()
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(
+            env.get("LUMUX").map(String::as_str),
+            Some("/run/lumux-test.sock")
+        );
+        assert_eq!(env.get("LUMUX_PANE").map(String::as_str), Some("%7"));
+        assert_eq!(
+            env.get("LUMUX_BIN").map(String::as_str),
+            Some("/opt/lumux/bin/lumux")
+        );
+
+        let fallback = PaneRuntime {
+            endpoint: None,
+            reporter: None,
+        }
+        .environment(pane)
+        .into_iter()
+        .collect::<BTreeMap<_, _>>();
+        assert_eq!(fallback.get("LUMUX").map(String::as_str), Some("1"));
+        assert!(!fallback.contains_key("LUMUX_BIN"));
+    }
 
     fn spawn() -> (Daemon<UnixPtySystem>, SessionId, PaneId) {
         let mut d = Daemon::new(UnixPtySystem);

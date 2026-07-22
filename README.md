@@ -245,8 +245,20 @@ the agent's config directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
 `COPILOT_HOME` overrides the default). Copilot uses its dedicated documented
 `hooks/lumux-agent-state.json` file, leaving `settings.json` untouched. Use
 GitHub Copilot CLI 1.0.22 or newer for reliable once-per-session lifecycle
-events. Codex asks you to review newly installed user hooks; open `/hooks`
-inside Codex and trust the lumux entries once.
+events.
+
+Hook files are loaded when the provider starts. After installing or updating an
+integration, fully exit and restart every running Claude Code, Codex, or Copilot
+CLI process; an existing process will not notice the new hooks. Codex also runs
+new user hooks **zero times** until they are trusted: after restarting, open
+`/hooks` inside Codex and trust every Lumux entry. The installer prints these
+activation steps.
+
+Lumux panes also inherit the exact daemon endpoint and reporter binary used by
+hooks, so integrations do not depend on an interactive `PATH` or the default
+socket. Panes created by an older daemon lack that runtime context. After
+upgrading from an older integration build, restart the daemon and recreate the
+panes when convenient (note that `lumux kill-server` terminates its sessions).
 
 Claude Code and GitHub Copilot CLI expose session-end hooks, so their sidebar
 entry is removed when the CLI exits. Codex exposes turn completion but no

@@ -93,6 +93,14 @@ impl UnixSocketListener {
     /// Bind a fresh socket at `path`, removing any stale file first.
     pub fn bind(path: impl Into<PathBuf>) -> std::io::Result<Self> {
         let path = path.into();
+        // Pane processes routinely change directory before starting an agent.
+        // Store and advertise a cwd-independent endpoint so their inherited
+        // runtime context continues to identify this exact listener.
+        let path = if path.is_absolute() {
+            path
+        } else {
+            std::env::current_dir()?.join(path)
+        };
         if path.exists() {
             let _ = std::fs::remove_file(&path);
         }
@@ -108,6 +116,10 @@ impl UnixSocketListener {
 impl Listener for UnixSocketListener {
     type Conn = UnixTransport;
 
+    fn endpoint(&self) -> Option<std::ffi::OsString> {
+        Some(self.path.as_os_str().to_owned())
+    }
+
     fn accept(&mut self) -> std::io::Result<Self::Conn> {
         let (stream, _addr) = self.listener.accept()?;
         Ok(UnixTransport::new(stream))
@@ -117,5 +129,24 @@ impl Listener for UnixSocketListener {
 impl Drop for UnixSocketListener {
     fn drop(&mut self) {
         let _ = std::fs::remove_file(&self.path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn relative_bind_advertises_a_cwd_independent_endpoint() {
+        let relative = PathBuf::from(format!(
+            ".lumux-relative-listener-{}.sock",
+            std::process::id()
+        ));
+        let expected = std::env::current_dir().unwrap().join(&relative);
+
+        let listener = UnixSocketListener::bind(&relative).unwrap();
+
+        assert_eq!(listener.path(), expected);
+        assert_eq!(listener.endpoint(), Some(expected.into_os_string()));
     }
 }

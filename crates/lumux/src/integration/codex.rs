@@ -125,7 +125,6 @@ fn install_at(dir: PathBuf) -> anyhow::Result<()> {
         hooks_path.display(),
         HOOK_EVENTS.len()
     );
-    println!("Codex requires new user hooks to be reviewed; open `/hooks` in Codex and trust the lumux hooks.");
     Ok(())
 }
 
@@ -357,7 +356,8 @@ mod tests {
             "LUMUX_CODEX_WATCH_PID",
             "LUMUX_CODEX_WATCH_IDENTITY",
             "LUMUX_AGENT_OWNER",
-            "report-state clear --agent codex",
+            "$env:LUMUX_BIN",
+            "& $lumuxBin report-state clear --agent codex",
             "RedirectStandardInput = $true",
             "RedirectStandardOutput = $true",
             "RedirectStandardError = $true",
@@ -503,7 +503,7 @@ mod tests {
     #[cfg(not(windows))]
     fn run_wrapper(
         wrapper: &Path,
-        path: &OsString,
+        reporter: &Path,
         log: &Path,
         state: &str,
         payload: &str,
@@ -521,7 +521,11 @@ mod tests {
             .env("LUMUX_AGENT_SEQUENCE", "7")
             .env("LUMUX_AGENT_CLAIM", "inherited-claim")
             .env("LUMUX_TEST_LOG", log)
-            .env("PATH", path)
+            .env("LUMUX_BIN", reporter)
+            // The provider hook must not depend on the user's interactive
+            // PATH containing lumux. Keep only system tools needed by the
+            // wrapper; the fake reporter is intentionally outside this PATH.
+            .env("PATH", "/usr/bin:/bin")
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -564,13 +568,9 @@ mod tests {
         let mut permissions = std::fs::metadata(&fake).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake, permissions).unwrap();
-        let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        )))
-        .unwrap();
         let output = run_wrapper(
             &wrapper,
-            &path,
+            &fake,
             &log,
             "blocked",
             r#"{"hook_event_name":"PermissionRequest","session_id":"codex-session"}"#,
@@ -596,7 +596,7 @@ mod tests {
         std::fs::remove_file(&log).unwrap();
         let ownerless = run_wrapper(
             &wrapper,
-            &path,
+            &fake,
             &log,
             "working",
             r#"{"hook_event_name":"UserPromptSubmit"}"#,
@@ -610,7 +610,7 @@ mod tests {
 
         let foreground = run_wrapper(
             &wrapper,
-            &path,
+            &fake,
             &log,
             "working",
             r#"{"hook_event_name":"UserPromptSubmit","session_id":"codex-session"}"#,
@@ -627,7 +627,7 @@ mod tests {
         for unknown_pid in [0, u32::MAX] {
             let unknown_generation = run_wrapper(
                 &wrapper,
-                &path,
+                &fake,
                 &log,
                 "working",
                 r#"{"hook_event_name":"UserPromptSubmit","session_id":"codex-session"}"#,
@@ -666,11 +666,6 @@ mod tests {
         let mut permissions = std::fs::metadata(&fake).unwrap().permissions();
         permissions.set_mode(0o755);
         std::fs::set_permissions(&fake, permissions).unwrap();
-        let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
-            &std::env::var_os("PATH").unwrap_or_default(),
-        )))
-        .unwrap();
-
         // This long-lived process stands in for the native Codex binary. The
         // hook must not wait for it; only the detached watcher does.
         let mut native = std::process::Command::new("sleep")
@@ -680,7 +675,7 @@ mod tests {
         let started = Instant::now();
         let output = run_wrapper(
             &wrapper,
-            &path,
+            &fake,
             &log,
             "idle",
             r#"{"hook_event_name":"SessionStart","session_id":"codex-session"}"#,
@@ -712,7 +707,7 @@ mod tests {
             .unwrap();
         let replacement_report = run_wrapper(
             &wrapper,
-            &path,
+            &fake,
             &log,
             "working",
             r#"{"hook_event_name":"UserPromptSubmit","session_id":"codex-session"}"#,

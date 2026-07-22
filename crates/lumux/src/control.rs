@@ -54,13 +54,11 @@ fn read_until_detached<R: FrameReader>(reader: &mut R) -> Option<String> {
 
 #[cfg(unix)]
 mod platform {
-    use lumux_backend_unix::{default_socket_path, UnixReader, UnixTransport, UnixWriter};
+    use lumux_backend_unix::{UnixReader, UnixTransport, UnixWriter};
     use lumux_core::traits::Transport;
 
     pub fn connect() -> anyhow::Result<(UnixReader, UnixWriter)> {
-        let path = std::env::var_os("LUMUX_SOCK")
-            .map(std::path::PathBuf::from)
-            .unwrap_or_else(default_socket_path);
+        let path = crate::runtime::socket_path();
         let t = UnixTransport::connect(&path)?;
         Ok(t.split()?)
     }
@@ -68,11 +66,11 @@ mod platform {
 
 #[cfg(windows)]
 mod platform {
-    use lumux_backend_win::{default_pipe_path, PipeReader, PipeTransport, PipeWriter};
+    use lumux_backend_win::{PipeReader, PipeTransport, PipeWriter};
     use lumux_core::traits::Transport;
 
     pub fn connect() -> anyhow::Result<(PipeReader, PipeWriter)> {
-        let path = std::env::var("LUMUX_PIPE").unwrap_or_else(|_| default_pipe_path());
+        let path = crate::runtime::pipe_path();
         let t = PipeTransport::connect(&path)?;
         Ok(t.split()?)
     }

@@ -201,11 +201,20 @@ lumux integration copilot
 请使用 GitHub Copilot CLI 1.0.22 或更高版本，以确保每个会话只触发一次可靠的
 生命周期事件。
 
+provider 只会在启动时加载 hook 文件。安装或更新集成后，必须完全退出并重启所有
+正在运行的 Claude Code、Codex 或 Copilot CLI 进程；旧进程不会发现新 hook。
+Codex 在信任新用户 hook 之前会将其执行次数保持为 **零**：重启 Codex 后打开
+`/hooks`，并信任全部 Lumux 条目。安装器也会打印这些激活步骤。
+
+Lumux 窗格会把准确的 daemon 端点和 reporter 二进制路径传给 hook，因此集成不再
+依赖交互式 `PATH` 或默认 socket。由旧 daemon 创建的窗格没有这些运行时信息；从
+早期集成版本升级后，请在方便时重启 daemon 并重新创建窗格（注意：
+`lumux kill-server` 会终止其中的会话）。
+
 Claude Code 和 GitHub Copilot CLI 提供会话结束 hook，因此 CLI 退出后会从
 侧边栏移除。Codex 提供轮次结束但没有文档支持的会话结束 hook；其适配器会在
 SessionStart 时启动一个脱离终端、校验进程身份的 watcher，并在原生 Codex
-进程退出时只移除对应的生命周期。Codex 会要求审核新安装的用户 hooks；请在
-Codex 中打开 `/hooks` 并信任 lumux 条目。
+进程退出时只移除对应的生命周期。
 
 任何程序也可以在窗格内直接上报：
 
