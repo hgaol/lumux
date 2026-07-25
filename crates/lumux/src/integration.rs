@@ -13,6 +13,7 @@ mod copilot;
 mod cursor;
 mod kimi;
 mod opencode;
+mod pi;
 mod qodercli;
 
 use std::ffi::OsString;
@@ -360,6 +361,7 @@ enum IntegrationTarget {
     Qodercli,
     Kimi,
     OpenCode,
+    Pi,
 }
 
 impl IntegrationTarget {
@@ -374,8 +376,9 @@ impl IntegrationTarget {
             "qodercli" | "qoder" | "qoder-cli" => Ok(Self::Qodercli),
             "kimi" | "kimi-code" | "kimi-cli" => Ok(Self::Kimi),
             "opencode" | "open-code" => Ok(Self::OpenCode),
+            "pi" | "pi-agent" | "pi-coding-agent" => Ok(Self::Pi),
             other => anyhow::bail!(
-                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, `qodercli`, `kimi`, or `opencode`)"
+                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, `qodercli`, `kimi`, `opencode`, or `pi`)"
             ),
         }
     }
@@ -393,6 +396,7 @@ pub fn install(agent: &str) -> anyhow::Result<()> {
         IntegrationTarget::Qodercli => qodercli::install(),
         IntegrationTarget::Kimi => kimi::install(),
         IntegrationTarget::OpenCode => opencode::install(),
+        IntegrationTarget::Pi => pi::install(),
     }?;
     for step in activation_steps(target, |key| std::env::var_os(key)) {
         println!("{step}");
@@ -432,7 +436,8 @@ fn activation_steps(
             steps.push("Next: Restart GitHub Copilot CLI; running processes do not reload hooks.");
         }
         IntegrationTarget::Cursor => {
-            steps.push("Next: Restart the Cursor agent CLI; running processes do not reload hooks.");
+            steps
+                .push("Next: Restart the Cursor agent CLI; running processes do not reload hooks.");
         }
         IntegrationTarget::Qodercli => {
             steps.push("Next: Restart the Qoder CLI; running processes do not reload hooks.");
@@ -442,6 +447,9 @@ fn activation_steps(
         }
         IntegrationTarget::OpenCode => {
             steps.push("Next: Restart opencode; plugins load at startup.");
+        }
+        IntegrationTarget::Pi => {
+            steps.push("Next: Restart pi; extensions load at startup.");
         }
     }
     steps
@@ -454,8 +462,7 @@ fn reporter_is_usable(path: &Path) -> bool {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path)
-            .is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        std::fs::metadata(path).is_ok_and(|metadata| metadata.permissions().mode() & 0o111 != 0)
     }
     #[cfg(not(unix))]
     {
@@ -855,6 +862,12 @@ mod tests {
                 IntegrationTarget::OpenCode
             );
         }
+        for alias in ["pi", "pi-agent", "pi-coding-agent"] {
+            assert_eq!(
+                IntegrationTarget::parse(alias).unwrap(),
+                IntegrationTarget::Pi
+            );
+        }
         for alias in [
             "copilot",
             "copilot-cli",
@@ -890,10 +903,7 @@ mod tests {
             .iter()
             .any(|step| step.contains("Restart the Lumux daemon")));
 
-        let empty_sentinel = activation_steps(
-            IntegrationTarget::Copilot,
-            env_of(&[("LUMUX", "")]),
-        );
+        let empty_sentinel = activation_steps(IntegrationTarget::Copilot, env_of(&[("LUMUX", "")]));
         assert!(!empty_sentinel
             .iter()
             .any(|step| step.contains("Restart the Lumux daemon")));
@@ -926,10 +936,7 @@ mod tests {
             let non_executable = non_executable.to_str().unwrap();
             let stale = activation_steps(
                 IntegrationTarget::Copilot,
-                env_of(&[
-                    ("LUMUX", "/run/lumux.sock"),
-                    ("LUMUX_BIN", non_executable),
-                ]),
+                env_of(&[("LUMUX", "/run/lumux.sock"), ("LUMUX_BIN", non_executable)]),
             );
             assert!(stale
                 .iter()

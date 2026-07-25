@@ -72,10 +72,9 @@ mod tests {
         .unwrap();
         assert_eq!(explicit, PathBuf::from("/tmp/oc"));
 
-        let xdg = opencode_dir_with(|key| {
-            (key == "XDG_CONFIG_HOME").then(|| OsString::from("/tmp/xdg"))
-        })
-        .unwrap();
+        let xdg =
+            opencode_dir_with(|key| (key == "XDG_CONFIG_HOME").then(|| OsString::from("/tmp/xdg")))
+                .unwrap();
         assert_eq!(xdg, PathBuf::from("/tmp/xdg/opencode"));
 
         let home =

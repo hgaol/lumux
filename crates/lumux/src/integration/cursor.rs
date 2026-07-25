@@ -142,13 +142,14 @@ fn append_hook(
         .entry(descriptor.event.to_string())
         .or_insert_with(|| Value::Array(Vec::new()))
         .as_array_mut()
-        .ok_or_else(|| {
-            anyhow::anyhow!("hook entries for {} must be an array", descriptor.event)
-        })?;
+        .ok_or_else(|| anyhow::anyhow!("hook entries for {} must be an array", descriptor.event))?;
     entries.push(Value::Object(
-        [("command".to_string(), Value::from(hook_command(hook_path, descriptor.state)))]
-            .into_iter()
-            .collect::<Map<String, Value>>(),
+        [(
+            "command".to_string(),
+            Value::from(hook_command(hook_path, descriptor.state)),
+        )]
+        .into_iter()
+        .collect::<Map<String, Value>>(),
     ));
     Ok(())
 }
@@ -234,7 +235,9 @@ mod tests {
         // The wrapper is on disk and executable.
         let hook = dir.join(HOOK_FILE);
         assert!(hook.is_file());
-        assert!(std::fs::read_to_string(&hook).unwrap().contains(INTEGRATION_MARKER));
+        assert!(std::fs::read_to_string(&hook)
+            .unwrap()
+            .contains(INTEGRATION_MARKER));
 
         // Re-running replaces our entries rather than duplicating them.
         install_at(dir.clone()).unwrap();
@@ -262,7 +265,8 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         let err = install_at(dir).unwrap_err();
         assert!(
-            err.to_string().contains("install the Cursor agent CLI first"),
+            err.to_string()
+                .contains("install the Cursor agent CLI first"),
             "unexpected error: {err}"
         );
     }

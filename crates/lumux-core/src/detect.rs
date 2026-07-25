@@ -14,7 +14,10 @@
 ///
 /// Generic names (a bare `pi`, `omp`, …) are deliberately excluded: they are
 /// likelier to collide with an unrelated binary than to identify an agent, and
-/// a false row is worse than a missing one — the agent's own hook still adds it.
+/// a false row is worse than a missing one. Those agents still appear as soon
+/// as their own integration reports a state — `lumux integration pi` installs
+/// an extension that claims the pane at session start — so the only cost is
+/// that they are invisible until the integration is installed.
 const AGENT_NAMES: &[(&str, &str)] = &[
     ("claude", "claude"),
     ("codex", "codex"),

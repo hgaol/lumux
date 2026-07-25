@@ -234,7 +234,10 @@ mod tests {
         assert_eq!(twice.matches(BLOCK_BEGIN).count(), 1);
         assert_eq!(twice.matches(BLOCK_END).count(), 1);
         assert_eq!(once, twice, "the block must be stable across reinstalls");
-        assert!(twice.contains("command = \"mine\""), "foreign hook survives");
+        assert!(
+            twice.contains("command = \"mine\""),
+            "foreign hook survives"
+        );
     }
 
     #[test]
@@ -247,9 +250,9 @@ mod tests {
             .iter()
             .any(|d| d.event == "PreToolUse" && d.matcher == Some(ASK_USER_QUESTION)));
         // ...and the complementary matcher keeps every other tool "working".
-        assert!(HOOK_EVENTS
-            .iter()
-            .any(|d| d.event == "PreToolUse" && d.matcher == Some(OTHER_TOOL) && d.state == "working"));
+        assert!(HOOK_EVENTS.iter().any(|d| d.event == "PreToolUse"
+            && d.matcher == Some(OTHER_TOOL)
+            && d.state == "working"));
     }
 
     #[test]

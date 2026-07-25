@@ -78,7 +78,7 @@ fn qodercli_dir() -> anyhow::Result<PathBuf> {
 }
 
 fn qodercli_dir_with(getenv: impl Fn(&str) -> Option<OsString>) -> anyhow::Result<PathBuf> {
-    common::config_dir_with("QODER_HOME", ".qoder", getenv)
+    common::config_dir_with("QODER_CONFIG_DIR", ".qoder", getenv)
 }
 
 fn install_at(dir: PathBuf) -> anyhow::Result<()> {
@@ -102,7 +102,9 @@ fn install_at(dir: PathBuf) -> anyhow::Result<()> {
         .entry("hooks")
         .or_insert_with(|| Value::Object(Map::new()))
         .as_object_mut()
-        .ok_or_else(|| anyhow::anyhow!("`hooks` in {} is not an object", settings_path.display()))?;
+        .ok_or_else(|| {
+            anyhow::anyhow!("`hooks` in {} is not an object", settings_path.display())
+        })?;
 
     common::prune_managed_nested_hooks(hooks, is_managed);
     for descriptor in HOOK_EVENTS {
@@ -188,9 +190,10 @@ mod tests {
 
     #[test]
     fn config_dir_prefers_the_env_override() {
-        let dir =
-            qodercli_dir_with(|key| (key == "QODER_HOME").then(|| OsString::from("/tmp/qoder-cfg")))
-                .unwrap();
+        let dir = qodercli_dir_with(|key| {
+            (key == "QODER_CONFIG_DIR").then(|| OsString::from("/tmp/qoder-cfg"))
+        })
+        .unwrap();
         assert_eq!(dir, PathBuf::from("/tmp/qoder-cfg"));
     }
 

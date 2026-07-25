@@ -254,10 +254,22 @@ once with `lumux integration <agent>`:
 lumux integration claude
 lumux integration codex
 lumux integration copilot
+lumux integration cursor
+lumux integration qodercli
+lumux integration kimi
+lumux integration opencode
+lumux integration pi
 ```
 
 CLI-style aliases are also accepted: `claude-code`, `codex-cli`,
-`openai-codex`, `copilot-cli`, `github-copilot`, and `github-copilot-cli`.
+`openai-codex`, `copilot-cli`, `github-copilot`, `github-copilot-cli`,
+`cursor-agent`, `qoder`, `kimi-code`, and `pi-coding-agent`.
+
+How each agent is wired differs by what it offers: Claude, Codex, Copilot,
+Cursor and Qoder take lifecycle hooks, Kimi takes a TOML hook block, opencode
+loads a JavaScript plugin, and pi loads a TypeScript extension. All of them
+report through the same `lumux report-state` command, so the daemon stays
+agent-agnostic.
 
 The installers preserve unrelated configuration and place a managed wrapper in
 the agent's config directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or

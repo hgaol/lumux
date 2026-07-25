@@ -203,10 +203,21 @@ agent 自行上报状态——无需抓屏。用 `lumux integration <agent>` 一
 lumux integration claude
 lumux integration codex
 lumux integration copilot
+lumux integration cursor
+lumux integration qodercli
+lumux integration kimi
+lumux integration opencode
+lumux integration pi
 ```
 
 也支持 CLI 风格的别名：`claude-code`、`codex-cli`、`openai-codex`、
-`copilot-cli`、`github-copilot` 和 `github-copilot-cli`。安装器会保留无关配置，
+`copilot-cli`、`github-copilot`、`github-copilot-cli`、`cursor-agent`、`qoder`、
+`kimi-code` 和 `pi-coding-agent`。
+
+各 agent 的接入方式取决于它自身提供的能力：Claude、Codex、Copilot、Cursor 和 Qoder
+使用生命周期 hook，Kimi 使用一段 TOML hook 配置块，opencode 加载 JavaScript 插件，
+pi 加载 TypeScript 扩展。它们最终都通过同一个 `lumux report-state` 命令上报，
+因此守护进程始终与具体 agent 无关。安装器会保留无关配置，
 并把受 lumux 管理的 wrapper 放入对应的 agent 配置目录；可分别用
 `CLAUDE_CONFIG_DIR`、`CODEX_HOME` 或 `COPILOT_HOME` 覆盖默认目录。Copilot
 使用文档规定的独立 `hooks/lumux-agent-state.json`，不会修改 `settings.json`。
@@ -214,7 +225,8 @@ lumux integration copilot
 生命周期事件。
 
 provider 只会在启动时加载 hook 文件。安装或更新集成后，必须完全退出并重启所有
-正在运行的 Claude Code、Codex 或 Copilot CLI 进程；旧进程不会发现新 hook。
+正在运行的 agent 进程（Claude Code、Codex、Copilot、Cursor、Qoder、Kimi、opencode、pi）；
+旧进程不会发现新 hook。
 Codex 在信任新用户 hook 之前会将其执行次数保持为 **零**：重启 Codex 后打开
 `/hooks`，并信任全部 Lumux 条目。安装器也会打印这些激活步骤。
 
