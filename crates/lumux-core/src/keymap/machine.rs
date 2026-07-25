@@ -496,6 +496,14 @@ impl Keymap {
     /// Force the keymap into copy-mode. Used when copy-mode is entered by a
     /// non-keyboard path (e.g. a mouse wheel scroll), where the mode transition
     /// doesn't flow through `feed`. Without this the keymap stays in `Normal`,
+    /// Force the keymap into prompt-mode. Needed when a prompt is opened by a
+    /// path that bypasses `feed` — a context-menu click, say — because without
+    /// the mode transition every keystroke would go to the pane and the prompt
+    /// could never be typed into or dismissed.
+    pub fn enter_prompt_mode(&mut self) {
+        self.mode = Mode::Prompt;
+    }
+
     /// so copy-mode keys like `q`/arrows would leak through to the shell.
     pub fn enter_copy_mode(&mut self) {
         self.mode = Mode::Copy;

@@ -142,6 +142,15 @@ fn decode_button(b: u32, is_press: bool) -> Option<MouseKind> {
 /// which can leak as visible `[<35;…M` text and disturb overlays. tmux likewise
 /// uses 1002, not 1003.
 pub const ENABLE: &str = "\x1b[?1002h\x1b[?1006h";
+/// Turn on any-motion tracking (DECSET 1003) so the terminal reports pointer
+/// motion with no button held. Enabled only while a menu is open: 1003 floods
+/// motion events on some terminals (Windows Terminal over RDP), which is why it
+/// is not part of [`ENABLE`], but hover feedback genuinely needs it and the
+/// exposure is bounded to the menu's lifetime.
+pub const ENABLE_HOVER: &str = "\x1b[?1003h";
+/// Return to button-event tracking only (leaves 1002/1006 from [`ENABLE`] on).
+pub const DISABLE_HOVER: &str = "\x1b[?1003l";
+
 /// VT sequence to disable mouse reporting on detach. Also clears 1003 in case an
 /// older build (or another program) left any-motion tracking on.
 pub const DISABLE: &str = "\x1b[?1006l\x1b[?1003l\x1b[?1002l";

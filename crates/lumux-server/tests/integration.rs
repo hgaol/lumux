@@ -6669,3 +6669,125 @@ fn escape_dismisses_the_context_menu() {
         "Escape should dismiss the menu; got:\n{frame}"
     );
 }
+
+#[test]
+fn renaming_a_session_from_the_context_menu_accepts_typing() {
+    // Regression: "Rename session" opened the prompt but left the keymap in
+    // Normal mode, so keystrokes went to the shell — the name never changed and
+    // the prompt bar stayed on screen forever.
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("oldname".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    // Right-click the session row (SESSIONS header is row 0, first session row
+    // 1 -> 1-based row 2) inside the sidebar.
+    c.send(&ClientMsg::Input(b"\x1b[<2;3;2M".to_vec()));
+    let (_d0, menu) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        menu.contains("Rename session"),
+        "right-clicking a session row should offer a rename; got:\n{menu}"
+    );
+
+    // Activate the first item ("Rename session"): the popup is anchored at the
+    // click (0-based col 2, row 1), so its first item row is 0-based row 2.
+    c.send(&ClientMsg::Input(b"\x1b[<0;4;3M".to_vec()));
+    let (_d1, prompt) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        prompt.contains("rename-session"),
+        "activating the item should open the rename prompt; got:\n{prompt}"
+    );
+
+    // Type a new name and confirm. This is what used to fail.
+    c.send(&ClientMsg::Input(b"newname\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, after) = c.collect_until(Duration::from_secs(3), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    // Ask the daemon for the authoritative session list: screen text alone
+    // would also match a shell echoing the typed word.
+    c.send(&ClientMsg::Command(lumux_core::proto::Command::ListSessions));
+    let mut listed = String::new();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline && !listed.contains("newname") {
+        let (_ok, _vt) = c.collect_until(Duration::from_millis(400), |m| {
+            if let ServerMsg::Reply(text) = m {
+                listed.push_str(text);
+                true
+            } else {
+                false
+            }
+        });
+        if !listed.is_empty() {
+            break;
+        }
+    }
+    assert!(
+        listed.contains("newname"),
+        "the session should actually be renamed; list said {listed:?}, frame:\n{frame}"
+    );
+    assert!(
+        !frame.contains("rename-session"),
+        "the prompt bar must close after confirming; got:\n{frame}"
+    );
+}
+
+#[test]
+fn context_menu_highlights_the_hovered_item() {
+    // Hovering a menu item highlights it. Any-motion reporting is enabled only
+    // while the menu is open, so the motion report must reach the daemon and
+    // move the highlight.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("hover".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Right-click a pane to open the menu; the terminal is told to start
+    // reporting motion.
+    c.send(&ClientMsg::Input(b"\x1b[<2;5;5M".to_vec()));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Split left/right"),
+        "precondition: menu open; got:\n{opened}"
+    );
+    assert!(
+        opened.contains("1003h"),
+        "opening the menu should enable any-motion reporting for hover; got:\n{opened}"
+    );
+    assert!(
+        !opened.contains("48;5;24"),
+        "nothing is highlighted before the pointer moves; got:\n{opened}"
+    );
+
+    // Motion over the second item (button code 35 = motion, no button).
+    // Popup origin is (4,4); item rows start at row 5 -> second item row 6,
+    // 1-based row 7.
+    c.send(&ClientMsg::Input(b"\x1b[<35;6;7M".to_vec()));
+    let (_d1, hovered) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The hovered row is repainted with the accent background (colour24). The
+    // sidebar is off in this harness, so nothing else emits that code.
+    assert!(
+        hovered.contains("48;5;24"),
+        "hovering an item should highlight it; got:\n{hovered}"
+    );
+
+    // Dismissing the menu turns motion reporting back off.
+    c.send(&ClientMsg::Input(vec![0x1b]));
+    let (_d2, closed) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        closed.contains("1003l"),
+        "dismissing the menu should stop any-motion reporting; got:\n{closed}"
+    );
+}

@@ -548,7 +548,7 @@ where
                 if self.daemon.context_menu(client_id).is_some()
                     && keyboard.first() == Some(&0x1b)
                 {
-                    self.daemon.close_context_menu(client_id);
+                    self.dismiss_context_menu(client_id);
                     self.render_client(client_id);
                     keyboard.remove(0);
                 }
@@ -1221,7 +1221,7 @@ where
             return false;
         };
         let target = self.daemon.context_menu(client_id).map(|menu| menu.target);
-        self.daemon.close_context_menu(client_id);
+        self.dismiss_context_menu(client_id);
         if let (true, Some(action), Some(target)) = (inside, item, target) {
             self.apply_menu_action(client_id, session, target, action);
         }
@@ -1268,17 +1268,42 @@ where
                         .map(|pane| MenuTarget::Pane(pane.session(), pane.window(), pane.pane()))
                 }
             }
-            _ => self.live_menu_target(session, col, row),
+            _ => self.live_menu_target(client_id, session, col, row),
         };
         if let Some(target) = target {
             self.daemon
                 .open_context_menu(client_id, session, target, col, row);
+            // Hover feedback needs any-motion reports, which are off by default.
+            self.send_client_bytes(client_id, lumux_core::mouse::ENABLE_HOVER);
             self.render_client(client_id);
         }
     }
 
+    /// Write a raw control sequence to one client's terminal.
+    fn send_client_bytes(&self, client_id: u64, seq: &str) {
+        if let Some(handle) = self.clients.get(&client_id) {
+            let _ = handle.out.send(ServerMsg::Frame(seq.as_bytes().to_vec()));
+        }
+    }
+
+    /// Close a menu and stop any-motion reporting that was enabled for it.
+    fn dismiss_context_menu(&mut self, client_id: u64) -> bool {
+        if self.daemon.close_context_menu(client_id) {
+            self.send_client_bytes(client_id, lumux_core::mouse::DISABLE_HOVER);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Menu target resolution for the pre-frame (live) path.
-    fn live_menu_target(&self, session: SessionId, col: u16, row: u16) -> Option<MenuTarget> {
+    fn live_menu_target(
+        &self,
+        client_id: u64,
+        session: SessionId,
+        col: u16,
+        row: u16,
+    ) -> Option<MenuTarget> {
         let size = self.daemon.server.effective_size(session)?;
         if row == size.rows.saturating_sub(1) {
             return self
@@ -1288,7 +1313,21 @@ where
         }
         let viewport = self.daemon.content_viewport(session)?;
         if col < viewport.x {
-            return None;
+            // Sidebar rows: a session row targets that session, an agent row
+            // targets its pane (mirroring the interaction-map path).
+            return match self.daemon.sidebar_pick_at(
+                client_id,
+                session,
+                row as usize,
+                size.rows as usize,
+            )? {
+                SidebarPick::Session(sid) => Some(MenuTarget::Session(sid)),
+                SidebarPick::Agent {
+                    session: sid,
+                    window,
+                    pane,
+                } => Some(MenuTarget::Pane(sid, window, pane)),
+            };
         }
         let pane = self.daemon.pane_at_screen(session, col, row)?;
         let window = self.daemon.server.session(session)?.active_window();
@@ -1742,7 +1781,13 @@ where
                     }
                     // Bare pointer motion: consumed (so it can't leak as text) but
                     // otherwise ignored — it must not dismiss overlays like help.
-                    MouseKind::Move => {}
+                    MouseKind::Move => {
+                        // Pointer motion with no button: only meaningful for
+                        // menu hover (any-motion reporting is on just then).
+                        if self.daemon.set_menu_hover(client_id, ev.col, ev.row) {
+                            self.render_client(client_id);
+                        }
+                    }
                 }
                 i += used;
             } else if mouse::is_partial(&combined[i..]) {

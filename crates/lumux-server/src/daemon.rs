@@ -1002,6 +1002,8 @@ pub(crate) struct ContextMenu {
     pub(crate) items: Vec<MenuAction>,
     /// Top-left cell of the popup, already clamped to the screen.
     pub(crate) origin: (u16, u16),
+    /// Item under the pointer, highlighted so the menu responds to hover.
+    pub(crate) hover: Option<usize>,
 }
 
 impl ContextMenu {
@@ -1647,6 +1649,13 @@ impl<S: PtySystem> Daemon<S> {
                 buffer: seed,
             },
         );
+        // Keep the keymap in lockstep. A prompt opened from the keyboard already
+        // transitioned via `feed`, but one opened by a context-menu click did
+        // not — without this its keystrokes would go to the pane and the prompt
+        // could never be typed into or dismissed.
+        if let Some(k) = self.keymaps.get_mut(&client_id) {
+            k.enter_prompt_mode();
+        }
         if let Some(r) = self.renderers.get_mut(&client_id) {
             r.invalidate();
         }
@@ -2804,6 +2813,7 @@ impl<S: PtySystem> Daemon<S> {
             target,
             items,
             origin: (col, row),
+            hover: None,
         };
         if let Some(size) = self.server.effective_size(session) {
             // Keep the whole popup on screen: shift left/up as needed rather
@@ -2835,6 +2845,23 @@ impl<S: PtySystem> Daemon<S> {
         })
     }
 
+    /// Point the menu's highlight at whatever is under the pointer. Returns
+    /// true when the highlight moved, so the caller repaints only on change.
+    pub(crate) fn set_menu_hover(&mut self, client_id: u64, col: u16, row: u16) -> bool {
+        let Some(menu) = self.menus.get_mut(&client_id) else {
+            return false;
+        };
+        let index = menu
+            .item_at(col, row)
+            .and_then(|action| menu.items.iter().position(|item| *item == action));
+        if menu.hover == index {
+            return false;
+        }
+        menu.hover = index;
+        self.invalidate_client(client_id);
+        true
+    }
+
     pub(crate) fn context_menu(&self, client_id: u64) -> Option<&ContextMenu> {
         self.menus.get(&client_id)
     }
@@ -2858,20 +2885,26 @@ impl<S: PtySystem> Daemon<S> {
                 );
             }
         }
+        let hovered = Self::styled("fg=colour231,bg=colour24,bold");
         for (index, action) in menu.items.iter().enumerate() {
             let row = y as usize + 1 + index;
+            let style = if menu.hover == Some(index) {
+                &hovered
+            } else {
+                &item
+            };
             for col in x..x + w {
                 screen.set_cell(
                     col as usize,
                     row,
-                    lumux_core::render::Cell::new(' ', item.clone()),
+                    lumux_core::render::Cell::new(' ', style.clone()),
                 );
             }
             screen.write_str_clipped(
                 x as usize + 2,
                 row,
                 action.label(),
-                &item,
+                style,
                 w.saturating_sub(3) as usize,
             );
         }
@@ -4387,6 +4420,11 @@ impl<S: PtySystem> Daemon<S> {
                 PromptTarget::FindWindow => format!("(find-window) {}", p.buffer),
             };
             self.paint_message_row(screen, &line);
+            // Park the caret at the end of the typed text: without this the
+            // cursor stays wherever the pane left it, so the prompt looks
+            // unfocused even though it has the keyboard.
+            let caret = line.chars().count().min(status_width.saturating_sub(1));
+            screen.set_cursor(Some((caret, status_y.saturating_sub(1))));
             return empty();
         }
 
