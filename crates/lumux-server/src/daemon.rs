@@ -1624,6 +1624,8 @@ impl<S: PtySystem> Daemon<S> {
         self.search.remove(&client_id);
         self.dragging.remove(&client_id);
         self.sidebar_scroll.remove(&client_id);
+        // Drop any open context menu: a reused client id must not inherit it.
+        self.menus.remove(&client_id);
         self.server.detach_client(client_id);
     }
 

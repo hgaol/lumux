@@ -6791,3 +6791,53 @@ fn context_menu_highlights_the_hovered_item() {
         "dismissing the menu should stop any-motion reporting; got:\n{closed}"
     );
 }
+
+#[test]
+fn mouse_still_works_after_a_context_menu_round_trip() {
+    // Regression: dismissing a context menu sent a bare `?1003l`, which clears
+    // mouse tracking outright on terminals that treat 1000/1002/1003 as one
+    // mode. The terminal then handled clicks itself — native right-click menu —
+    // and no further mouse events reached lumux. Clicking must still work after
+    // opening and closing a menu.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("mouseback".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Two panes so a click can move focus observably.
+    c.send(&ClientMsg::Input(vec![0x02, b'%']));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    // Open then dismiss a context menu.
+    c.send(&ClientMsg::Input(b"\x1b[<2;5;5M".to_vec()));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Close pane"),
+        "precondition: menu opened; got:\n{opened}"
+    );
+    c.send(&ClientMsg::Input(vec![0x1b]));
+    let (_d1, closed) = c.collect_until(Duration::from_secs(2), |_| false);
+    // The restore must re-assert button-event tracking, not just clear 1003.
+    assert!(
+        closed.contains("1003l") && closed.contains("1002h"),
+        "closing the menu must restore mouse tracking; got:\n{closed}"
+    );
+
+    // A plain left-click must still reach lumux and move focus to the LEFT pane.
+    c.send(&ClientMsg::Input(b"\x1b[<0;5;5M".to_vec()));
+    c.send(&ClientMsg::Input(b"printf CLICK_STILL_WORKS\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, after) = c.collect_until(Duration::from_secs(3), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    let col = column_of(frame, "CLICK_STILL_WORKS")
+        .expect("the marker should echo in the clicked pane");
+    assert!(
+        col < 40,
+        "clicking after a menu round-trip should focus the LEFT pane; marker at col {col}"
+    );
+}

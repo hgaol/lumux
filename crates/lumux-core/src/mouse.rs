@@ -148,8 +148,16 @@ pub const ENABLE: &str = "\x1b[?1002h\x1b[?1006h";
 /// is not part of [`ENABLE`], but hover feedback genuinely needs it and the
 /// exposure is bounded to the menu's lifetime.
 pub const ENABLE_HOVER: &str = "\x1b[?1003h";
-/// Return to button-event tracking only (leaves 1002/1006 from [`ENABLE`] on).
-pub const DISABLE_HOVER: &str = "\x1b[?1003l";
+/// Leave any-motion tracking and restore the normal reporting mode.
+///
+/// Resetting 1003 is NOT enough on its own: most terminals model 1000/1002/1003
+/// as mutually exclusive *levels* of a single mouse-tracking mode rather than
+/// independent flags, so `?1003l` clears tracking altogether instead of falling
+/// back to 1002. That left the terminal handling clicks itself — a native
+/// right-click menu, and no further events reaching lumux — until reattach. So
+/// re-assert the attach-time mode explicitly; re-setting an already-set mode is
+/// harmless on terminals that do treat them independently.
+pub const DISABLE_HOVER: &str = "\x1b[?1003l\x1b[?1002h\x1b[?1006h";
 
 /// VT sequence to disable mouse reporting on detach. Also clears 1003 in case an
 /// older build (or another program) left any-motion tracking on.
@@ -274,6 +282,28 @@ mod tests {
         // col 128, row 40.
         let (ev, _) = parse(b"\x1b[<0;128;40M").unwrap();
         assert_eq!((ev.col, ev.row), (127, 39));
+    }
+
+    #[test]
+    fn leaving_hover_restores_button_event_tracking() {
+        // Regression: `?1003l` alone clears mouse tracking on terminals that
+        // treat 1000/1002/1003 as one mutually-exclusive mode, so after closing
+        // a context menu the terminal handled clicks itself (native right-click
+        // menu) and lumux stopped receiving mouse events entirely.
+        assert!(ENABLE_HOVER.contains("1003h"), "hover needs any-motion");
+        assert!(DISABLE_HOVER.contains("1003l"), "must leave any-motion");
+        assert!(
+            DISABLE_HOVER.contains("1002h"),
+            "must re-assert button-event tracking, got {DISABLE_HOVER:?}"
+        );
+        assert!(
+            DISABLE_HOVER.contains("1006h"),
+            "must re-assert SGR coordinates, got {DISABLE_HOVER:?}"
+        );
+        // Order matters: reset first, then restore.
+        let reset = DISABLE_HOVER.find("1003l").unwrap();
+        let restore = DISABLE_HOVER.find("1002h").unwrap();
+        assert!(reset < restore, "reset must precede the restore");
     }
 
     #[test]
