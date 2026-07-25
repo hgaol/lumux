@@ -301,6 +301,10 @@ pub struct Daemon<S: PtySystem> {
     /// state machine (ownership, sequencing, tombstones), while this is only a
     /// presence fallback consulted when no hook status exists.
     detected_agents: BTreeMap<PaneId, lumux_core::agent::AgentStatus>,
+    /// Frame counter for the working-agent spinner, advanced on the daemon tick.
+    spinner_tick: u64,
+    /// Open right-click context menu per client (absent = none).
+    menus: BTreeMap<u64, ContextMenu>,
     /// Per-session sidebar visibility override (tmux-style `:set sidebar on`).
     /// Absent = fall back to the config default. Session-global by design: under
     /// the shared PTY, one client's toggle reflows every client of the session.
@@ -816,6 +820,36 @@ pub(crate) struct InteractionMap {
     layout: Option<PaneNode>,
     panes: Vec<InteractionPane>,
     status: StatusFrame,
+    /// Geometry of the open context menu, so a click resolves against exactly
+    /// the popup the user is looking at.
+    menu: Option<MenuFrame>,
+}
+
+/// The item rows of an open context menu, captured with the frame.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct MenuFrame {
+    origin: (u16, u16),
+    width: u16,
+    items: Vec<MenuAction>,
+}
+
+impl MenuFrame {
+    fn height(&self) -> u16 {
+        self.items.len() as u16 + 2
+    }
+
+    pub(crate) fn contains(&self, col: u16, row: u16) -> bool {
+        let (x, y) = self.origin;
+        col >= x && col < x + self.width && row >= y && row < y + self.height()
+    }
+
+    pub(crate) fn item_at(&self, col: u16, row: u16) -> Option<MenuAction> {
+        let (x, y) = self.origin;
+        if col < x || col >= x + self.width || row <= y || row >= y + self.height() - 1 {
+            return None;
+        }
+        self.items.get((row - y - 1) as usize).copied()
+    }
 }
 
 impl InteractionMap {
@@ -847,6 +881,10 @@ impl InteractionMap {
         ((copy_target.session, copy_target.window, copy_target.pane)
             == (target.session, target.window, target.pane))
             .then_some(self.copy_top?)
+    }
+
+    pub(crate) fn menu(&self) -> Option<&MenuFrame> {
+        self.menu.as_ref()
     }
 
     pub(crate) fn sidebar_click(&self, col: u16, row: u16) -> Option<SidebarClick> {
@@ -911,9 +949,117 @@ pub(crate) struct RenderedClientFrame {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum SidebarClick {
     Toggle { collapsed: bool },
+    /// The `+` button on the SESSIONS header: create and switch to a session.
+    NewSession,
     Pick(SidebarPick),
     Chrome,
 }
+
+/// What a right-click landed on, and therefore which operations the context
+/// menu offers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuTarget {
+    Session(SessionId),
+    Window(SessionId, WindowId),
+    Pane(SessionId, WindowId, PaneId),
+}
+
+/// One operation offered by the context menu. Kept as data (rather than a
+/// closure) so the render, the hit-test, and the executor all agree on the
+/// exact item list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MenuAction {
+    RenameSession,
+    NewWindow,
+    KillSession,
+    RenameWindow,
+    CloseWindow,
+    SplitHorizontal,
+    SplitVertical,
+    ZoomPane,
+    ClosePane,
+}
+
+impl MenuAction {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            MenuAction::RenameSession => "Rename session",
+            MenuAction::NewWindow => "New window",
+            MenuAction::KillSession => "Kill session",
+            MenuAction::RenameWindow => "Rename window",
+            MenuAction::CloseWindow => "Close window",
+            MenuAction::SplitHorizontal => "Split left/right",
+            MenuAction::SplitVertical => "Split top/bottom",
+            MenuAction::ZoomPane => "Zoom pane",
+            MenuAction::ClosePane => "Close pane",
+        }
+    }
+}
+
+/// An open context menu for one client.
+pub(crate) struct ContextMenu {
+    pub(crate) target: MenuTarget,
+    pub(crate) items: Vec<MenuAction>,
+    /// Top-left cell of the popup, already clamped to the screen.
+    pub(crate) origin: (u16, u16),
+}
+
+impl ContextMenu {
+    fn items_for(target: MenuTarget) -> Vec<MenuAction> {
+        match target {
+            MenuTarget::Session(_) => vec![
+                MenuAction::RenameSession,
+                MenuAction::NewWindow,
+                MenuAction::KillSession,
+            ],
+            MenuTarget::Window(..) => vec![MenuAction::RenameWindow, MenuAction::CloseWindow],
+            MenuTarget::Pane(..) => vec![
+                MenuAction::SplitHorizontal,
+                MenuAction::SplitVertical,
+                MenuAction::ZoomPane,
+                MenuAction::ClosePane,
+            ],
+        }
+    }
+
+    /// Popup width: the widest label plus the border and padding.
+    pub(crate) fn width(&self) -> u16 {
+        let widest = self
+            .items
+            .iter()
+            .map(|item| item.label().chars().count())
+            .max()
+            .unwrap_or(0);
+        (widest + 4) as u16
+    }
+
+    /// Popup height: one row per item plus the top and bottom border.
+    pub(crate) fn height(&self) -> u16 {
+        self.items.len() as u16 + 2
+    }
+
+    /// The item at a screen row, if the point is inside the popup's item area.
+    pub(crate) fn item_at(&self, col: u16, row: u16) -> Option<MenuAction> {
+        let (x, y) = self.origin;
+        if col < x || col >= x + self.width() || row <= y || row >= y + self.height() - 1 {
+            return None;
+        }
+        self.items.get((row - y - 1) as usize).copied()
+    }
+
+    pub(crate) fn contains(&self, col: u16, row: u16) -> bool {
+        let (x, y) = self.origin;
+        col >= x && col < x + self.width() && row >= y && row < y + self.height()
+    }
+}
+
+/// Braille spinner frames for a working agent, advanced once per daemon tick.
+const AGENT_SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Columns the header must have before the `+` new-session button is drawn: the
+/// button, a gap, and the collapse button. Below this the collapse button wins,
+/// since collapsing is the more essential control.
+const NEW_SESSION_BUTTON_SPAN: usize = 3;
 
 impl SidebarFrame {
     fn new(
@@ -963,6 +1109,12 @@ impl SidebarFrame {
         };
         if let Some(collapsed) = toggle {
             return Some(SidebarClick::Toggle { collapsed });
+        }
+        if !self.collapsed && self.width > 1 {
+            let text_width = self.width.saturating_sub(1) as usize;
+            if row == 0 && text_width >= NEW_SESSION_BUTTON_SPAN && col as usize == text_width - 3 {
+                return Some(SidebarClick::NewSession);
+            }
         }
         Some(
             self.picks
@@ -1027,6 +1179,8 @@ impl<S: PtySystem> Daemon<S> {
             marked_pane: None,
             agent_lifecycles: BTreeMap::new(),
             detected_agents: BTreeMap::new(),
+            spinner_tick: 0,
+            menus: BTreeMap::new(),
             sidebar_on: BTreeMap::new(),
             sidebar_collapsed: BTreeMap::new(),
             sidebar_scroll: BTreeMap::new(),
@@ -2614,6 +2768,115 @@ impl<S: PtySystem> Daemon<S> {
         changed
     }
 
+    /// Advance the working-agent spinner one frame. Returns true when at least
+    /// one pane is currently working, i.e. when the animation is actually
+    /// visible and the caller should repaint. Idle sidebars cost nothing.
+    pub fn advance_spinner(&mut self) -> bool {
+        self.spinner_tick = self.spinner_tick.wrapping_add(1);
+        let panes: Vec<PaneId> = self
+            .agent_lifecycles
+            .keys()
+            .chain(self.detected_agents.keys())
+            .copied()
+            .collect();
+        panes.into_iter().any(|pane| {
+            self.agent_status(pane)
+                .map(|status| status.display_state() == lumux_core::agent::AgentState::Working)
+                .unwrap_or(false)
+        })
+    }
+
+    /// Open a context menu for `client_id` anchored at the click, clamped so the
+    /// popup always fits on screen.
+    pub(crate) fn open_context_menu(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        target: MenuTarget,
+        col: u16,
+        row: u16,
+    ) {
+        let items = ContextMenu::items_for(target);
+        if items.is_empty() {
+            return;
+        }
+        let mut menu = ContextMenu {
+            target,
+            items,
+            origin: (col, row),
+        };
+        if let Some(size) = self.server.effective_size(session) {
+            // Keep the whole popup on screen: shift left/up as needed rather
+            // than clipping, so no item becomes unreachable.
+            let max_x = size.cols.saturating_sub(menu.width());
+            let max_y = size.rows.saturating_sub(1).saturating_sub(menu.height());
+            menu.origin = (col.min(max_x), row.min(max_y));
+        }
+        self.menus.insert(client_id, menu);
+        self.invalidate_client(client_id);
+    }
+
+    /// Close any open context menu. Returns true if one was open.
+    pub(crate) fn close_context_menu(&mut self, client_id: u64) -> bool {
+        let had = self.menus.remove(&client_id).is_some();
+        if had {
+            self.invalidate_client(client_id);
+        }
+        had
+    }
+
+    /// Capture the open menu's geometry for the interaction map.
+    fn menu_frame(&self, client_id: u64) -> Option<MenuFrame> {
+        let menu = self.menus.get(&client_id)?;
+        Some(MenuFrame {
+            origin: menu.origin,
+            width: menu.width(),
+            items: menu.items.clone(),
+        })
+    }
+
+    pub(crate) fn context_menu(&self, client_id: u64) -> Option<&ContextMenu> {
+        self.menus.get(&client_id)
+    }
+
+    /// Paint the context menu popup over the composed frame.
+    fn render_context_menu(&self, screen: &mut lumux_core::render::Screen, client_id: u64) {
+        let Some(menu) = self.menus.get(&client_id) else {
+            return;
+        };
+        let (x, y) = menu.origin;
+        let (w, h) = (menu.width(), menu.height());
+        let frame = Self::styled("fg=colour250,bg=colour238");
+        let item = Self::styled("fg=colour252,bg=colour236");
+        // Border box.
+        for row in y..y + h {
+            for col in x..x + w {
+                screen.set_cell(
+                    col as usize,
+                    row as usize,
+                    lumux_core::render::Cell::new(' ', frame.clone()),
+                );
+            }
+        }
+        for (index, action) in menu.items.iter().enumerate() {
+            let row = y as usize + 1 + index;
+            for col in x..x + w {
+                screen.set_cell(
+                    col as usize,
+                    row,
+                    lumux_core::render::Cell::new(' ', item.clone()),
+                );
+            }
+            screen.write_str_clipped(
+                x as usize + 2,
+                row,
+                action.label(),
+                &item,
+                w.saturating_sub(3) as usize,
+            );
+        }
+    }
+
     /// The hook-reported status for a pane, ignoring process detection.
     fn hook_status(&self, pane: PaneId) -> Option<&lumux_core::agent::AgentStatus> {
         self.agent_lifecycles
@@ -3544,6 +3807,8 @@ impl<S: PtySystem> Daemon<S> {
             );
         }
         let status = self.paint_status(&mut screen, client_id, session);
+        // The context menu floats above everything else it overlaps.
+        self.render_context_menu(&mut screen, client_id);
         let renderer = self.renderers.get_mut(&client_id)?;
         let bytes = renderer.render(screen);
         let interactions = self.interaction_map_for_client(client_id, session, Some(status))?;
@@ -3579,6 +3844,7 @@ impl<S: PtySystem> Daemon<S> {
                 layout: None,
                 panes: Vec::new(),
                 status: empty_status,
+                menu: self.menu_frame(client_id),
             });
         }
 
@@ -3611,6 +3877,7 @@ impl<S: PtySystem> Daemon<S> {
             layout: Some(layout),
             panes,
             status: status.unwrap_or(empty_status),
+            menu: self.menu_frame(client_id),
         })
     }
 
@@ -3823,14 +4090,19 @@ impl<S: PtySystem> Daemon<S> {
                     // Header bar: the label plus a collapse button (◀) right-aligned
                     // on the first header row only.
                     self.fill_row(screen, y, text_w, &header);
+                    // Row 0 carries the chrome buttons: `+` (new session) then
+                    // `◀` (collapse), right-aligned. The label yields the space.
                     let label_width = if y == 0 {
-                        text_w.saturating_sub(1)
+                        text_w.saturating_sub(if text_w >= NEW_SESSION_BUTTON_SPAN { 3 } else { 1 })
                     } else {
                         text_w
                     };
                     screen.write_str_clipped(0, y, label, &header, label_width);
                     if y == 0 && text_w >= 1 {
                         screen.write_str(text_w - 1, y, "◀", &header);
+                        if text_w >= NEW_SESSION_BUTTON_SPAN {
+                            screen.write_str(text_w - 3, y, "+", &header);
+                        }
                     }
                 }
                 SidebarProjectedRow::Session(entry) => {
@@ -3843,7 +4115,7 @@ impl<S: PtySystem> Daemon<S> {
                     }
                 }
                 SidebarProjectedRow::Agent(entry) => {
-                    let glyph = Self::agent_glyph(entry.state);
+                    let glyph = Self::agent_glyph(entry.state, self.spinner_tick);
                     let gattr = self.agent_glyph_attrs(entry.state, &panel);
                     // "● agent @sess" — the glyph gets a state color, the rest the
                     // panel style.
@@ -3872,11 +4144,15 @@ impl<S: PtySystem> Daemon<S> {
     /// A single-char status glyph for the agents list. A filled dot for live
     /// states, distinct shapes for the rest; color carries the meaning (see
     /// `agent_glyph_attrs`) with the shape as a fallback.
-    fn agent_glyph(state: lumux_core::agent::AgentState) -> char {
+    fn agent_glyph(state: lumux_core::agent::AgentState, tick: u64) -> char {
         use lumux_core::agent::AgentState;
         match state {
+            // A working agent animates so "busy" reads at a glance without
+            // relying on color (matching herdr's braille spinner).
+            AgentState::Working => {
+                AGENT_SPINNER[(tick as usize) % AGENT_SPINNER.len()]
+            }
             AgentState::Blocked => '●',
-            AgentState::Working => '●',
             AgentState::Done => '✓',
             AgentState::Idle => '○',
             AgentState::Unknown => '·',
@@ -3986,6 +4262,18 @@ impl<S: PtySystem> Daemon<S> {
         }
     }
 
+    /// Whether a click hit the `+` new-session button on the SESSIONS header.
+    /// Mirrors `SidebarFrame::click_at` so the live path agrees with the
+    /// captured interaction map.
+    pub fn sidebar_new_session_hit(&self, session: SessionId, col: u16, row: u16) -> bool {
+        let w = self.sidebar_width(session);
+        if w <= 1 || col >= w || self.sidebar_collapsed(session) {
+            return false;
+        }
+        let text_w = w.saturating_sub(1) as usize;
+        row == 0 && text_w >= NEW_SESSION_BUTTON_SPAN && col as usize == text_w - 3
+    }
+
     /// Build the centre segment (window list) as styled spans plus the per-entry
     /// hit ranges, so `paint_status` and `status_window_at` stay in lockstep.
     /// Uses the tmux window-status format strings when configured, otherwise the
@@ -4051,6 +4339,29 @@ impl<S: PtySystem> Daemon<S> {
 
     /// Paint the bottom status row: a transient flash message if one is pending,
     /// otherwise the configured styled status bar.
+    /// The status bar's right segment: the configured `status_right`, preceded by
+    /// the prefix indicator while the prefix key is armed. Making the modal
+    /// state visible is the whole point, so the indicator is styled to stand out
+    /// and sits at the right edge where it does not shift the window list.
+    fn status_right_spans(
+        &self,
+        ctx: &lumux_core::status::StatusContext,
+    ) -> Vec<lumux_core::status::Span> {
+        let right = lumux_core::status::format(&self.config.status_right, ctx);
+        if !ctx.client_prefix || self.config.prefix_indicator.is_empty() {
+            return right;
+        }
+        let mut spans = lumux_core::status::format(
+            &format!(
+                "#[bg=colour203,fg=colour231,bold] {} ",
+                self.config.prefix_indicator
+            ),
+            ctx,
+        );
+        spans.extend(right);
+        spans
+    }
+
     fn paint_status(
         &self,
         screen: &mut lumux_core::render::Screen,
@@ -4117,7 +4428,7 @@ impl<S: PtySystem> Daemon<S> {
         let styled = StyledStatus {
             left: status::format(left_fmt, &ctx),
             centre,
-            right: status::format(&self.config.status_right, &ctx),
+            right: self.status_right_spans(&ctx),
             base,
             justify: match self.config.status_justify.as_str() {
                 "centre" | "center" => Justify::Centre,
@@ -4204,7 +4515,7 @@ impl<S: PtySystem> Daemon<S> {
         let styled = StyledStatus {
             left: status::format(left_fmt, &ctx),
             centre,
-            right: status::format(&self.config.status_right, &ctx),
+            right: self.status_right_spans(&ctx),
             base,
             justify: match self.config.status_justify.as_str() {
                 "centre" | "center" => Justify::Centre,
@@ -4496,7 +4807,7 @@ impl<S: PtySystem> Daemon<S> {
                     // so the chooser shows the same status the sidebar does.
                     let glyph = self
                         .window_agent_state(*sid, *wid)
-                        .map(|st| format!("{} ", Self::agent_glyph(st)))
+                        .map(|st| format!("{} ", Self::agent_glyph(st, self.spinner_tick)))
                         .unwrap_or_default();
                     let mut line = format!("    {glyph}{idx}:{}{mark}", w.name);
                     if line.chars().count() > list_w {

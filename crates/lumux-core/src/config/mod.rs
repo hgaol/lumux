@@ -57,6 +57,10 @@ pub struct Config {
     pub status_left: String,
     /// status-right format (right segment).
     pub status_right: String,
+    /// Text shown at the right end of the status bar while the prefix key is
+    /// armed (tmux shows nothing by default; this makes the modal state
+    /// visible). Empty disables the indicator.
+    pub prefix_indicator: String,
     /// Status justification: "left", "centre"/"center", or "right".
     pub status_justify: String,
     /// Status bar background/foreground as tmux color names or indices.
@@ -137,6 +141,7 @@ impl Default for Config {
             status_left: "#[bg=green,fg=black,bold] #S #[bg=colour236,fg=green] ".to_string(),
             status_right: "#[bg=colour236,fg=cyan] %H:%M #[bg=green,fg=black,bold] %d-%b "
                 .to_string(),
+            prefix_indicator: "^B".to_string(),
             status_justify: "centre".to_string(),
             status_bg: "colour236".to_string(),
             status_fg: "white".to_string(),

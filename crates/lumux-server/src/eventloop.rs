@@ -24,7 +24,9 @@ use lumux_core::model::{CascadeResult, PaneId, SessionId, SplitDir};
 use lumux_core::proto::{encode, ClientMsg, Command, ControlRequest, Event, ServerMsg};
 use lumux_core::traits::{FrameReader, FrameWriter, Listener, Pty, PtySize, PtySystem, Transport};
 
-use crate::daemon::{Daemon, InteractionMap, PaneRuntime, SidebarClick};
+use crate::daemon::{
+    Daemon, InteractionMap, MenuAction, MenuTarget, PaneRuntime, SidebarClick, SidebarPick,
+};
 
 /// Ratio step per keyboard resize-pane keypress (~5% of the split each press).
 const RESIZE_STEP: f32 = 0.05;
@@ -342,6 +344,11 @@ where
                         self.handle_pane_exited(sid, pane);
                     }
                 }
+                // Advance the working-agent spinner; repaint only while some
+                // agent is actually working (the diff is a single cell).
+                if self.daemon.advance_spinner() {
+                    self.render_global_views();
+                }
                 // Detect agents by their processes so a launch shows up in the
                 // sidebar immediately, without waiting for the agent's own
                 // hooks. Throttled — a tick is 250ms, far finer than needed.
@@ -530,11 +537,21 @@ where
                 // Mouse reporting sequences are intercepted here (when enabled)
                 // and never reach the keymap or the shell; everything else is
                 // forwarded to the keymap as before.
-                let keyboard = if self.daemon.mouse_enabled() {
+                let mut keyboard = if self.daemon.mouse_enabled() {
                     self.extract_and_handle_mouse(client_id, session, &bytes, frame_epoch)
                 } else {
                     bytes.clone()
                 };
+                // An open context menu swallows Escape (dismiss) so the key does
+                // not also reach the pane. Any other key leaves the menu open;
+                // it is dismissed by clicking, matching how a menu behaves.
+                if self.daemon.context_menu(client_id).is_some()
+                    && keyboard.first() == Some(&0x1b)
+                {
+                    self.daemon.close_context_menu(client_id);
+                    self.render_client(client_id);
+                    keyboard.remove(0);
+                }
                 // A sidebar click handled above can switch this client to a
                 // different session. Route any keyboard bytes batched after the
                 // SGR mouse sequence to the newly selected session, never the
@@ -1177,6 +1194,172 @@ where
         self.render_global_views();
     }
 
+    /// Handle a mouse press while a context menu is open. Returns true when the
+    /// press belonged to the menu (activating an item or dismissing it), so the
+    /// caller stops processing it.
+    fn handle_menu_press(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        ev: &lumux_core::mouse::MouseEvent,
+        input_frame: &InputFrame,
+    ) -> bool {
+        // Resolve against the frame the user actually clicked when we have it.
+        let hit = match input_frame {
+            InputFrame::Applied(frame) => frame.interactions.menu().map(|menu| {
+                (
+                    menu.contains(ev.col, ev.row),
+                    menu.item_at(ev.col, ev.row),
+                )
+            }),
+            _ => self
+                .daemon
+                .context_menu(client_id)
+                .map(|menu| (menu.contains(ev.col, ev.row), menu.item_at(ev.col, ev.row))),
+        };
+        let Some((inside, item)) = hit else {
+            return false;
+        };
+        let target = self.daemon.context_menu(client_id).map(|menu| menu.target);
+        self.daemon.close_context_menu(client_id);
+        if let (true, Some(action), Some(target)) = (inside, item, target) {
+            self.apply_menu_action(client_id, session, target, action);
+        }
+        self.render_client(client_id);
+        true
+    }
+
+    /// Open the context menu for whatever a right-press landed on.
+    fn open_menu_at(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        col: u16,
+        row: u16,
+        input_frame: &InputFrame,
+    ) {
+        let target = match input_frame {
+            InputFrame::Applied(frame) => {
+                let interactions = &frame.interactions;
+                let session = interactions.session();
+                let mut return_target: Option<MenuTarget> = None;
+                match interactions.sidebar_click(col, row) {
+                    // An agent row stands for its pane, so it offers the pane
+                    // operations (left-click already jumps to it).
+                    Some(SidebarClick::Pick(SidebarPick::Agent {
+                        session: sid,
+                        window,
+                        pane,
+                    })) => return_target = Some(MenuTarget::Pane(sid, window, pane)),
+                    Some(SidebarClick::Pick(SidebarPick::Session(sid))) => {
+                        return_target = Some(MenuTarget::Session(sid))
+                    }
+                    _ => {}
+                }
+                if return_target.is_some() {
+                    return_target
+                } else if interactions.on_status_row(row) {
+                    interactions
+                        .status_window_at(col, row)
+                        .map(|window| MenuTarget::Window(session, window))
+                } else {
+                    interactions
+                        .pane_at(col, row)
+                        .map(|pane| MenuTarget::Pane(pane.session(), pane.window(), pane.pane()))
+                }
+            }
+            _ => self.live_menu_target(session, col, row),
+        };
+        if let Some(target) = target {
+            self.daemon
+                .open_context_menu(client_id, session, target, col, row);
+            self.render_client(client_id);
+        }
+    }
+
+    /// Menu target resolution for the pre-frame (live) path.
+    fn live_menu_target(&self, session: SessionId, col: u16, row: u16) -> Option<MenuTarget> {
+        let size = self.daemon.server.effective_size(session)?;
+        if row == size.rows.saturating_sub(1) {
+            return self
+                .daemon
+                .status_window_at(session, col, size.cols as usize)
+                .map(|window| MenuTarget::Window(session, window));
+        }
+        let viewport = self.daemon.content_viewport(session)?;
+        if col < viewport.x {
+            return None;
+        }
+        let pane = self.daemon.pane_at_screen(session, col, row)?;
+        let window = self.daemon.server.session(session)?.active_window();
+        Some(MenuTarget::Pane(session, window, pane))
+    }
+
+    /// Perform a context-menu operation. Renames reuse the existing prompt.
+    fn apply_menu_action(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        target: MenuTarget,
+        action: MenuAction,
+    ) {
+        match (target, action) {
+            (MenuTarget::Session(sid), MenuAction::RenameSession) => {
+                self.switch_client_session(client_id, sid);
+                self.daemon
+                    .open_prompt(client_id, sid, crate::daemon::PromptTarget::Session);
+            }
+            (MenuTarget::Session(sid), MenuAction::NewWindow) => {
+                self.do_new_window(sid);
+            }
+            (MenuTarget::Session(sid), MenuAction::KillSession) => {
+                self.kill_whole_session(sid);
+            }
+            (MenuTarget::Window(sid, window), MenuAction::RenameWindow) => {
+                self.focus_client_window(client_id, sid, window);
+                self.daemon
+                    .open_prompt(client_id, sid, crate::daemon::PromptTarget::Window);
+            }
+            (MenuTarget::Window(sid, window), MenuAction::CloseWindow) => {
+                self.focus_client_window(client_id, sid, window);
+                self.do_kill_window(sid);
+            }
+            (MenuTarget::Pane(sid, window, pane), action) => {
+                self.focus_client_pane(client_id, sid, window, pane);
+                match action {
+                    MenuAction::SplitHorizontal => self.do_split(sid, SplitDir::Horizontal),
+                    MenuAction::SplitVertical => self.do_split(sid, SplitDir::Vertical),
+                    MenuAction::ZoomPane => self.zoom_pane(sid),
+                    MenuAction::ClosePane => self.do_kill_pane(sid),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        let _ = session;
+        self.render_global_views();
+    }
+
+    /// Create a session (auto-named like `new-session` with no `-s`) and switch
+    /// this client to it. Backs the sidebar's `+` button.
+    fn create_and_switch_session(&mut self, client_id: u64, session: SessionId) {
+        let name = self.next_free_session_name();
+        let size = self
+            .daemon
+            .server
+            .effective_size(session)
+            .unwrap_or(PtySize::new(80, 24));
+        match self.spawn_session(name, None, size) {
+            Some(sid) => {
+                self.switch_client_session(client_id, sid);
+                self.render_global_views();
+            }
+            None => self
+                .daemon
+                .flash_message(client_id, "new-session: failed to start shell"),
+        }
+    }
+
     /// The lowest numeric name ("0", "1", …) not already taken by a session,
     /// mirroring tmux's auto-naming for `new-session` with no `-s`.
     fn next_free_session_name(&self) -> String {
@@ -1421,6 +1604,19 @@ where
                 // hover-to-scroll over an unfocused pane keeps working.
                 if matches!(ev.kind, MouseKind::Down(_)) {
                     self.daemon.cancel_mouse_gestures(client_id);
+                    // An open context menu owns the next press: inside it picks
+                    // an item, outside dismisses it. Either way the press is
+                    // consumed so it never reaches a pane.
+                    if self.handle_menu_press(client_id, event_session, &ev, &input_frame) {
+                        i += used;
+                        continue;
+                    }
+                    // Right-press opens the context menu for whatever it hit.
+                    if matches!(ev.kind, MouseKind::Down(MouseButton::Right)) {
+                        self.open_menu_at(client_id, event_session, ev.col, ev.row, &input_frame);
+                        i += used;
+                        continue;
+                    }
                     if self.mouse_select_pane(
                         client_id,
                         event_session,
@@ -1626,6 +1822,9 @@ where
                         SidebarClick::Toggle { collapsed } => {
                             self.set_session_sidebar_collapsed(interactions.session(), collapsed);
                         }
+                        SidebarClick::NewSession => {
+                            self.create_and_switch_session(client_id, interactions.session());
+                        }
                         SidebarClick::Pick(pick) => {
                             self.apply_sidebar_pick(client_id, pick);
                         }
@@ -1674,7 +1873,9 @@ where
         // hits the collapse/expand toggle button or selects the session/agent
         // row it lands on.
         if col < viewport.x {
-            if self.daemon.sidebar_toggle_hit(session, col, row) {
+            if self.daemon.sidebar_new_session_hit(session, col, row) {
+                self.create_and_switch_session(client_id, session);
+            } else if self.daemon.sidebar_toggle_hit(session, col, row) {
                 let now = self.daemon.sidebar_collapsed(session);
                 self.set_session_sidebar_collapsed(session, !now);
             } else if let Some(pick) =

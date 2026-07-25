@@ -6485,3 +6485,187 @@ fn a_running_agent_process_appears_without_any_hook() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn prefix_indicator_shows_while_the_prefix_is_armed() {
+    // Pressing the prefix must make the modal state visible in the status bar,
+    // and it must clear once the pending key resolves.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("pfx".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !before.contains("^B"),
+        "no indicator before the prefix is pressed; got:\n{before}"
+    );
+
+    // Arm the prefix (Ctrl-b) — the indicator appears.
+    c.send(&ClientMsg::Input(vec![0x02]));
+    let (_d1, armed) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        armed.contains("^B"),
+        "the prefix indicator should show while armed; got:\n{armed}"
+    );
+
+    // Complete the sequence with a harmless key; the indicator clears.
+    c.send(&ClientMsg::Input(vec![0x1b])); // Escape cancels the prefix
+    let (_d2, done) = c.collect_until(Duration::from_secs(2), |_| false);
+    let frame = done.rsplit("\u{1b}[2J").next().unwrap_or(&done);
+    assert!(
+        !frame.contains("^B"),
+        "the indicator should clear once the prefix resolves; got:\n{frame}"
+    );
+}
+
+#[test]
+fn sidebar_new_session_button_creates_and_switches() {
+    // The `+` on the SESSIONS header creates a session and switches to it.
+    let path = start_daemon_sidebar(); // sidebar_width 20 -> text_w 19, `+` at col 16
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("first".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    // Leave a marker in the FIRST session's screen. After switching, the new
+    // session's shell is empty, so the marker's absence proves the switch.
+    c.send(&ClientMsg::Input(b"printf ONLY_IN_FIRST\n".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, before) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        before.contains('+'),
+        "the new-session button should render on the header; got:\n{before}"
+    );
+    assert!(
+        before.contains("ONLY_IN_FIRST"),
+        "precondition: the marker is on the first session; got:\n{before}"
+    );
+
+    // Click `+`: text_w = 19, button at 0-based col 16 -> 1-based 17, row 1.
+    c.send(&ClientMsg::Input(b"\x1b[<0;17;1M".to_vec()));
+    let (_d1, after) = c.collect_until(Duration::from_secs(3), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    assert!(
+        !frame.contains("ONLY_IN_FIRST"),
+        "clicking + should switch to a fresh session, not stay on the first; got:\n{frame}"
+    );
+}
+
+#[test]
+fn a_working_agent_shows_an_animated_spinner() {
+    use lumux_core::agent::{AgentIdentity, AgentReport, AgentState};
+    use lumux_core::proto::Command;
+    // A working agent's glyph must animate (herdr-style braille spinner), so
+    // "busy" reads at a glance without relying on color. An idle agent's glyph
+    // must stay put.
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("spin".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    let pane = learn_pane_id(&mut c);
+    c.send(&ClientMsg::Command(Command::ReportAgentState {
+        pane,
+        report: AgentReport::new(
+            AgentIdentity::new("claude", Some("s1".into())),
+            true,
+            AgentState::Working,
+            1,
+        ),
+    }));
+
+    // Collect over several ticks and gather every spinner frame that appears.
+    let frames: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let (_d, vt) = c.collect_until(Duration::from_secs(3), |_| false);
+    let seen: std::collections::BTreeSet<char> =
+        frames.iter().copied().filter(|f| vt.contains(*f)).collect();
+    assert!(
+        seen.len() >= 2,
+        "a working agent should cycle spinner frames; saw {seen:?} in:\n{vt}"
+    );
+}
+
+#[test]
+fn right_click_on_a_pane_opens_a_context_menu_and_splits() {
+    // Right-clicking a pane offers pane operations; activating "Split
+    // left/right" performs it. Sidebar off so pane columns start at 0.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("menu".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    // Right-press (SGR button 2) in the pane area, near the top-left.
+    c.send(&ClientMsg::Input(b"\x1b[<2;5;5M".to_vec()));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Split left/right") && opened.contains("Close pane"),
+        "right-click should open the pane context menu; got:\n{opened}"
+    );
+
+    // The popup is anchored at the click (0-based col 4, row 4); its first item
+    // row is row 5 (0-based), i.e. 1-based row 6. Left-click it.
+    c.send(&ClientMsg::Input(b"\x1b[<0;6;6M".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    assert!(
+        !frame.contains("Split left/right"),
+        "activating an item should close the menu; got:\n{frame}"
+    );
+    assert!(
+        frame.contains('│'),
+        "Split left/right should have split the pane; got:\n{frame}"
+    );
+}
+
+#[test]
+fn escape_dismisses_the_context_menu() {
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("menuesc".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Input(b"\x1b[<2;5;5M".to_vec()));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Close pane"),
+        "precondition: the menu is open; got:\n{opened}"
+    );
+    c.send(&ClientMsg::Input(vec![0x1b]));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    assert!(
+        !frame.contains("Close pane"),
+        "Escape should dismiss the menu; got:\n{frame}"
+    );
+}

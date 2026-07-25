@@ -378,6 +378,7 @@ impl Config {
             "status-justify" => cfg.status_justify = value.to_string(),
             "status-left" => cfg.status_left = value.to_string(),
             "status-right" => cfg.status_right = value.to_string(),
+            "prefix-indicator" => cfg.prefix_indicator = value.to_string(),
             "status-bg" => cfg.status_bg = value.to_string(),
             "status-fg" => cfg.status_fg = value.to_string(),
             "status-style" => apply_style_pairs(cfg, value),

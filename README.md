@@ -216,9 +216,20 @@ another window — mark a pane in one window and pull or swap it into another.
 
 A persistent left sidebar (herdr-style) lists your **sessions** on top and, below
 them, every pane running an **agent** with its live status — idle (`○`), working
-(`●`), blocked/needs-input (`●`, in red), or done (`✓`). Click a session row to
-switch to it, or an agent row to jump straight to that agent's pane. The
-prefix-`s` chooser shows the same status on each window row.
+(an animated spinner), blocked/needs-input (`●`, in red), or done (`✓`). Click a
+session row to switch to it, or an agent row to jump straight to that agent's
+pane. The prefix-`s` chooser shows the same status on each window row.
+
+Agents appear **as soon as their process starts** — lumux detects the agent
+running in each pane, so you see it without waiting for any hook, and it
+disappears when the process exits.
+
+Click **`+`** on the SESSIONS header to create a session, and **`◀`** to collapse
+the sidebar to a thin rail (**`▶`** expands it again).
+
+**Right-click** a session row, a window in the status bar, or a pane for a
+context menu — rename/new window/kill for a session, rename/close for a window,
+split/zoom/close for a pane. `Esc` or a click elsewhere dismisses it.
 
 Toggle it at runtime with `:set sidebar on` / `off` (session-global — it reflows
 every client of the session), or set the defaults in config:
@@ -226,6 +237,14 @@ every client of the session), or set the defaults in config:
 ```
 set -g sidebar on
 set -g sidebar-width 26
+```
+
+While the prefix key is armed, an indicator appears at the right end of the
+status bar so the modal state is visible. Change the text — or set it empty to
+turn it off — with:
+
+```
+set -g prefix-indicator "^B"
 ```
 
 Agents report their own state — no screen-scraping. Wire up each agent's hooks
