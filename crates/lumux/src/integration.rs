@@ -11,6 +11,7 @@ mod codex;
 mod common;
 mod copilot;
 mod cursor;
+mod qodercli;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -354,6 +355,7 @@ enum IntegrationTarget {
     Codex,
     Copilot,
     Cursor,
+    Qodercli,
 }
 
 impl IntegrationTarget {
@@ -365,8 +367,9 @@ impl IntegrationTarget {
                 Ok(Self::Copilot)
             }
             "cursor" | "cursor-agent" | "cursor-cli" => Ok(Self::Cursor),
+            "qodercli" | "qoder" | "qoder-cli" => Ok(Self::Qodercli),
             other => anyhow::bail!(
-                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, or `cursor`)"
+                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, or `qodercli`)"
             ),
         }
     }
@@ -381,6 +384,7 @@ pub fn install(agent: &str) -> anyhow::Result<()> {
         IntegrationTarget::Codex => codex::install(),
         IntegrationTarget::Copilot => copilot::install(),
         IntegrationTarget::Cursor => cursor::install(),
+        IntegrationTarget::Qodercli => qodercli::install(),
     }?;
     for step in activation_steps(target, |key| std::env::var_os(key)) {
         println!("{step}");
@@ -421,6 +425,9 @@ fn activation_steps(
         }
         IntegrationTarget::Cursor => {
             steps.push("Next: Restart the Cursor agent CLI; running processes do not reload hooks.");
+        }
+        IntegrationTarget::Qodercli => {
+            steps.push("Next: Restart the Qoder CLI; running processes do not reload hooks.");
         }
     }
     steps
@@ -814,6 +821,12 @@ mod tests {
             assert_eq!(
                 IntegrationTarget::parse(alias).unwrap(),
                 IntegrationTarget::Cursor
+            );
+        }
+        for alias in ["qodercli", "qoder", "qoder-cli"] {
+            assert_eq!(
+                IntegrationTarget::parse(alias).unwrap(),
+                IntegrationTarget::Qodercli
             );
         }
         for alias in [
