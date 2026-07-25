@@ -11,6 +11,7 @@ mod codex;
 mod common;
 mod copilot;
 mod cursor;
+mod kimi;
 mod qodercli;
 
 use std::ffi::OsString;
@@ -356,6 +357,7 @@ enum IntegrationTarget {
     Copilot,
     Cursor,
     Qodercli,
+    Kimi,
 }
 
 impl IntegrationTarget {
@@ -368,8 +370,9 @@ impl IntegrationTarget {
             }
             "cursor" | "cursor-agent" | "cursor-cli" => Ok(Self::Cursor),
             "qodercli" | "qoder" | "qoder-cli" => Ok(Self::Qodercli),
+            "kimi" | "kimi-code" | "kimi-cli" => Ok(Self::Kimi),
             other => anyhow::bail!(
-                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, or `qodercli`)"
+                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, `qodercli`, or `kimi`)"
             ),
         }
     }
@@ -385,6 +388,7 @@ pub fn install(agent: &str) -> anyhow::Result<()> {
         IntegrationTarget::Copilot => copilot::install(),
         IntegrationTarget::Cursor => cursor::install(),
         IntegrationTarget::Qodercli => qodercli::install(),
+        IntegrationTarget::Kimi => kimi::install(),
     }?;
     for step in activation_steps(target, |key| std::env::var_os(key)) {
         println!("{step}");
@@ -428,6 +432,9 @@ fn activation_steps(
         }
         IntegrationTarget::Qodercli => {
             steps.push("Next: Restart the Qoder CLI; running processes do not reload hooks.");
+        }
+        IntegrationTarget::Kimi => {
+            steps.push("Next: Restart Kimi Code; running processes do not reload hooks.");
         }
     }
     steps
@@ -827,6 +834,12 @@ mod tests {
             assert_eq!(
                 IntegrationTarget::parse(alias).unwrap(),
                 IntegrationTarget::Qodercli
+            );
+        }
+        for alias in ["kimi", "kimi-code", "kimi-cli"] {
+            assert_eq!(
+                IntegrationTarget::parse(alias).unwrap(),
+                IntegrationTarget::Kimi
             );
         }
         for alias in [
