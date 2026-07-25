@@ -295,6 +295,12 @@ pub struct Daemon<S: PtySystem> {
     /// independently-running hook processes cannot resurrect or remove a newer
     /// provider session.
     agent_lifecycles: BTreeMap<PaneId, AgentLifecycle>,
+    /// Agents found by inspecting each pane's descendant processes, so an agent
+    /// appears the moment it launches instead of waiting for its first hook.
+    /// Kept separate from `agent_lifecycles` on purpose: hook reports own the
+    /// state machine (ownership, sequencing, tombstones), while this is only a
+    /// presence fallback consulted when no hook status exists.
+    detected_agents: BTreeMap<PaneId, lumux_core::agent::AgentStatus>,
     /// Per-session sidebar visibility override (tmux-style `:set sidebar on`).
     /// Absent = fall back to the config default. Session-global by design: under
     /// the shared PTY, one client's toggle reflows every client of the session.
@@ -1020,6 +1026,7 @@ impl<S: PtySystem> Daemon<S> {
             clock: std::collections::BTreeSet::new(),
             marked_pane: None,
             agent_lifecycles: BTreeMap::new(),
+            detected_agents: BTreeMap::new(),
             sidebar_on: BTreeMap::new(),
             sidebar_collapsed: BTreeMap::new(),
             sidebar_scroll: BTreeMap::new(),
@@ -2479,6 +2486,7 @@ impl<S: PtySystem> Daemon<S> {
         // "working"/"blocked" report is stale, so clear it here rather than let
         // it linger on the sidebar (the dominant staleness source).
         self.agent_lifecycles.remove(&pane);
+        self.detected_agents.remove(&pane);
         let result = self.server.kill_pane(session, pane);
         if result == CascadeResult::SessionClosed {
             self.clear_session_transients(session);
@@ -2538,8 +2546,76 @@ impl<S: PtySystem> Daemon<S> {
             .is_some_and(lumux_core::agent::AgentStatus::acknowledge)
     }
 
-    /// The latest agent status reported for `pane`, if any.
+    /// The agent status shown for `pane`: the hook-reported lifecycle when there
+    /// is one, else the process-detected presence.
+    ///
+    /// Hooks win because they carry real state (working/blocked) and the unseen
+    /// completion badge; detection only knows "an agent is running here".
     pub fn agent_status(&self, pane: PaneId) -> Option<&lumux_core::agent::AgentStatus> {
+        self.agent_lifecycles
+            .get(&pane)
+            .and_then(|lifecycle| lifecycle.status.as_ref())
+            .or_else(|| self.detected_agents.get(&pane))
+    }
+
+    /// Re-scan every live pane for a running agent process. Returns true when
+    /// the visible set changed, so the caller can repaint.
+    ///
+    /// Detection is authoritative for *disappearance* as well: when a pane that
+    /// previously had a detected agent no longer does, any stale hook status for
+    /// it is dropped too — the process is provably gone, which is more reliable
+    /// than waiting for an exit hook that may never fire. Panes that were never
+    /// detected are left alone, so a platform without process inspection (the
+    /// default empty implementation) can never wipe hook-reported state.
+    pub fn refresh_detected_agents(&mut self) -> bool {
+        let mut changed = false;
+        let panes: Vec<PaneId> = self.panes.keys().copied().collect();
+        for pane in panes {
+            let Some(pid) = self.panes.get(&pane).and_then(|p| p.writer.child_pid()) else {
+                continue;
+            };
+            let names = self.pty_system.descendant_process_names(pid);
+            let detected = lumux_core::detect::identify_agent_among(&names);
+            match detected {
+                Some(agent) => {
+                    let is_new = self
+                        .detected_agents
+                        .get(&pane)
+                        .map(|s| s.agent != agent)
+                        .unwrap_or(true);
+                    if is_new {
+                        self.detected_agents.insert(
+                            pane,
+                            lumux_core::agent::AgentStatus::new(
+                                agent,
+                                lumux_core::agent::AgentState::Idle,
+                            ),
+                        );
+                        // Only a visible change if no hook status was covering it.
+                        changed |= self.hook_status(pane).is_none();
+                    }
+                }
+                None => {
+                    if self.detected_agents.remove(&pane).is_some() {
+                        // The agent process is gone. Drop any lingering hook
+                        // status for this pane as well, so a missed exit hook
+                        // can't leave a permanent row.
+                        let had_hook = self.hook_status(pane).is_some();
+                        if had_hook {
+                            if let Some(lifecycle) = self.agent_lifecycles.get_mut(&pane) {
+                                lifecycle.status = None;
+                            }
+                        }
+                        changed = true;
+                    }
+                }
+            }
+        }
+        changed
+    }
+
+    /// The hook-reported status for a pane, ignoring process detection.
+    fn hook_status(&self, pane: PaneId) -> Option<&lumux_core::agent::AgentStatus> {
         self.agent_lifecycles
             .get(&pane)
             .and_then(|lifecycle| lifecycle.status.as_ref())

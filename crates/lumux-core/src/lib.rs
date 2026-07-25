@@ -11,6 +11,7 @@ pub mod buffers;
 pub mod command;
 pub mod config;
 pub mod copymode;
+pub mod detect;
 pub mod grid;
 pub mod keymap;
 pub mod layout;

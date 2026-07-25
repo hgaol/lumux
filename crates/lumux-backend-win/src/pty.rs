@@ -93,6 +93,11 @@ pub struct WinPtySystem;
 impl PtySystem for WinPtySystem {
     type Pty = WinPty;
 
+    #[cfg(windows)]
+    fn descendant_process_names(&self, child_pid: u32) -> Vec<String> {
+        descendants_of(child_pid, &process_table())
+    }
+
     fn spawn(&self, cmd: &ShellCommand, size: PtySize) -> std::io::Result<Self::Pty> {
         let pair = native_pty_system()
             .openpty(to_pp(size))
@@ -132,5 +137,103 @@ impl PtySystem for WinPtySystem {
             reader: Some(reader),
             writer,
         })
+    }
+}
+
+/// Snapshot every process as `(pid, ppid, exe_name)` via the Toolhelp API.
+///
+/// One snapshot per call keeps the cost independent of the pane count. A failed
+/// snapshot yields an empty table, which callers must read as "unknown" rather
+/// than "nothing is running".
+#[cfg(windows)]
+fn process_table() -> Vec<(u32, u32, String)> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{
+        CreateToolhelp32Snapshot, Process32First, Process32Next, PROCESSENTRY32, TH32CS_SNAPPROCESS,
+    };
+
+    let mut out = Vec::new();
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE {
+            return out;
+        }
+        let mut entry: PROCESSENTRY32 = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32>() as u32;
+        if Process32First(snapshot, &mut entry) != 0 {
+            loop {
+                // szExeFile is a NUL-terminated ANSI name like "codex.exe".
+                // Win32 `CHAR` is i8, so reinterpret before decoding.
+                let raw = &entry.szExeFile;
+                let len = raw.iter().position(|&c| c == 0).unwrap_or(raw.len());
+                let bytes: Vec<u8> = raw[..len].iter().map(|&c| c as u8).collect();
+                let name = String::from_utf8_lossy(&bytes).into_owned();
+                out.push((entry.th32ProcessID, entry.th32ParentProcessID, name));
+                if Process32Next(snapshot, &mut entry) == 0 {
+                    break;
+                }
+            }
+        }
+        CloseHandle(snapshot);
+    }
+    out
+}
+
+/// Every process name in the subtree rooted at `root` (excluding `root`).
+#[cfg(windows)]
+fn descendants_of(root: u32, table: &[(u32, u32, String)]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut by_parent: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
+    for (pid, ppid, name) in table {
+        by_parent.entry(*ppid).or_default().push((*pid, name));
+    }
+    let mut names = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    queue.push_back(root);
+    seen.insert(root);
+    while let Some(pid) = queue.pop_front() {
+        let Some(children) = by_parent.get(&pid) else {
+            continue;
+        };
+        for (child, name) in children {
+            // Windows reuses pids, so a stale snapshot can describe a cycle.
+            if !seen.insert(*child) {
+                continue;
+            }
+            names.push((*name).to_string());
+            queue.push_back(*child);
+        }
+    }
+    names
+}
+
+#[cfg(all(test, windows))]
+mod descendant_tests {
+    #[test]
+    fn walks_a_synthetic_subtree() {
+        let table = vec![
+            (10, 1, "cmd.exe".to_string()),
+            (11, 10, "node.exe".to_string()),
+            (12, 11, "codex.exe".to_string()),
+            (20, 1, "other.exe".to_string()),
+        ];
+        let mut names = super::descendants_of(10, &table);
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["codex.exe".to_string(), "node.exe".to_string()]
+        );
+        assert!(super::descendants_of(20, &table).is_empty());
+    }
+
+    #[test]
+    fn a_parent_cycle_cannot_hang_the_walk() {
+        let table = vec![
+            (10, 1, "cmd.exe".to_string()),
+            (11, 10, "a.exe".to_string()),
+            (10, 11, "loop.exe".to_string()),
+        ];
+        assert!(super::descendants_of(10, &table).len() < 5);
     }
 }

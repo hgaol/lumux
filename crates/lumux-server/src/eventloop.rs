@@ -141,6 +141,9 @@ struct Loop<S: PtySystem> {
     tx: Sender<Msg>,
     /// Last time auto-save wrote the state file, to throttle to ~every 15s.
     last_autosave: std::time::Instant,
+    /// Throttle for agent process detection (the tick runs far more often than
+    /// an agent can plausibly start or stop).
+    last_agent_scan: std::time::Instant,
     /// Where the session snapshot is saved/restored (tmux-resurrect).
     state_path: std::path::PathBuf,
     /// Per-client deadline for an active repeat window (tmux `bind -r`): while
@@ -212,6 +215,7 @@ where
         pane_session: HashMap::new(),
         tx: tx.clone(),
         last_autosave: std::time::Instant::now(),
+        last_agent_scan: std::time::Instant::now(),
         state_path,
         repeat_deadlines: HashMap::new(),
         pending_renders: BTreeSet::new(),
@@ -336,6 +340,15 @@ where
                 for pane in self.daemon.reap_exited_panes() {
                     if let Some(&sid) = self.pane_session.get(&pane) {
                         self.handle_pane_exited(sid, pane);
+                    }
+                }
+                // Detect agents by their processes so a launch shows up in the
+                // sidebar immediately, without waiting for the agent's own
+                // hooks. Throttled — a tick is 250ms, far finer than needed.
+                if self.last_agent_scan.elapsed() >= std::time::Duration::from_secs(1) {
+                    self.last_agent_scan = std::time::Instant::now();
+                    if self.daemon.refresh_detected_agents() {
+                        self.render_global_views();
                     }
                 }
                 // Auto-save the session snapshot when persistence is on, throttled

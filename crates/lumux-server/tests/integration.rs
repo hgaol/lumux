@@ -6436,3 +6436,52 @@ fn sidebar_remains_visible_in_copy_mode() {
         "copy mode must paint the persistent sidebar, not only reserve its columns; got:\n{copy}"
     );
 }
+
+#[test]
+fn a_running_agent_process_appears_without_any_hook() {
+    // Presence detection: launching a process whose name matches a known agent
+    // must add it to the AGENTS section on its own — no report-state hook and no
+    // screen scraping. Exiting it must remove the row again.
+    let path = start_daemon_sidebar();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("detect".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    let (_d0, before) = c.collect_until(Duration::from_secs(1), |_| false);
+    assert!(
+        !before.contains('\u{25cb}') && !before.contains('\u{25cf}'),
+        "no agent row before one runs; got:\n{before}"
+    );
+
+    // Run a process literally named `codex` in the pane. Copying `sleep` gives
+    // the right process name without needing the real agent installed.
+    let dir = std::env::temp_dir().join(format!("lumux-detect-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let fake = dir.join("codex");
+    std::fs::copy("/bin/sleep", &fake).expect("stage a fake agent binary");
+    c.send(&ClientMsg::Input(
+        format!("{} 30\n", fake.display()).into_bytes(),
+    ));
+    // Detection is throttled to ~1s and pushes a frame itself when it changes,
+    // so accumulate rather than forcing repaints (a same-size resize is a no-op).
+    let (_d1, vt) = c.collect_until(Duration::from_secs(5), |_| false);
+    assert!(
+        vt.contains("codex") && vt.contains('\u{25cb}'),
+        "a running `codex` process should appear under AGENTS; got:\n{vt}"
+    );
+
+    // Kill it; the row must disappear once the process is gone.
+    c.send(&ClientMsg::Input(vec![0x03])); // Ctrl-C
+    let (_d2, after) = c.collect_until(Duration::from_secs(5), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    assert!(
+        !frame.contains('\u{25cb}') && !frame.contains('\u{25cf}'),
+        "the agent row should vanish when the process exits; got:\n{frame}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

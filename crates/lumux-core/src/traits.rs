@@ -84,6 +84,18 @@ pub trait PtyWriter: Send {
 pub trait PtySystem: Send + Sync {
     type Pty: Pty;
     fn spawn(&self, cmd: &ShellCommand, size: PtySize) -> io::Result<Self::Pty>;
+
+    /// Names of the processes running under `child_pid` (the pane's shell) —
+    /// used to detect which agent, if any, is running in a pane without relying
+    /// on that agent's own lifecycle hooks.
+    ///
+    /// The default returns nothing, so a platform without an implementation
+    /// simply never detects an agent (hook-reported status still works). Callers
+    /// must treat "no names" as "unknown", never as "the agent exited".
+    fn descendant_process_names(&self, child_pid: u32) -> Vec<String> {
+        let _ = child_pid;
+        Vec::new()
+    }
 }
 
 /// A bidirectional, message-framed connection between a client and the daemon.

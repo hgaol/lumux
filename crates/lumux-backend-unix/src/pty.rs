@@ -93,6 +93,10 @@ pub struct UnixPtySystem;
 impl PtySystem for UnixPtySystem {
     type Pty = UnixPty;
 
+    fn descendant_process_names(&self, child_pid: u32) -> Vec<String> {
+        Self::descendant_names(child_pid)
+    }
+
     fn spawn(&self, cmd: &ShellCommand, size: PtySize) -> std::io::Result<Self::Pty> {
         let pair = native_pty_system()
             .openpty(to_pp(size))
@@ -133,5 +137,190 @@ impl PtySystem for UnixPtySystem {
             reader: Some(reader),
             writer,
         })
+    }
+}
+
+/// Read `/proc` once and return `(pid, ppid, comm)` for every process.
+///
+/// A single directory pass keeps the per-tick cost independent of the pane
+/// count. Unreadable or vanished entries are skipped rather than failing the
+/// whole scan — processes come and go while we walk.
+#[cfg(target_os = "linux")]
+fn process_table() -> Vec<(u32, u32, String)> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Ok(pid) = name.parse::<u32>() else { continue };
+        let Ok(stat) = std::fs::read(entry.path().join("stat")) else {
+            continue;
+        };
+        // `stat` is "pid (comm) state ppid ...". The comm field may itself
+        // contain spaces or parentheses, so split on the LAST ')'.
+        let Some(close) = stat.iter().rposition(|&b| b == b')') else {
+            continue;
+        };
+        let Some(open) = stat.iter().position(|&b| b == b'(') else {
+            continue;
+        };
+        if open + 1 > close {
+            continue;
+        }
+        let comm = String::from_utf8_lossy(&stat[open + 1..close]).into_owned();
+        let rest = String::from_utf8_lossy(&stat[close + 1..]).into_owned();
+        // After the comm: " state ppid ..." — ppid is the 2nd whitespace field.
+        let mut fields = rest.split_whitespace();
+        let _state = fields.next();
+        let Some(ppid) = fields.next().and_then(|p| p.parse::<u32>().ok()) else {
+            continue;
+        };
+        out.push((pid, ppid, comm));
+    }
+    out
+}
+
+/// Every process name in the subtree rooted at `root` (excluding `root` itself,
+/// which is the pane's shell).
+#[cfg(target_os = "linux")]
+fn descendants_of(root: u32, table: &[(u32, u32, String)]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut by_parent: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
+    for (pid, ppid, comm) in table {
+        by_parent.entry(*ppid).or_default().push((*pid, comm));
+    }
+    let mut names = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    queue.push_back(root);
+    seen.insert(root);
+    while let Some(pid) = queue.pop_front() {
+        let Some(children) = by_parent.get(&pid) else {
+            continue;
+        };
+        for (child, comm) in children {
+            // A malformed table can't loop us forever.
+            if !seen.insert(*child) {
+                continue;
+            }
+            names.push((*comm).to_string());
+            queue.push_back(*child);
+        }
+    }
+    names
+}
+
+impl UnixPtySystem {
+    #[cfg(target_os = "linux")]
+    fn descendant_names(child_pid: u32) -> Vec<String> {
+        descendants_of(child_pid, &process_table())
+    }
+
+    /// macOS and other unixes have no `/proc`; shell out to `ps` for the
+    /// pid/ppid/comm table. Bounded and best-effort — a failure just means no
+    /// detection, never a false "exited".
+    #[cfg(not(target_os = "linux"))]
+    fn descendant_names(child_pid: u32) -> Vec<String> {
+        use std::process::{Command, Stdio};
+        let Ok(out) = Command::new("ps")
+            .args(["-Ao", "pid=,ppid=,comm="])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
+        else {
+            return Vec::new();
+        };
+        if !out.status.success() {
+            return Vec::new();
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let mut table = Vec::new();
+        for line in text.lines() {
+            let mut f = line.split_whitespace();
+            let (Some(pid), Some(ppid), Some(comm)) = (f.next(), f.next(), f.next()) else {
+                continue;
+            };
+            let (Ok(pid), Ok(ppid)) = (pid.parse::<u32>(), ppid.parse::<u32>()) else {
+                continue;
+            };
+            // `comm` is a path on macOS; keep the basename so it matches the
+            // Linux `comm` shape.
+            let base = comm.rsplit('/').next().unwrap_or(comm).to_string();
+            table.push((pid, ppid, base));
+        }
+        descendants_of_generic(child_pid, &table)
+    }
+}
+
+/// Portable subtree walk shared by the non-Linux path.
+#[cfg(not(target_os = "linux"))]
+fn descendants_of_generic(root: u32, table: &[(u32, u32, String)]) -> Vec<String> {
+    use std::collections::{HashMap, HashSet, VecDeque};
+    let mut by_parent: HashMap<u32, Vec<(u32, &str)>> = HashMap::new();
+    for (pid, ppid, comm) in table {
+        by_parent.entry(*ppid).or_default().push((*pid, comm));
+    }
+    let mut names = Vec::new();
+    let mut seen: HashSet<u32> = HashSet::new();
+    let mut queue: VecDeque<u32> = VecDeque::new();
+    queue.push_back(root);
+    seen.insert(root);
+    while let Some(pid) = queue.pop_front() {
+        let Some(children) = by_parent.get(&pid) else {
+            continue;
+        };
+        for (child, comm) in children {
+            if !seen.insert(*child) {
+                continue;
+            }
+            names.push((*comm).to_string());
+            queue.push_back(*child);
+        }
+    }
+    names
+}
+
+#[cfg(test)]
+mod descendant_tests {
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn walks_a_synthetic_subtree() {
+        let table = vec![
+            (1, 0, "init".to_string()),
+            (10, 1, "sh".to_string()),
+            (11, 10, "node".to_string()),
+            (12, 11, "codex".to_string()),
+            (20, 1, "other".to_string()),
+        ];
+        let mut names = super::descendants_of(10, &table);
+        names.sort();
+        assert_eq!(names, vec!["codex".to_string(), "node".to_string()]);
+        // A pane with no children detects nothing.
+        assert!(super::descendants_of(20, &table).is_empty());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_parent_cycle_cannot_hang_the_walk() {
+        // Malformed table where two pids claim each other as parent.
+        let table = vec![
+            (10, 1, "sh".to_string()),
+            (11, 10, "a".to_string()),
+            (10, 11, "loop".to_string()),
+        ];
+        let names = super::descendants_of(10, &table);
+        assert!(names.len() < 5, "walk must terminate, got {names:?}");
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reads_the_real_process_table() {
+        // Sanity: our own process must appear with a plausible parent.
+        let table = super::process_table();
+        assert!(!table.is_empty(), "/proc scan returned nothing");
+        let me = std::process::id();
+        assert!(table.iter().any(|(pid, _, _)| *pid == me));
     }
 }
