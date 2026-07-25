@@ -12,6 +12,7 @@ mod common;
 mod copilot;
 mod cursor;
 mod kimi;
+mod opencode;
 mod qodercli;
 
 use std::ffi::OsString;
@@ -358,6 +359,7 @@ enum IntegrationTarget {
     Cursor,
     Qodercli,
     Kimi,
+    OpenCode,
 }
 
 impl IntegrationTarget {
@@ -371,8 +373,9 @@ impl IntegrationTarget {
             "cursor" | "cursor-agent" | "cursor-cli" => Ok(Self::Cursor),
             "qodercli" | "qoder" | "qoder-cli" => Ok(Self::Qodercli),
             "kimi" | "kimi-code" | "kimi-cli" => Ok(Self::Kimi),
+            "opencode" | "open-code" => Ok(Self::OpenCode),
             other => anyhow::bail!(
-                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, `qodercli`, or `kimi`)"
+                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, `cursor`, `qodercli`, `kimi`, or `opencode`)"
             ),
         }
     }
@@ -389,6 +392,7 @@ pub fn install(agent: &str) -> anyhow::Result<()> {
         IntegrationTarget::Cursor => cursor::install(),
         IntegrationTarget::Qodercli => qodercli::install(),
         IntegrationTarget::Kimi => kimi::install(),
+        IntegrationTarget::OpenCode => opencode::install(),
     }?;
     for step in activation_steps(target, |key| std::env::var_os(key)) {
         println!("{step}");
@@ -435,6 +439,9 @@ fn activation_steps(
         }
         IntegrationTarget::Kimi => {
             steps.push("Next: Restart Kimi Code; running processes do not reload hooks.");
+        }
+        IntegrationTarget::OpenCode => {
+            steps.push("Next: Restart opencode; plugins load at startup.");
         }
     }
     steps
@@ -840,6 +847,12 @@ mod tests {
             assert_eq!(
                 IntegrationTarget::parse(alias).unwrap(),
                 IntegrationTarget::Kimi
+            );
+        }
+        for alias in ["opencode", "open-code"] {
+            assert_eq!(
+                IntegrationTarget::parse(alias).unwrap(),
+                IntegrationTarget::OpenCode
             );
         }
         for alias in [
