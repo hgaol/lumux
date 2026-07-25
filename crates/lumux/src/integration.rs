@@ -10,6 +10,7 @@
 mod codex;
 mod common;
 mod copilot;
+mod cursor;
 
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -352,6 +353,7 @@ enum IntegrationTarget {
     Claude,
     Codex,
     Copilot,
+    Cursor,
 }
 
 impl IntegrationTarget {
@@ -362,8 +364,9 @@ impl IntegrationTarget {
             "copilot" | "copilot-cli" | "github-copilot" | "github-copilot-cli" => {
                 Ok(Self::Copilot)
             }
+            "cursor" | "cursor-agent" | "cursor-cli" => Ok(Self::Cursor),
             other => anyhow::bail!(
-                "integration for {other:?} is not supported (choose `claude`, `codex`, or `copilot`)"
+                "integration for {other:?} is not supported (choose `claude`, `codex`, `copilot`, or `cursor`)"
             ),
         }
     }
@@ -377,6 +380,7 @@ pub fn install(agent: &str) -> anyhow::Result<()> {
         IntegrationTarget::Claude => install_claude(claude_settings_path()?),
         IntegrationTarget::Codex => codex::install(),
         IntegrationTarget::Copilot => copilot::install(),
+        IntegrationTarget::Cursor => cursor::install(),
     }?;
     for step in activation_steps(target, |key| std::env::var_os(key)) {
         println!("{step}");
@@ -414,6 +418,9 @@ fn activation_steps(
         }
         IntegrationTarget::Copilot => {
             steps.push("Next: Restart GitHub Copilot CLI; running processes do not reload hooks.");
+        }
+        IntegrationTarget::Cursor => {
+            steps.push("Next: Restart the Cursor agent CLI; running processes do not reload hooks.");
         }
     }
     steps
@@ -801,6 +808,12 @@ mod tests {
             assert_eq!(
                 IntegrationTarget::parse(alias).unwrap(),
                 IntegrationTarget::Codex
+            );
+        }
+        for alias in ["cursor", "cursor-agent", "cursor-cli"] {
+            assert_eq!(
+                IntegrationTarget::parse(alias).unwrap(),
+                IntegrationTarget::Cursor
             );
         }
         for alias in [
