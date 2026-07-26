@@ -589,7 +589,12 @@
       <div class="card">
         <div class="ico" data-zh="▐ agent">▐ agents</div>
         <h3 data-zh="agent 侧边栏">Agents sidebar</h3>
-        <p data-zh="常驻侧边栏列出你的会话，以及每个运行 agent 的窗格及其实时状态——空闲、工作中、被阻塞、已完成。agent 通过 hooks 自行上报（<code>lumux integration claude</code>）；点击即可跳转。用 <kbd>:set sidebar on</kbd> 切换。">A persistent sidebar lists your sessions and every pane running an agent with its live state — idle, working, blocked, done. Agents self-report via hooks (<code>lumux integration claude</code>); click to jump. Toggle with <kbd>:set sidebar on</kbd>.</p>
+        <p data-zh="常驻侧边栏列出你的会话，以及每个运行 agent 的窗格及其实时状态——空闲、工作中（动画转轮）、被阻塞、已完成。agent 在进程启动的那一刻就会出现，退出时自动消失。点击可跳转，右键可重命名/分割/关闭，<kbd>+</kbd> 新建会话。用 <kbd>:set sidebar on</kbd> 切换。">A persistent sidebar lists your sessions and every pane running an agent with its live state — idle, working (an animated spinner), blocked, done. Agents appear the moment their process starts and vanish when it exits. Click to jump, right-click for rename/split/close, <kbd>+</kbd> for a new session. Toggle with <kbd>:set sidebar on</kbd>.</p>
+      </div>
+      <div class="card">
+        <div class="ico" data-zh="⚯ 接入">⚯ integrations</div>
+        <h3 data-zh="支持八种 agent">Eight agents supported</h3>
+        <p data-zh="<code>lumux integration &lt;agent&gt;</code> 一次性接入 Claude Code、Codex、Copilot、Cursor、Qoder、Kimi、opencode 和 pi。接入方式各不相同——生命周期 hook、TOML 配置块、JavaScript 插件、TypeScript 扩展——但都通过同一个 <code>report-state</code> 命令上报，因此守护进程与具体 agent 无关。安装器会保留你原有的配置。">One command — <code>lumux integration &lt;agent&gt;</code> — wires up Claude Code, Codex, Copilot, Cursor, Qoder, Kimi, opencode and pi. Each hooks in differently (lifecycle hooks, a TOML block, a JS plugin, a TS extension) but all report through the same <code>report-state</code> command, so the daemon stays agent-agnostic. Installers preserve your existing config.</p>
       </div>
       <div class="card">
         <div class="ico" data-zh="◰ 会话">◰ session</div>
