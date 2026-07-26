@@ -265,11 +265,23 @@ CLI-style aliases are also accepted: `claude-code`, `codex-cli`,
 `openai-codex`, `copilot-cli`, `github-copilot`, `github-copilot-cli`,
 `cursor-agent`, `qoder`, `kimi-code`, and `pi-coding-agent`.
 
-How each agent is wired differs by what it offers: Claude, Codex, Copilot,
-Cursor and Qoder take lifecycle hooks, Kimi takes a TOML hook block, opencode
-loads a JavaScript plugin, and pi loads a TypeScript extension. All of them
-report through the same `lumux report-state` command, so the daemon stays
-agent-agnostic.
+How each agent is wired differs by what it offers, but all of them report
+through the same `lumux report-state` command, so the daemon stays
+agent-agnostic:
+
+| Agent | Mechanism | Config directory |
+|-------|-----------|------------------|
+| claude | lifecycle hooks in `settings.json` | `CLAUDE_CONFIG_DIR`, else `~/.claude` |
+| codex | hooks in `hooks.json` (+ a feature flag) | `CODEX_HOME`, else `~/.codex` |
+| copilot | its own documented `hooks/*.json` | `COPILOT_HOME`, else `~/.copilot` |
+| cursor | flat `hooks.json` | `CURSOR_CONFIG_DIR`, else `~/.cursor` |
+| qodercli | Claude-shaped `settings.json` | `QODER_CONFIG_DIR`, else `~/.qoder` |
+| kimi | a `[[hooks]]` block in `config.toml` | `KIMI_CODE_HOME`, else `~/.kimi-code` |
+| opencode | a JavaScript plugin | `XDG_CONFIG_HOME/opencode`, else `~/.config/opencode` |
+| pi | a TypeScript extension | `PI_CODING_AGENT_DIR`, else `~/.pi/agent` |
+
+Agents that report `SessionEnd` clear their row directly; kimi has no such
+event, so its row is dropped by process detection when the agent exits.
 
 The installers preserve unrelated configuration and place a managed wrapper in
 the agent's config directory (`CLAUDE_CONFIG_DIR`, `CODEX_HOME`, or
