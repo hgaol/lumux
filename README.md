@@ -231,6 +231,19 @@ the sidebar to a thin rail (**`▶`** expands it again).
 context menu — rename/new window/kill for a session, rename/close for a window,
 split/zoom/close for a pane. `Esc` or a click elsewhere dismisses it.
 
+The same menu opens from the keyboard with **`prefix M`** (the active pane), or
+`:menu window` / `:menu session`. Arrow keys move the selection, `Enter` runs it,
+`Esc` closes. Worth knowing about, because some terminals keep the right button
+for themselves and never forward it to the application:
+
+| Terminal | Right-click |
+| --- | --- |
+| Windows Terminal, most Unix terminals | forwarded to lumux — unless you hold **Shift**, which is the deliberate escape hatch to the terminal's own menu |
+| VS Code's integrated terminal | never forwarded on any platform by default (copy/paste on Windows, its own context menu elsewhere); set `"terminal.integrated.rightClickBehavior": "nothing"` to pass it through |
+
+`lumux debug-input` prints every key and mouse event a terminal actually
+delivers, which tells you in one click whether a button is reaching lumux at all.
+
 Toggle it at runtime with `:set sidebar on` / `off` (session-global — it reflows
 every client of the session), or set the defaults in config:
 

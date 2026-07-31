@@ -6,6 +6,34 @@
 use super::key::{Key, KeyCode};
 use std::collections::HashMap;
 
+/// Which object a context menu acts on.
+///
+/// A right-press derives this from whatever it landed on. Opening the menu from
+/// the keyboard has no pointer to derive it from, so the scope is named
+/// explicitly and resolved against the client's current session/window/pane.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MenuScope {
+    /// The active pane: split, zoom, close.
+    #[default]
+    Pane,
+    /// The active window: rename, close.
+    Window,
+    /// The attached session: rename, new window, kill.
+    Session,
+}
+
+impl MenuScope {
+    /// Parse a scope name, case-insensitively.
+    pub fn parse(s: &str) -> Option<Self> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "pane" => Some(MenuScope::Pane),
+            "window" => Some(MenuScope::Window),
+            "session" => Some(MenuScope::Session),
+            _ => None,
+        }
+    }
+}
+
 /// A bound action. These are the prefixed commands; copy-mode navigation is a
 /// separate concern handled while in copy state (Phase 8).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -82,6 +110,12 @@ pub enum Action {
     /// Show the big-digit clock overlay (tmux `clock-mode`, prefix `t`). Any key
     /// closes it.
     ClockMode,
+    /// Open the context menu for the named scope (lumux: prefix `M` for the
+    /// active pane). The same popup a right-press opens, reachable without a
+    /// mouse — which matters on terminals that keep the right button for
+    /// themselves (VS Code's `terminal.integrated.rightClickBehavior`, or any
+    /// terminal where Shift is held).
+    ShowMenu(MenuScope),
     /// The prefix was pressed twice: send a literal prefix byte to the pane.
     SendPrefix,
     /// Run a chain of command-prompt commands (tmux `bind key cmd1 \; cmd2`).
@@ -138,6 +172,9 @@ impl Action {
             Action::MarkPane => "mark/unmark the active pane",
             Action::RotateWindow => "rotate the panes in the window",
             Action::ClockMode => "show the clock",
+            Action::ShowMenu(MenuScope::Pane) => "context menu for this pane",
+            Action::ShowMenu(MenuScope::Window) => "context menu for this window",
+            Action::ShowMenu(MenuScope::Session) => "context menu for this session",
             Action::RunCommands(_) => "run bound command(s)",
         }
     }
@@ -213,6 +250,9 @@ impl Bindings {
         table.insert(Key::ctrl('o'), Action::RotateWindow);
         // Show the clock overlay (tmux prefix t).
         table.insert(Key::char('t'), Action::ClockMode);
+        // Open the active pane's context menu without a mouse (lumux: prefix M).
+        // The window and session menus are reachable as `:menu window|session`.
+        table.insert(Key::char('M'), Action::ShowMenu(MenuScope::Pane));
         // Cycle preset layouts (tmux prefix Space / next-layout).
         table.insert(Key::plain(KeyCode::Space), Action::NextLayout);
         // Directional resize on the real tmux keys: Ctrl+arrows and Alt+arrows

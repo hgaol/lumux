@@ -346,6 +346,9 @@ pub fn parse_action(s: &str) -> Option<Action> {
         "choose-session" => Action::ChooseSession,
         "mark-pane" => Action::MarkPane,
         "rotate-window" => Action::RotateWindow,
+        "menu" | "show-menu" => Action::ShowMenu(crate::keymap::MenuScope::Pane),
+        "menu-window" => Action::ShowMenu(crate::keymap::MenuScope::Window),
+        "menu-session" => Action::ShowMenu(crate::keymap::MenuScope::Session),
         _ => return None,
     };
     Some(action)

@@ -11,6 +11,7 @@ use clap::{Parser, Subcommand};
 
 mod attach;
 mod control;
+mod debug_input;
 mod integration;
 mod runtime;
 mod server;
@@ -107,6 +108,10 @@ enum Command {
         /// The agent to wire up: claude, codex, or copilot.
         agent: String,
     },
+    /// Print the keyboard and mouse events this terminal actually delivers.
+    /// Use it when a click seems to do nothing: terminals differ on which
+    /// buttons they forward, and this shows what reached lumux.
+    DebugInput,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -201,5 +206,6 @@ fn run(command: Option<Command>) -> anyhow::Result<()> {
             Ok(())
         }
         Some(Command::Integration { agent }) => integration::install(&agent),
+        Some(Command::DebugInput) => debug_input::run(),
     }
 }

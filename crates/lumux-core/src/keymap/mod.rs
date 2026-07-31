@@ -4,7 +4,7 @@ mod bindings;
 mod key;
 mod machine;
 
-pub use bindings::{encode_key, Action, Bindings};
+pub use bindings::{encode_key, Action, Bindings, MenuScope};
 pub use key::{decode_key, Key, KeyCode};
 pub use machine::{
     BufferKey, CopyKey, HelpKey, Keymap, Mode, ModeKeys, PromptKey, Reaction, SearchKey,

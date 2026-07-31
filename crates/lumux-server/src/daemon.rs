@@ -2868,6 +2868,90 @@ impl<S: PtySystem> Daemon<S> {
         self.menus.get(&client_id)
     }
 
+    /// Resolve a named menu scope against the client's current session, window
+    /// and pane, then open the popup where a right-press on that object would
+    /// have opened it. Returns false when the scope has nothing to act on.
+    pub(crate) fn open_menu_for_scope(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        scope: lumux_core::keymap::MenuScope,
+    ) -> bool {
+        let Some((target, col, row)) = self.scope_anchor(session, scope) else {
+            return false;
+        };
+        self.open_context_menu(client_id, session, target, col, row);
+        // A keyboard-opened menu starts on its first item: Enter always has
+        // something to act on, and the selection is visible from the outset.
+        if let Some(menu) = self.menus.get_mut(&client_id) {
+            menu.hover = Some(0);
+        }
+        self.menus.contains_key(&client_id)
+    }
+
+    /// Where a scoped menu points and where it hangs from.
+    fn scope_anchor(
+        &self,
+        session: SessionId,
+        scope: lumux_core::keymap::MenuScope,
+    ) -> Option<(MenuTarget, u16, u16)> {
+        use lumux_core::keymap::MenuScope;
+        let current = self.server.session(session)?;
+        let window_id = current.active_window();
+        match scope {
+            // Session and window menus belong to the chrome at the bottom of
+            // the screen. Anchoring on the status row lets open_context_menu's
+            // clamp lift the popup so it sits just above it, which is where the
+            // same menu appears when opened by right-pressing that chrome.
+            MenuScope::Session | MenuScope::Window => {
+                let rows = self.server.effective_size(session)?.rows;
+                let target = if matches!(scope, MenuScope::Session) {
+                    MenuTarget::Session(session)
+                } else {
+                    MenuTarget::Window(session, window_id)
+                };
+                Some((target, 0, rows.saturating_sub(1)))
+            }
+            MenuScope::Pane => {
+                let window = current.window(window_id)?;
+                let pane = window.active_pane();
+                let viewport = self.content_viewport(session)?;
+                let rect =
+                    *lumux_core::layout::compute(&visible_layout(window), viewport).get(&pane)?;
+                Some((MenuTarget::Pane(session, window_id, pane), rect.x, rect.y))
+            }
+        }
+    }
+
+    /// Move the keyboard selection within an open menu, wrapping at both ends.
+    /// Returns true when a menu was open to move.
+    pub(crate) fn menu_hover_step(&mut self, client_id: u64, delta: i32) -> bool {
+        let Some(menu) = self.menus.get_mut(&client_id) else {
+            return false;
+        };
+        if menu.items.is_empty() {
+            return false;
+        }
+        let len = menu.items.len() as i32;
+        let next = match menu.hover {
+            Some(current) => (current as i32 + delta).rem_euclid(len),
+            // Entering the list from "nothing selected" lands on the end the
+            // user is heading toward, so Up starts at the bottom item.
+            None if delta < 0 => len - 1,
+            None => 0,
+        };
+        menu.hover = Some(next as usize);
+        self.invalidate_client(client_id);
+        true
+    }
+
+    /// The item the keyboard selection sits on, with the target the menu
+    /// captured when it opened.
+    pub(crate) fn menu_selection(&self, client_id: u64) -> Option<(MenuTarget, MenuAction)> {
+        let menu = self.menus.get(&client_id)?;
+        Some((menu.target, *menu.items.get(menu.hover?)?))
+    }
+
     /// Paint the context menu popup over the composed frame.
     fn render_context_menu(&self, screen: &mut lumux_core::render::Screen, client_id: u64) {
         let Some(menu) = self.menus.get(&client_id) else {

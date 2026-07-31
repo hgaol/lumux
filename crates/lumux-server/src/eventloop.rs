@@ -542,16 +542,6 @@ where
                 } else {
                     bytes.clone()
                 };
-                // An open context menu swallows Escape (dismiss) so the key does
-                // not also reach the pane. Any other key leaves the menu open;
-                // it is dismissed by clicking, matching how a menu behaves.
-                if self.daemon.context_menu(client_id).is_some()
-                    && keyboard.first() == Some(&0x1b)
-                {
-                    self.dismiss_context_menu(client_id);
-                    self.render_client(client_id);
-                    keyboard.remove(0);
-                }
                 // A sidebar click handled above can switch this client to a
                 // different session. Route any keyboard bytes batched after the
                 // SGR mouse sequence to the newly selected session, never the
@@ -561,6 +551,12 @@ where
                     .get(&client_id)
                     .map(|client| client.session)
                     .unwrap_or(session);
+                // An open context menu owns the arrows, Enter and Escape so they
+                // drive the popup instead of reaching the pane. Any other key
+                // leaves it open, matching how a menu behaves under the mouse.
+                if self.daemon.context_menu(client_id).is_some() {
+                    keyboard = self.handle_menu_keys(client_id, routed_session, keyboard);
+                }
                 let reactions = self
                     .daemon
                     .keymap_mut(client_id)
@@ -1204,6 +1200,13 @@ where
         ev: &lumux_core::mouse::MouseEvent,
         input_frame: &InputFrame,
     ) -> bool {
+        // Only a menu the daemon still holds can consume a press. The applied
+        // frame may be a stale one that still shows a menu the daemon has since
+        // closed; letting that eat the press would silently drop the click —
+        // most visibly a right-press that then never opens its menu.
+        let Some(target) = self.daemon.context_menu(client_id).map(|menu| menu.target) else {
+            return false;
+        };
         // Resolve against the frame the user actually clicked when we have it.
         let hit = match input_frame {
             InputFrame::Applied(frame) => frame.interactions.menu().map(|menu| {
@@ -1217,12 +1220,11 @@ where
                 .context_menu(client_id)
                 .map(|menu| (menu.contains(ev.col, ev.row), menu.item_at(ev.col, ev.row))),
         };
-        let Some((inside, item)) = hit else {
-            return false;
-        };
-        let target = self.daemon.context_menu(client_id).map(|menu| menu.target);
+        // A frame with no menu of its own still dismisses: the user clicked
+        // while a menu was open, so the press belongs to the menu either way.
+        let (inside, item) = hit.unwrap_or((false, None));
         self.dismiss_context_menu(client_id);
-        if let (true, Some(action), Some(target)) = (inside, item, target) {
+        if let (true, Some(action)) = (inside, item) {
             self.apply_menu_action(client_id, session, target, action);
         }
         self.render_client(client_id);
@@ -1277,6 +1279,62 @@ where
             self.send_client_bytes(client_id, lumux_core::mouse::ENABLE_HOVER);
             self.render_client(client_id);
         }
+    }
+
+    /// Open the context menu for a named scope (keyboard route: `prefix M`,
+    /// `:menu [pane|window|session]`). Same popup, same actions, and the same
+    /// any-motion enable as the right-press route, so a menu opened by key can
+    /// still be finished with the mouse.
+    fn open_menu_for_scope(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        scope: lumux_core::keymap::MenuScope,
+    ) {
+        if self.daemon.open_menu_for_scope(client_id, session, scope) {
+            self.send_client_bytes(client_id, lumux_core::mouse::ENABLE_HOVER);
+            self.render_client(client_id);
+        }
+    }
+
+    /// Keyboard control of an open context menu: Up/Down move the selection,
+    /// Enter runs it, Escape dismisses. Handled bytes are consumed so they
+    /// never reach the pane underneath; anything else leaves the menu open and
+    /// is returned for the keymap.
+    ///
+    /// A bare `ESC` is read as dismiss. That is safe because the client holds an
+    /// ambiguous `ESC` / `ESC [` until its stdin goes idle, so a split arrow key
+    /// arrives here whole rather than as a lone Escape.
+    fn handle_menu_keys(
+        &mut self,
+        client_id: u64,
+        session: SessionId,
+        mut keyboard: Vec<u8>,
+    ) -> Vec<u8> {
+        while self.daemon.context_menu(client_id).is_some() && !keyboard.is_empty() {
+            let up = keyboard.starts_with(b"\x1b[A") || keyboard.starts_with(b"\x1bOA");
+            let down = keyboard.starts_with(b"\x1b[B") || keyboard.starts_with(b"\x1bOB");
+            let consumed = if up || down {
+                self.daemon
+                    .menu_hover_step(client_id, if up { -1 } else { 1 });
+                3
+            } else if matches!(keyboard.first(), Some(b'\r') | Some(b'\n')) {
+                let selection = self.daemon.menu_selection(client_id);
+                self.dismiss_context_menu(client_id);
+                if let Some((target, action)) = selection {
+                    self.apply_menu_action(client_id, session, target, action);
+                }
+                1
+            } else if keyboard.first() == Some(&0x1b) {
+                self.dismiss_context_menu(client_id);
+                1
+            } else {
+                break;
+            };
+            keyboard.drain(..consumed);
+            self.render_client(client_id);
+        }
+        keyboard
     }
 
     /// Write a raw control sequence to one client's terminal.
@@ -1508,6 +1566,7 @@ where
             }
             Action::RotateWindow => self.do_rotate_window(session, true),
             Action::ClockMode => self.daemon.toggle_clock(client_id),
+            Action::ShowMenu(scope) => self.open_menu_for_scope(client_id, session, scope),
             // A bound command chain (tmux `bind key cmd1 \; cmd2`): run each
             // parsed command through the same executor as the `:` prompt.
             Action::RunCommands(cmds) => {
@@ -2747,6 +2806,9 @@ where
             }
             ParsedCommand::CopyMode => self.daemon.enter_copy_mode(client_id, session),
             ParsedCommand::ClockMode => self.daemon.toggle_clock(client_id),
+            ParsedCommand::DisplayMenu(scope) => {
+                self.open_menu_for_scope(client_id, session, scope)
+            }
             ParsedCommand::ZoomPane => self.zoom_pane(session),
             ParsedCommand::SelectPane { dir, target } => {
                 use lumux_core::command::Target;

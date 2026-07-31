@@ -6841,3 +6841,130 @@ fn mouse_still_works_after_a_context_menu_round_trip() {
         "clicking after a menu round-trip should focus the LEFT pane; marker at col {col}"
     );
 }
+
+#[test]
+fn the_pane_menu_opens_and_runs_from_the_keyboard_alone() {
+    // The context menu must be reachable without a right-press: several
+    // terminals keep the right button for themselves (VS Code's
+    // `terminal.integrated.rightClickBehavior`, or any terminal while Shift is
+    // held) and never forward it. Note the daemon here has mouse reporting OFF
+    // entirely, so nothing in this path can depend on it.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("keymenu".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    // prefix (C-b) then M.
+    c.send(&ClientMsg::Input(vec![0x02, b'M']));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Split left/right") && opened.contains("Close pane"),
+        "prefix M should open the pane menu; got:\n{opened}"
+    );
+
+    // Down moves the selection instead of dismissing. The arrow arrives as
+    // ESC [ B, and an Escape-only reading of that would both close the menu and
+    // leak "[B" into the shell.
+    c.send(&ClientMsg::Input(b"\x1b[B".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, moved) = c.collect_until(Duration::from_secs(2), |_| false);
+    let frame = moved.rsplit("\u{1b}[2J").next().unwrap_or(&moved);
+    assert!(
+        frame.contains("Split top/bottom"),
+        "an arrow key must leave the menu open; got:\n{frame}"
+    );
+
+    // Enter runs the selected item: the second one is "Split top/bottom".
+    c.send(&ClientMsg::Input(vec![b'\r']));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d2, after) = c.collect_until(Duration::from_secs(2), |_| false);
+    let frame = after.rsplit("\u{1b}[2J").next().unwrap_or(&after);
+    assert!(
+        !frame.contains("Close pane"),
+        "running an item should close the menu; got:\n{frame}"
+    );
+    assert!(
+        frame.contains('─'),
+        "Enter on \"Split top/bottom\" should split the pane horizontally; got:\n{frame}"
+    );
+}
+
+#[test]
+fn the_menu_command_opens_the_session_menu() {
+    // `:menu [pane|window|session]` is the typeable route to the same popup.
+    let path = start_daemon();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("cmdmenu".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    c.send(&ClientMsg::Input(vec![0x02, b':']));
+    c.send(&ClientMsg::Input(b"menu session\r".to_vec()));
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Rename session") && opened.contains("Kill session"),
+        "`:menu session` should open the session menu; got:\n{opened}"
+    );
+}
+
+#[test]
+fn a_stale_menu_frame_does_not_swallow_the_next_right_press() {
+    // A press resolves against the frame the user actually clicked. When that
+    // retained frame still shows a menu the daemon has since closed, the press
+    // used to be consumed for nothing — so the right-click that should have
+    // opened a fresh menu silently did nothing. Only a menu the daemon still
+    // holds may eat a press.
+    let path = start_daemon_mouse();
+    let mut c = TestClient::connect(&path);
+    c.send(&ClientMsg::NewSession {
+        name: Some("stalemenu".into()),
+        shell: Some("/bin/sh".into()),
+        size: size(),
+    });
+    c.collect_until(Duration::from_secs(2), |m| {
+        matches!(m, ServerMsg::Attached { .. })
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    c.send(&ClientMsg::Input(b"\x1b[<2;5;5M".to_vec()));
+    let (_d0, opened) = c.collect_until(Duration::from_secs(2), |_| false);
+    assert!(
+        opened.contains("Close pane"),
+        "precondition: a menu is open; got:\n{opened}"
+    );
+    // The epoch of the frame that shows the menu — what a lagging terminal
+    // keeps reporting after the menu is gone.
+    let menu_epoch = c.last_frame_epoch();
+
+    c.send(&ClientMsg::Input(vec![0x1b]));
+    c.collect_until(Duration::from_secs(1), |_| false);
+
+    c.send(&ClientMsg::InputAt {
+        bytes: b"\x1b[<2;20;8M".to_vec(),
+        frame_epoch: menu_epoch,
+    });
+    c.send(&ClientMsg::Resize(WireSize { cols: 80, rows: 24 }));
+    let (_d1, reopened) = c.collect_until(Duration::from_secs(2), |_| false);
+    let frame = reopened.rsplit("\u{1b}[2J").next().unwrap_or(&reopened);
+    assert!(
+        frame.contains("Close pane"),
+        "the right-press must open a menu instead of being eaten by the stale frame; got:\n{frame}"
+    );
+}

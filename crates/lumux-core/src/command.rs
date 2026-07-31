@@ -134,6 +134,10 @@ pub enum ParsedCommand {
     CopyMode,
     /// `clock-mode`: show the big-digit clock overlay (prefix `t`, made typeable).
     ClockMode,
+    /// `menu`/`display-menu [pane|window|session]`: open the context menu for
+    /// the named scope (default `pane`). The keyboard route to the popup a
+    /// right-press opens, for terminals that never deliver the right button.
+    DisplayMenu(crate::keymap::MenuScope),
     /// `select-pane [-L|-R|-U|-D] [-t .N]`: move focus. A direction picks the
     /// geographic neighbor; `-t .N` focuses pane N in the active window. With
     /// neither, it's a no-op (tmux would re-select the active pane).
@@ -381,6 +385,13 @@ fn dispatch(verb: &str, args: &[&str]) -> ParsedCommand {
         "previous-layout" | "prevl" => ParsedCommand::PreviousLayout,
         "copy-mode" => ParsedCommand::CopyMode,
         "clock-mode" => ParsedCommand::ClockMode,
+        // An unknown or missing scope falls back to the pane menu rather than
+        // failing the command: the pane is what a bare `:menu` means.
+        "menu" | "display-menu" => ParsedCommand::DisplayMenu(
+            args.first()
+                .and_then(|arg| crate::keymap::MenuScope::parse(arg))
+                .unwrap_or_default(),
+        ),
         "select-pane" | "selectp" => {
             use crate::layout::Direction;
             let dir = if args.contains(&"-L") {
@@ -1061,6 +1072,31 @@ mod tests {
         assert_eq!(
             parse_command("resize-pane -L"),
             Some(ParsedCommand::ResizePane { dir: Direction::Left, cells: None })
+        );
+    }
+
+    #[test]
+    fn menu_scopes_are_typeable_and_default_to_the_pane() {
+        use crate::keymap::MenuScope;
+        // The keyboard route to the popup a right-press opens, for terminals
+        // that keep the right button for themselves.
+        assert_eq!(
+            parse_command("menu"),
+            Some(ParsedCommand::DisplayMenu(MenuScope::Pane))
+        );
+        assert_eq!(
+            parse_command("display-menu window"),
+            Some(ParsedCommand::DisplayMenu(MenuScope::Window))
+        );
+        assert_eq!(
+            parse_command("menu SESSION"),
+            Some(ParsedCommand::DisplayMenu(MenuScope::Session))
+        );
+        // An unrecognized scope must not fail the command outright: the pane is
+        // what a bare `:menu` means anyway.
+        assert_eq!(
+            parse_command("menu nonsense"),
+            Some(ParsedCommand::DisplayMenu(MenuScope::Pane))
         );
     }
 
